@@ -1,0 +1,16 @@
+{
+  "name": "@relayauth/types",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx src/__tests__/*.test.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

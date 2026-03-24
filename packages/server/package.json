@@ -1,0 +1,20 @@
+{
+  "name": "relayauth-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "hono": "^4",
+    "@relayauth/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4",
+    "wrangler": "^4"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx src/__tests__/*.test.ts"
+  }
+}

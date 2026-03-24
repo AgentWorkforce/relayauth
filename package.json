@@ -1,10 +1,19 @@
 {
+  "name": "relayauth",
   "private": true,
-  "description": "relayauth — agent identity and authorization",
+  "packageManager": "pnpm@10.31.0",
   "scripts": {
-    "workflow": "agent-relay run"
+    "build": "turbo build",
+    "test": "turbo test",
+    "typecheck": "turbo typecheck",
+    "dev": "turbo dev",
+    "e2e": "npx tsx scripts/e2e.ts"
   },
-  "dependencies": {
-    "@agent-relay/sdk": "latest"
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "turbo": "^2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.7",
+    "wrangler": "^4"
   }
 }
