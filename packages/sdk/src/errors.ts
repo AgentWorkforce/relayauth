@@ -5,7 +5,7 @@ export class RelayAuthError extends Error {
     public statusCode?: number,
   ) {
     super(message);
-    this.name = "RelayAuthError";
+    this.name = new.target.name;
   }
 }
 

@@ -4,7 +4,8 @@ set -euo pipefail
 header='{"alg":"HS256","typ":"JWT"}'
 now="$(date +%s)"
 exp="$((now + 3600))"
-payload="{\"sub\":\"agent_test\",\"org\":\"org_test\",\"wks\":\"ws_test\",\"scopes\":[\"*\"],\"exp\":${exp}}"
+jti="dev-$(date +%s)-${RANDOM}"
+payload="{\"sub\":\"agent_test\",\"org\":\"org_test\",\"wks\":\"ws_test\",\"scopes\":[\"*\"],\"iss\":\"relayauth:dev\",\"aud\":[\"relayauth\"],\"iat\":${now},\"exp\":${exp},\"jti\":\"${jti}\"}"
 secret='dev-secret'
 
 base64url() {
