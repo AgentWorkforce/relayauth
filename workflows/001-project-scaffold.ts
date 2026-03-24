@@ -24,19 +24,25 @@ const result = await workflow('001-project-scaffold')
   .agent('architect', {
     cli: 'claude',
     preset: 'lead',
-    role: 'Design monorepo structure, shared config, test patterns',
+    role: 'Design monorepo structure, shared config, review all generated files',
     cwd: ROOT,
   })
   .agent('scaffolder', {
     cli: 'codex',
     preset: 'worker',
-    role: 'Create all scaffold files',
+    role: 'Create scaffold files — packages, tsconfig, package.json',
     cwd: ROOT,
   })
   .agent('test-infra', {
     cli: 'codex',
     preset: 'worker',
-    role: 'Set up test infrastructure and helpers',
+    role: 'Set up test infrastructure, helpers, and fixture factories',
+    cwd: ROOT,
+  })
+  .agent('reviewer', {
+    cli: 'claude',
+    preset: 'reviewer',
+    role: 'Review scaffold for completeness, consistency with relaycast patterns',
     cwd: ROOT,
   })
 
@@ -596,16 +602,42 @@ Write ALL files to disk.`,
     failOnError: false,
   })
 
-  .step('fix-build', {
-    agent: 'architect',
+  .step('review-scaffold', {
+    agent: 'reviewer',
     dependsOn: ['install-and-verify'],
-    task: `Fix any build errors.
+    task: `Review the scaffold for quality and completeness.
 
 Build output:
 {{steps.install-and-verify.output}}
 
-If EXIT: 0, verify the structure looks right and summarize what was created.
-If errors, fix them. Then run: cd ${ROOT} && npx turbo build && npx turbo typecheck`,
+Read key files and verify:
+1. package.json workspace config matches relaycast pattern
+2. tsconfig.base.json has strict: true, declaration: true
+3. All 4 packages have consistent package.json (name, scripts, publishConfig)
+4. Types package exports all types from index.ts
+5. SDK package depends on types via workspace:*
+6. Server package has proper CF Workers types
+7. Test helpers have mock factories for all core types
+
+If EXIT was not 0, list the specific errors.
+If EXIT was 0, list any structural improvements needed.`,
+    verification: { type: 'exit_code' },
+  })
+
+  .step('fix-build', {
+    agent: 'architect',
+    dependsOn: ['review-scaffold'],
+    task: `Fix any build errors and address reviewer feedback.
+
+Build output:
+{{steps.install-and-verify.output}}
+
+Reviewer feedback:
+{{steps.review-scaffold.output}}
+
+Fix all issues raised by the reviewer.
+If EXIT: 0 and no issues, summarize what was created.
+Then run: cd ${ROOT} && npx turbo build && npx turbo typecheck`,
     verification: { type: 'exit_code' },
   })
 

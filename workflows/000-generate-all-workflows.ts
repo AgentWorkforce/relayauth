@@ -166,11 +166,37 @@ Write rules covering:
 - RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile'
 
 **2. Agent pattern (MANDATORY for every workflow):**
-- Claude leads: { cli: 'claude', preset: 'lead', role: '...' }
-  Used for: architecture, review, integration, fixing
-- Codex workers: { cli: 'codex', preset: 'worker', role: '...' }
-  Used for: implementation, writing tests, writing code
-- NEVER use codex as lead or claude as worker
+
+Every workflow MUST have this agent mix:
+
+a) Claude lead (architect): { cli: 'claude', preset: 'lead' }
+   - Designs approach, reviews output, fixes integration issues
+   - Makes architecture decisions
+   - Reads reviewer feedback and acts on it
+   - 1 per workflow
+
+b) Codex implementer(s): { cli: 'codex', preset: 'worker' }
+   - Writes code to disk
+   - Writes test files
+   - Creates config files, migrations, etc.
+   - 1-3 per workflow (parallel when independent)
+
+c) Claude reviewer: { cli: 'claude', preset: 'reviewer' }
+   - Reviews implementation for quality, consistency, completeness
+   - Checks against spec/patterns
+   - Provides feedback for the architect to act on
+   - 1 per workflow (runs after implementation, before final fix)
+
+Agent naming convention:
+  architect / lead       → claude lead
+  implementer / dev      → codex worker
+  test-writer            → codex worker
+  reviewer               → claude reviewer
+  fixer / integrator     → claude lead
+
+NEVER use codex as lead or reviewer.
+NEVER use claude as worker (preset: worker).
+ALWAYS include a reviewer step between implementation and final verification.
 
 **3. TDD structure (MANDATORY for every feature workflow):**
 Phase 1: Read existing code + write tests FIRST
@@ -218,18 +244,37 @@ Phase 3: Verify + Fix
 
 **8. Template for each workflow type:**
 
-Feature workflow template:
-  Phase 1: read-* (deterministic) → write-tests (codex worker) → verify-tests-exist
-  Phase 2: implement-* (codex workers, parallel) → verify-files
-  Phase 3: run-tests (deterministic) → typecheck (deterministic) → fix (claude lead)
+Feature workflow template (TDD):
+  Phase 1: Read + Test
+    read-* (deterministic) → write-tests (codex worker) → verify-tests-exist (deterministic)
+  Phase 2: Implement
+    implement-* (codex workers, parallel) → verify-files (deterministic)
+  Phase 3: Verify + Review + Fix
+    run-tests (deterministic) → typecheck (deterministic) →
+    review (claude reviewer) → fix (claude lead, addresses reviewer feedback)
 
 E2E workflow template:
-  Phase 1: read-* (deterministic) → write-e2e (codex worker) → verify-e2e-exists
-  Phase 2: run-e2e (deterministic) → analyze-results (claude lead)
+  Phase 1: Read + Write
+    read-* (deterministic) → write-e2e (codex worker) → verify-e2e-exists (deterministic)
+  Phase 2: Run + Review
+    run-e2e (deterministic) → review-results (claude reviewer) →
+    fix-failures (claude lead)
 
 Spec workflow template:
-  Phase 1: read-* (deterministic) → write-spec (claude lead/codex worker)
-  Phase 2: verify-spec-complete (deterministic)
+  Phase 1: Read + Write
+    read-* (deterministic) → write-spec (codex worker, guided by architect)
+  Phase 2: Review + Finalize
+    review-spec (claude reviewer) → finalize (claude lead)
+
+Large implementation template (lead + workers team):
+  Phase 1: Read + Plan
+    read-* (deterministic) → plan (claude lead)
+  Phase 2: Implement (parallel workers)
+    write-tests (codex test-writer) + implement-* (codex workers, parallel) →
+    verify-files (deterministic)
+  Phase 3: Review + Fix
+    run-tests (deterministic) → typecheck (deterministic) →
+    review (claude reviewer) → fix (claude lead)
 
 Write the complete generation rules document.`,
     verification: { type: 'exit_code' },
@@ -477,35 +522,7 @@ Write ALL 10 files to disk.`,
       'gen-domain-5', 'gen-domain-6', 'gen-domain-7', 'gen-domain-8',
       'gen-domain-9', 'gen-domain-10', 'gen-domain-11-12',
     ],
-    command: `cd ${ROOT}/workflows && \
-total=$(ls *.ts 2>/dev/null | wc -l | tr -d ' ') && \
-echo "Total workflow files: $total" && \
-echo "" && \
-echo "=== Missing ===" && \
-for i in $(seq -w 1 100); do \
-  pattern="${i}-*.ts"; \
-  count=$(ls $pattern 2>/dev/null | wc -l | tr -d ' '); \
-  if [ "$count" -eq "0" ] && [ "$i" != "000" ]; then \
-    echo "MISSING: $i"; \
-  fi; \
-done && \
-echo "" && \
-echo "=== Syntax check (top-level await) ===" && \
-for f in *.ts; do \
-  if grep -q "^const result = await" "$f" 2>/dev/null; then \
-    echo "TOP-LEVEL AWAIT: $f"; \
-  fi; \
-done && \
-echo "" && \
-echo "=== Agent pattern check ===" && \
-for f in *.ts; do \
-  if ! grep -q "cli: 'claude'" "$f" 2>/dev/null; then \
-    echo "NO CLAUDE LEAD: $f"; \
-  fi; \
-  if ! grep -q "cli: 'codex'" "$f" 2>/dev/null && ! grep -q "spec\\.ts$\\|000" <<< "$f"; then \
-    echo "NO CODEX WORKER: $f"; \
-  fi; \
-done`,
+    command: 'cd ' + ROOT + '/workflows && ls *.ts | wc -l && echo "---" && ls *.ts | sort && echo "---" && grep -rL "cli: .claude." *.ts 2>/dev/null | xargs -I{} echo "NO CLAUDE: {}" && grep -rL "async function main" *.ts 2>/dev/null | xargs -I{} echo "NO MAIN: {}"',
     captureOutput: true,
     failOnError: false,
   })
