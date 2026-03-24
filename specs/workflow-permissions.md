@@ -1539,14 +1539,472 @@ These defaults protect the 80% case:
 - `relay auth suggest` (AI-powered tuning)
 - Dashboard on relay.dev
 
-### Phase 3: Network + Advanced
+### Phase 3: Network + Collaboration
 - Network scoping (HTTP proxy)
+- File metadata layer (edit tracking, intent registration)
+- Conflict detection and resolution (warn/block/merge modes)
 - Workflow permission inheritance (project ceiling)
 - Team permission policies (org-level defaults)
 - Permission templates marketplace (community profiles)
 - Real-time alerts for anomalous denials
 - Integration with CI/CD (enforce in pipelines)
 - `relay auth install-hooks` (lightweight git-only mode)
+
+---
+
+## File Metadata & Collaborative Editing
+
+### Purpose
+
+When multiple agents work on the same codebase concurrently — whether in a
+multi-agent workflow or parallel ad-hoc sessions — they need coordination
+signals. Without metadata, two agents will silently clobber each other's
+changes. Git merge conflicts are after-the-fact; what's needed is
+before-the-fact coordination.
+
+The file metadata layer is **opt-in** and provides:
+- **Edit tracking:** who edited each file, when, and what they changed
+- **Intent registration:** agents declare what they plan to edit before starting
+- **Conflict detection:** agents are warned (or blocked) when targeting the same file
+- **Edit history:** lightweight git-blame-for-agents, showing recent changes
+
+This feature is powered by relayfile's existing file sync infrastructure.
+Metadata is stored as sidecar data managed by the relay daemon, not embedded
+in the actual files.
+
+### Configuration
+
+```yaml
+# In .relay/permissions.yaml
+settings:
+  collaboration:
+    # Enable file metadata and intent tracking
+    enabled: true
+
+    # What happens when two agents target the same file
+    # warn:  both agents see the conflict in metadata, proceed at own risk
+    # block: second agent's write is denied until first releases intent
+    # merge: relay attempts auto-merge (git-style 3-way), flags conflicts
+    conflictMode: warn
+
+    # How long an intent lasts before auto-expiring (seconds)
+    # Prevents stale claims from dead/hung agents
+    intentTTL: 300
+
+    # Include edit summaries in metadata
+    # Agents describe their changes, visible to other agents
+    trackSummaries: true
+
+    # How many historical edits to retain per file
+    historyDepth: 20
+
+    # Per-path overrides for critical files
+    overrides:
+      - path: "/src/db/schema.ts"
+        conflictMode: block       # database schema — serialize edits
+      - path: "/package.json"
+        conflictMode: block       # dependency changes need serialization
+      - path: "/infra/**"
+        conflictMode: block       # infrastructure is too dangerous for concurrent edits
+      - path: "/.github/workflows/**"
+        conflictMode: block       # CI config — one agent at a time
+      - path: "/src/**"
+        conflictMode: warn        # source code — warn but allow (agents can coordinate)
+```
+
+### Metadata Storage
+
+The relay daemon maintains metadata in the mount directory under `/.relay/`:
+
+```
+~/.relay/mounts/my-app/
+├── src/                           ← actual project files
+├── tests/
+└── .relay/                        ← metadata (managed by relay daemon)
+    ├── files.json                 ← per-file edit metadata
+    ├── intents.json               ← active intent claims
+    └── activity.json              ← real-time activity feed
+```
+
+These files are auto-generated and kept up-to-date by the relay daemon.
+Agents can read them like normal files — no special SDK needed. Any agent
+that reads context files (which all good agents do) will naturally discover
+the collaboration metadata.
+
+### File Metadata (`/.relay/files.json`)
+
+Contains per-file edit history and status:
+
+```json
+{
+  "/src/api/route.ts": {
+    "lastEditor": {
+      "identity": "dev:khaliq:my-app:coder-1",
+      "agent": "claude",
+      "session": "sess_abc123",
+      "timestamp": "2026-03-24T20:35:12Z",
+      "summary": "Added authentication middleware to all route handlers"
+    },
+    "editCount": 7,
+    "recentEditors": [
+      {
+        "identity": "dev:khaliq:my-app:coder-2",
+        "agent": "codex",
+        "timestamp": "2026-03-24T20:33:45Z",
+        "summary": "Refactored error handling, added try/catch"
+      },
+      {
+        "identity": "dev:khaliq:my-app:coder-1",
+        "agent": "claude",
+        "timestamp": "2026-03-24T20:30:22Z",
+        "summary": "Initial route implementation"
+      }
+    ],
+    "hotFile": true,
+    "hotReason": "3 agents edited in last 10 minutes"
+  },
+  "/src/lib/auth.ts": {
+    "lastEditor": {
+      "identity": "dev:khaliq:my-app:coder-1",
+      "agent": "claude",
+      "session": "sess_abc123",
+      "timestamp": "2026-03-24T20:36:01Z",
+      "summary": "Adding JWT validation helper"
+    },
+    "editCount": 2,
+    "recentEditors": [],
+    "hotFile": false
+  }
+}
+```
+
+**`hotFile` detection:** A file is marked `hotFile: true` when:
+- 2+ different agents edited it in the last 10 minutes
+- OR 5+ edits from any agents in the last 10 minutes
+- The `hotReason` field explains why
+
+Agents should treat hot files with extra care — read the latest version
+before editing, keep changes minimal, and consider coordinating with the
+other agent.
+
+### Intent Registration (`/.relay/intents.json`)
+
+Active intent claims from agents:
+
+```json
+{
+  "/src/api/route.ts": [
+    {
+      "identity": "dev:khaliq:my-app:coder-2",
+      "agent": "codex",
+      "session": "sess_def456",
+      "type": "edit",
+      "reason": "Refactoring error handling in all route handlers",
+      "registeredAt": "2026-03-24T20:36:01Z",
+      "expiresAt": "2026-03-24T20:41:01Z",
+      "status": "active"
+    }
+  ],
+  "/src/lib/auth.ts": [
+    {
+      "identity": "dev:khaliq:my-app:coder-1",
+      "agent": "claude",
+      "session": "sess_abc123",
+      "type": "edit",
+      "reason": "Adding JWT validation and token refresh",
+      "registeredAt": "2026-03-24T20:36:30Z",
+      "expiresAt": "2026-03-24T20:41:30Z",
+      "status": "active"
+    }
+  ]
+}
+```
+
+### Intent Registration Flow
+
+**How an agent registers intent:**
+
+The agent writes a JSON file to a special relay path:
+
+```bash
+# Agent writes to register intent
+echo '{
+  "path": "/src/api/route.ts",
+  "type": "edit",
+  "reason": "Refactoring error handling"
+}' > /.relay/claims/request
+```
+
+The relay daemon intercepts this write and:
+1. Records the intent with the agent's identity (extracted from the session's JWT)
+2. Sets TTL (from `settings.collaboration.intentTTL`, default 5 minutes)
+3. Updates `/.relay/intents.json`
+4. Checks for conflicts with existing intents
+
+**If no conflict:**
+```json
+// /.relay/claims/response (written by daemon)
+{
+  "status": "claimed",
+  "path": "/src/api/route.ts",
+  "expiresAt": "2026-03-24T20:41:01Z"
+}
+```
+
+**If conflict exists (warn mode):**
+```json
+{
+  "status": "claimed_with_warning",
+  "path": "/src/api/route.ts",
+  "warning": "File also claimed by coder-1 (claude) — 'Adding auth middleware'",
+  "expiresAt": "2026-03-24T20:41:01Z"
+}
+```
+
+**If conflict exists (block mode):**
+```json
+{
+  "status": "blocked",
+  "path": "/src/db/schema.ts",
+  "blockedBy": "coder-1 (claude) — 'Adding user table migration'",
+  "blockedSince": "2m ago",
+  "blockedUntil": "3m from now",
+  "suggestion": "Wait for release or work on a different file"
+}
+```
+
+**Intent release:**
+Intents are released when:
+- The agent writes a release: `echo '{"path":"/src/api/route.ts"}' > /.relay/claims/release`
+- The TTL expires (auto-release)
+- The agent's session ends (cleanup)
+- The agent's token is revoked (cascade)
+
+### Activity Feed (`/.relay/activity.json`)
+
+Real-time activity across all agents in the workspace:
+
+```json
+{
+  "events": [
+    {
+      "timestamp": "2026-03-24T20:36:30Z",
+      "agent": "claude (coder-1)",
+      "action": "intent:register",
+      "path": "/src/lib/auth.ts",
+      "reason": "Adding JWT validation"
+    },
+    {
+      "timestamp": "2026-03-24T20:36:01Z",
+      "agent": "codex (coder-2)",
+      "action": "intent:register",
+      "path": "/src/api/route.ts",
+      "reason": "Refactoring error handling"
+    },
+    {
+      "timestamp": "2026-03-24T20:35:12Z",
+      "agent": "claude (coder-1)",
+      "action": "file:write",
+      "path": "/src/api/route.ts",
+      "summary": "Added authentication middleware"
+    },
+    {
+      "timestamp": "2026-03-24T20:34:45Z",
+      "agent": "codex (coder-2)",
+      "action": "file:write",
+      "path": "/src/lib/utils.ts",
+      "summary": "Added error formatting helpers"
+    }
+  ],
+  "activeAgents": [
+    { "name": "coder-1", "agent": "claude", "since": "5m ago", "lastAction": "20s ago" },
+    { "name": "coder-2", "agent": "codex", "since": "4m ago", "lastAction": "35s ago" }
+  ],
+  "claimedFiles": 2,
+  "hotFiles": 1
+}
+```
+
+This gives any agent a real-time view of what's happening in the workspace.
+An agent entering the workspace can read this and immediately understand:
+- Who else is working
+- What files are being touched
+- Where to focus without conflicts
+
+### Edit Summaries
+
+When `trackSummaries: true`, the relay daemon captures edit summaries by:
+
+1. **Diff analysis:** On each file write, the daemon computes a diff against
+   the previous version. For small changes (<50 lines), it auto-generates
+   a summary. For large changes, it records "Major rewrite (N lines changed)".
+
+2. **Agent-provided summaries:** If the agent writes a summary file alongside
+   its edit, the daemon uses that instead:
+   ```bash
+   # Agent writes the file
+   echo "new content" > /src/api/route.ts
+   # Agent writes a summary (optional, daemon picks it up)
+   echo "Added authentication middleware to all handlers" > /.relay/summaries/src-api-route.ts
+   ```
+
+3. **Commit message extraction:** If the agent runs `git commit -m "message"`,
+   the daemon extracts the message and associates it with the changed files.
+
+Priority: agent-provided summary > commit message > auto-generated diff summary.
+
+### Conflict Resolution
+
+#### Warn Mode (default)
+
+Both agents proceed. The second agent sees a warning in `/.relay/intents.json`
+and can choose to:
+- Proceed anyway (risk merge conflict)
+- Work on a different file
+- Wait for the first agent to finish
+- Coordinate via relaycast channel (if in a workflow)
+
+#### Block Mode
+
+The second agent's write is denied at the filesystem level (EACCES).
+The relay daemon:
+1. Rejects the write
+2. Writes explanation to `/.relay/claims/response`
+3. Logs audit event with both agents' identities
+4. Auto-releases the block when the claiming agent:
+   - Explicitly releases
+   - Intent TTL expires
+   - Session ends
+
+```
+relay: ⏳ Write blocked — /src/db/schema.ts claimed by coder-1 (claude)
+relay: Reason: "Adding new user table migration"
+relay: Claimed 2m ago, expires in 3m
+relay: Suggestion: work on a different file or wait for release
+```
+
+#### Merge Mode
+
+Both agents can write. On conflict (both modified same file):
+1. Relay daemon detects overlapping writes
+2. Attempts 3-way merge using the pre-edit version as base
+3. If merge succeeds: both changes preserved, agents notified
+4. If merge fails: conflict markers written, flagged in activity feed
+
+```json
+// /.relay/activity.json event
+{
+  "timestamp": "2026-03-24T20:37:00Z",
+  "action": "conflict:detected",
+  "path": "/src/api/route.ts",
+  "agents": ["claude (coder-1)", "codex (coder-2)"],
+  "resolution": "auto-merged"  // or "conflict-markers-added"
+}
+```
+
+### Workspace-Level Metadata via Relaycast
+
+For multi-agent workflows, file metadata events are also published to the
+workflow's relaycast channel. This enables agents to coordinate via messages
+in addition to file-based signals:
+
+```
+[relay] 🔒 coder-2 (codex) claimed /src/api/route.ts — "Refactoring error handling"
+[relay] ⚠️ /src/api/route.ts is a hot file (3 edits in 10m by 2 agents)
+[relay] ✅ coder-1 (claude) released /src/lib/auth.ts
+[relay] 🔀 Auto-merged concurrent edits to /src/utils.ts (coder-1 + coder-2)
+```
+
+Agents subscribed to the channel see these messages and can react in real time.
+This bridges the file-based metadata (pull model) with channel-based
+coordination (push model).
+
+### Metadata Performance
+
+File metadata operations must not slow down the sync daemon:
+
+| Operation | Target Latency | Notes |
+|-----------|---------------|-------|
+| Record file edit metadata | <1ms | Append to in-memory index |
+| Update files.json | <5ms | Async write, debounced 100ms |
+| Register intent | <2ms | In-memory check + async persist |
+| Check intent conflict | <0.5ms | In-memory hash lookup |
+| Block mode write denial | <1ms | Check before forwarding write |
+| Hot file detection | <1ms | Counter maintained on each write |
+| Activity feed append | <1ms | Ring buffer, async flush |
+| Merge attempt | <50ms | 3-way diff on file content |
+
+Metadata is maintained in memory by the daemon and flushed to disk
+asynchronously. If the daemon crashes, metadata is lost — but this is
+acceptable because it's coordination data, not source of truth. The actual
+files and git history are the source of truth.
+
+### CLI Commands for Metadata
+
+```bash
+relay files                    # show file metadata summary
+relay files /src/api/route.ts  # show metadata for specific file
+relay intents                  # show all active intents
+relay intents --mine           # show my intents
+relay activity                 # show recent activity feed
+relay claim /path/to/file      # manually register intent
+relay release /path/to/file    # manually release intent
+relay release --all            # release all my intents
+```
+
+### Metadata in Session Report
+
+The session report includes collaboration metrics:
+
+```
+┌─ Session: claude (5m 12s) ──────────────────────────────┐
+│  Profile: coder                                          │
+│                                                          │
+│  ── Collaboration ───────────────────────────────────── │
+│  Concurrent agents: 3 (coder-1, coder-2, reviewer)      │
+│  Intents registered: 4                                   │
+│  Conflicts avoided: 2 (read intent → chose different file)│
+│  Conflicts encountered: 1 (warn mode, manual merge)      │
+│  Hot files touched: 1 (/src/api/route.ts)               │
+│  Files also edited by others: 3                          │
+│                                                          │
+│  ── Files Modified ──────────────────────────────────── │
+│  /src/api/route.ts     ⚠️ also edited by codex          │
+│  /src/lib/auth.ts      ✅ exclusive                      │
+│  /tests/api.test.ts    ✅ exclusive                      │
+│  /src/lib/utils.ts     ⚠️ auto-merged with codex        │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Metadata Audit Events
+
+```json
+{
+  "type": "collaboration.intent_registered",
+  "identity": "dev:khaliq:my-app:coder-2",
+  "path": "/src/api/route.ts",
+  "reason": "Refactoring error handling",
+  "conflictsWith": null
+}
+
+{
+  "type": "collaboration.write_blocked",
+  "identity": "dev:khaliq:my-app:coder-2",
+  "path": "/src/db/schema.ts",
+  "blockedBy": "dev:khaliq:my-app:coder-1",
+  "conflictMode": "block",
+  "resolution": "agent chose different file"
+}
+
+{
+  "type": "collaboration.auto_merge",
+  "path": "/src/utils.ts",
+  "agents": ["dev:khaliq:my-app:coder-1", "dev:khaliq:my-app:coder-2"],
+  "result": "success",
+  "linesAdded": 12,
+  "linesRemoved": 3
+}
+```
 
 ---
 
