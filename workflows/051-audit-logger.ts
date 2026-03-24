@@ -1,23 +1,11 @@
 /**
  * 051-audit-logger.ts
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
  *
  * Domain 6: Audit & Observability
  * Core audit logging: write entries to D1 on every auth event
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
  *
  * Depends on: 006
  * Run: agent-relay run workflows/051-audit-logger.ts
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
  */
 
 import { workflow } from '@agent-relay/sdk/workflows';
@@ -28,15 +16,7 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 
 async function main() {
 const result = await workflow('051-audit-logger')
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
   .description('Core audit logging: write entries to D1 on every auth event')
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
   .pattern('dag')
   .channel('wf-relayauth-051')
   .maxConcurrency(4)
@@ -46,40 +26,24 @@ const result = await workflow('051-audit-logger')
     cli: 'claude',
     preset: 'lead',
     role: 'Design audit logger engine, review output, fix issues',
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write tests for audit logger',
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
     cwd: ROOT,
   })
   .agent('implementer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Implement audit logger engine',
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review audit logger for quality, consistency, spec compliance',
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
     cwd: ROOT,
   })
 
@@ -148,10 +112,6 @@ Test these behaviors:
     type: 'deterministic',
     dependsOn: ['write-tests'],
     command: `test -f ${ROOT}/packages/server/src/__tests__/audit-logger.test.ts && echo "OK" || echo "MISSING"`,
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
     captureOutput: true,
   })
 
@@ -203,10 +163,6 @@ Export from the package.`,
     type: 'deterministic',
     dependsOn: ['implement'],
     command: `test -f ${ROOT}/packages/server/src/engine/audit-logger.ts && echo "impl OK" || echo "impl MISSING"`,
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
     captureOutput: true,
     failOnError: false,
   })
@@ -217,10 +173,6 @@ Export from the package.`,
     type: 'deterministic',
     dependsOn: ['verify-files'],
     command: `cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/audit-logger.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
     captureOutput: true,
     failOnError: false,
   })
@@ -275,10 +227,6 @@ Typecheck results:
 
 Fix all issues. Then run:
 cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/audit-logger.test.ts && npx turbo typecheck`,
-    - Every audit entry includes sponsorId and sponsorChain
-    - New event types: "budget.exceeded", "budget.alert", "scope.escalation_denied"
-    - Budget breach events include: identity, budget config, actual usage, action attempted
-
     verification: { type: 'exit_code' },
   })
 

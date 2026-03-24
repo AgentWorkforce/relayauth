@@ -1,0 +1,40 @@
+{
+  "id": "traj_1774368826774_8d7da39a",
+  "version": 1,
+  "task": {
+    "title": "014-token-issuance-api-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "965ceebd55ed541a3e40f625"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-24T16:13:46.774Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-24T16:13:46.774Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_771d31b7",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-24T16:13:46.774Z",
+      "events": [
+        {
+          "ts": 1774368826774,
+          "type": "note",
+          "content": "Purpose: POST /v1/tokens — issue access + refresh token pair"
+        },
+        {
+          "ts": 1774368826774,
+          "type": "note",
+          "content": "Approach: 14-step dag workflow — Parsed 14 steps, 6 parallel tracks, 8 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    }
+  ]
+}

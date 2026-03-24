@@ -545,7 +545,12 @@ Verification results:
    - Are task prompts under 20 lines?
    - Is maxConcurrency 4-5?
 
-Fix any issues found. Run the syntax check again after fixing.`,
+For each issue in the reviewer feedback above:
+1. Read the specific file and location mentioned
+2. Make the exact fix described
+3. Write the file back to disk
+
+After all fixes, run the typecheck/tests again to confirm everything passes. Run the syntax check again after fixing.`,
     verification: { type: 'exit_code' },
   })
 

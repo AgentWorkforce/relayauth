@@ -1,19 +1,11 @@
 /**
  * 026-suspend-identity-api.ts
-    - Auto-suspend triggered by budget breach (not just manual)
-    - Suspend CASCADES to all sub-agents spawned by this identity
-    - Audit event includes: reason (manual | budget_exceeded | parent_suspended)
-
  *
  * Domain 3: Identity Lifecycle
  * POST /v1/identities/:id/suspend — suspend with reason
  *
  * Depends on: 022, 016
  * Run: agent-relay run workflows/026-suspend-identity-api.ts
-    - Auto-suspend triggered by budget breach (not just manual)
-    - Suspend CASCADES to all sub-agents spawned by this identity
-    - Audit event includes: reason (manual | budget_exceeded | parent_suspended)
-
  */
 
 import { workflow } from '@agent-relay/sdk/workflows';
@@ -24,10 +16,6 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 
 async function main() {
 const result = await workflow('026-suspend-identity-api')
-    - Auto-suspend triggered by budget breach (not just manual)
-    - Suspend CASCADES to all sub-agents spawned by this identity
-    - Audit event includes: reason (manual | budget_exceeded | parent_suspended)
-
   .description('POST /v1/identities/:id/suspend — suspend with reason')
   .pattern('dag')
   .channel('wf-relayauth-026')
@@ -38,40 +26,24 @@ const result = await workflow('026-suspend-identity-api')
     cli: 'claude',
     preset: 'lead',
     role: 'Design suspend identity API, review output, fix issues',
-    - Auto-suspend triggered by budget breach (not just manual)
-    - Suspend CASCADES to all sub-agents spawned by this identity
-    - Audit event includes: reason (manual | budget_exceeded | parent_suspended)
-
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write tests for suspend identity endpoint',
-    - Auto-suspend triggered by budget breach (not just manual)
-    - Suspend CASCADES to all sub-agents spawned by this identity
-    - Audit event includes: reason (manual | budget_exceeded | parent_suspended)
-
     cwd: ROOT,
   })
   .agent('implementer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Implement suspend identity route',
-    - Auto-suspend triggered by budget breach (not just manual)
-    - Suspend CASCADES to all sub-agents spawned by this identity
-    - Audit event includes: reason (manual | budget_exceeded | parent_suspended)
-
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review suspend identity API for quality and spec compliance',
-    - Auto-suspend triggered by budget breach (not just manual)
-    - Suspend CASCADES to all sub-agents spawned by this identity
-    - Audit event includes: reason (manual | budget_exceeded | parent_suspended)
-
     cwd: ROOT,
   })
 
@@ -136,10 +108,6 @@ Test:
     type: 'deterministic',
     dependsOn: ['write-tests'],
     command: `test -f ${ROOT}/packages/server/src/__tests__/suspend-identity.test.ts && echo "OK" || echo "MISSING"`,
-    - Auto-suspend triggered by budget breach (not just manual)
-    - Suspend CASCADES to all sub-agents spawned by this identity
-    - Audit event includes: reason (manual | budget_exceeded | parent_suspended)
-
     captureOutput: true,
   })
 
@@ -186,10 +154,6 @@ Add the POST /:id/suspend handler to ${ROOT}/packages/server/src/routes/identiti
     type: 'deterministic',
     dependsOn: ['verify-files'],
     command: `cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/suspend-identity.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
-    - Auto-suspend triggered by budget breach (not just manual)
-    - Suspend CASCADES to all sub-agents spawned by this identity
-    - Audit event includes: reason (manual | budget_exceeded | parent_suspended)
-
     captureOutput: true,
     failOnError: false,
   })
@@ -244,10 +208,6 @@ Typecheck results:
 
 Fix all issues. Then run:
 cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/suspend-identity.test.ts && npx turbo typecheck`,
-    - Auto-suspend triggered by budget breach (not just manual)
-    - Suspend CASCADES to all sub-agents spawned by this identity
-    - Audit event includes: reason (manual | budget_exceeded | parent_suspended)
-
     verification: { type: 'exit_code' },
   })
 

@@ -4,11 +4,6 @@
  * Domain 6: Audit & Observability
  * E2E: perform actions → query audit → verify entries → test retention
     Test scenarios:
-    - Audit entry includes full sponsorChain
-    - Budget breach generates "budget.exceeded" audit event
-    - Budget alert webhook fires at configured threshold
-    - Scope escalation attempt logged with "scope.escalation_denied"
-
  *
  * Depends on: 051, 052, 053, 054, 055, 056, 057
  * Run: agent-relay run workflows/058-audit-e2e.ts
@@ -24,11 +19,6 @@ async function main() {
 const result = await workflow('058-audit-e2e')
   .description('Audit & Observability E2E tests')
     Test scenarios:
-    - Audit entry includes full sponsorChain
-    - Budget breach generates "budget.exceeded" audit event
-    - Budget alert webhook fires at configured threshold
-    - Scope escalation attempt logged with "scope.escalation_denied"
-
   .pattern('pipeline')
   .channel('wf-relayauth-058')
   .maxConcurrency(3)
@@ -39,11 +29,6 @@ const result = await workflow('058-audit-e2e')
     preset: 'lead',
     role: 'Design E2E test scenarios, fix failures',
     Test scenarios:
-    - Audit entry includes full sponsorChain
-    - Budget breach generates "budget.exceeded" audit event
-    - Budget alert webhook fires at configured threshold
-    - Scope escalation attempt logged with "scope.escalation_denied"
-
     cwd: ROOT,
   })
   .agent('test-writer', {
@@ -51,11 +36,6 @@ const result = await workflow('058-audit-e2e')
     preset: 'worker',
     role: 'Write E2E test file',
     Test scenarios:
-    - Audit entry includes full sponsorChain
-    - Budget breach generates "budget.exceeded" audit event
-    - Budget alert webhook fires at configured threshold
-    - Scope escalation attempt logged with "scope.escalation_denied"
-
     cwd: ROOT,
   })
   .agent('reviewer', {
@@ -63,11 +43,6 @@ const result = await workflow('058-audit-e2e')
     preset: 'reviewer',
     role: 'Review E2E coverage and results',
     Test scenarios:
-    - Audit entry includes full sponsorChain
-    - Budget breach generates "budget.exceeded" audit event
-    - Budget alert webhook fires at configured threshold
-    - Scope escalation attempt logged with "scope.escalation_denied"
-
     cwd: ROOT,
   })
 
@@ -196,11 +171,6 @@ cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/e2e/audit.t
 
 console.log(`\n058 Audit E2E: ${result.status}`);
     Test scenarios:
-    - Audit entry includes full sponsorChain
-    - Budget breach generates "budget.exceeded" audit event
-    - Budget alert webhook fires at configured threshold
-    - Scope escalation attempt logged with "scope.escalation_denied"
-
 }
 
 main().catch(console.error);

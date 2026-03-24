@@ -1,19 +1,11 @@
 /**
  * 031-scope-parser.ts
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
-    - Parse delegation constraints in scope format
-    - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
-
  *
  * Domain 4: Scopes & RBAC
  * Parse scope strings, validate format, wildcard matching
  *
  * Depends on: 004
  * Run: agent-relay run workflows/031-scope-parser.ts
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
-    - Parse delegation constraints in scope format
-    - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
-
  */
 
 import { workflow } from '@agent-relay/sdk/workflows';
@@ -24,10 +16,6 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 
 async function main() {
 const result = await workflow('031-scope-parser')
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
-    - Parse delegation constraints in scope format
-    - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
-
   .description('Parse scope strings, validate format, wildcard matching')
   .pattern('dag')
   .channel('wf-relayauth-031')
@@ -38,40 +26,24 @@ const result = await workflow('031-scope-parser')
     cli: 'claude',
     preset: 'lead',
     role: 'Design scope parser, review output, fix issues',
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
-    - Parse delegation constraints in scope format
-    - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
-
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write tests for scope parser',
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
-    - Parse delegation constraints in scope format
-    - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
-
     cwd: ROOT,
   })
   .agent('implementer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Implement scope parser',
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
-    - Parse delegation constraints in scope format
-    - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
-
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review scope parser for correctness, edge cases, spec compliance',
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
-    - Parse delegation constraints in scope format
-    - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
-
     cwd: ROOT,
   })
 
@@ -79,7 +51,7 @@ const result = await workflow('031-scope-parser')
 
   .step('read-scope-spec', {
     type: 'deterministic',
-    command: `cat ${ROOT}/specs/scope-format-spec.md`,
+    command: `cat ${ROOT}/specs/scope-format.md`,
     captureOutput: true,
   })
 
@@ -105,7 +77,7 @@ const result = await workflow('031-scope-parser')
     agent: 'test-writer',
     dependsOn: ['read-scope-spec', 'read-scope-types', 'read-sdk-scopes', 'read-test-helpers'],
     task: `Write tests for the scope parser module.
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
+    - Parse scopes with path constraints: "relayfile:fs:read:/docs/*"
     - Parse delegation constraints in scope format
     - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
 
@@ -120,7 +92,7 @@ Existing SDK scopes file:
 {{steps.read-sdk-scopes.output}}
 
 Write failing tests to ${ROOT}/packages/sdk/src/__tests__/scope-parser.test.ts.
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
+    - Parse scopes with path constraints: "relayfile:fs:read:/docs/*"
     - Parse delegation constraints in scope format
     - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
 
@@ -144,10 +116,6 @@ Test these behaviors:
     type: 'deterministic',
     dependsOn: ['write-tests'],
     command: `test -f ${ROOT}/packages/sdk/src/__tests__/scope-parser.test.ts && echo "OK" || echo "MISSING"`,
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
-    - Parse delegation constraints in scope format
-    - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
-
     captureOutput: true,
   })
 
@@ -157,7 +125,7 @@ Test these behaviors:
     agent: 'implementer',
     dependsOn: ['verify-tests-exist', 'read-scope-spec', 'read-scope-types'],
     task: `Implement the scope parser to make the tests pass.
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
+    - Parse scopes with path constraints: "relayfile:fs:read:/docs/*"
     - Parse delegation constraints in scope format
     - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
 
@@ -172,7 +140,7 @@ Tests to pass:
 {{steps.write-tests.output}}
 
 Write to ${ROOT}/packages/sdk/src/scope-parser.ts:
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
+    - Parse scopes with path constraints: "relayfile:fs:read:/docs/*"
     - Parse delegation constraints in scope format
     - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
 
@@ -192,10 +160,6 @@ Export from ${ROOT}/packages/sdk/src/index.ts.`,
     type: 'deterministic',
     dependsOn: ['implement'],
     command: `test -f ${ROOT}/packages/sdk/src/scope-parser.ts && echo "impl OK" || echo "impl MISSING"`,
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
-    - Parse delegation constraints in scope format
-    - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
-
     captureOutput: true,
     failOnError: false,
   })
@@ -206,10 +170,6 @@ Export from ${ROOT}/packages/sdk/src/index.ts.`,
     type: 'deterministic',
     dependsOn: ['verify-files'],
     command: `cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/scope-parser.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
-    - Parse delegation constraints in scope format
-    - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
-
     captureOutput: true,
     failOnError: false,
   })
@@ -226,7 +186,7 @@ Export from ${ROOT}/packages/sdk/src/index.ts.`,
     agent: 'reviewer',
     dependsOn: ['run-tests', 'typecheck'],
     task: `Review the scope parser implementation.
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
+    - Parse scopes with path constraints: "relayfile:fs:read:/docs/*"
     - Parse delegation constraints in scope format
     - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
 
@@ -264,10 +224,6 @@ Typecheck results:
 
 Fix all issues. Then run:
 cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/scope-parser.test.ts && npx turbo typecheck`,
-    - Parse budget-scoped values: "stripe:orders:approve:≤$5000"
-    - Parse delegation constraints in scope format
-    - isSubsetOf(parentScopes, childScopes): verify child is narrower than parent
-
     verification: { type: 'exit_code' },
   })
 

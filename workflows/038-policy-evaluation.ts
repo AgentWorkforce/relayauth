@@ -1,19 +1,11 @@
 /**
  * 038-policy-evaluation.ts
-    - Budget enforcement in policy evaluation pipeline
-    - Budget exceeded → automatic deny + audit event "budget.exceeded"
-    - Budget approaching threshold → audit event "budget.alert"
-
  *
  * Domain 4: Scopes & RBAC
  * Evaluate policies: merge scopes + roles + policies → effective permissions
  *
  * Depends on: 037, 036
  * Run: agent-relay run workflows/038-policy-evaluation.ts
-    - Budget enforcement in policy evaluation pipeline
-    - Budget exceeded → automatic deny + audit event "budget.exceeded"
-    - Budget approaching threshold → audit event "budget.alert"
-
  */
 
 import { workflow } from '@agent-relay/sdk/workflows';
@@ -24,10 +16,6 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 
 async function main() {
 const result = await workflow('038-policy-evaluation')
-    - Budget enforcement in policy evaluation pipeline
-    - Budget exceeded → automatic deny + audit event "budget.exceeded"
-    - Budget approaching threshold → audit event "budget.alert"
-
   .description('Evaluate policies: merge scopes + roles + policies → effective permissions')
   .pattern('dag')
   .channel('wf-relayauth-038')
@@ -38,40 +26,24 @@ const result = await workflow('038-policy-evaluation')
     cli: 'claude',
     preset: 'lead',
     role: 'Design policy evaluation engine, review output, fix issues',
-    - Budget enforcement in policy evaluation pipeline
-    - Budget exceeded → automatic deny + audit event "budget.exceeded"
-    - Budget approaching threshold → audit event "budget.alert"
-
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write tests for policy evaluation',
-    - Budget enforcement in policy evaluation pipeline
-    - Budget exceeded → automatic deny + audit event "budget.exceeded"
-    - Budget approaching threshold → audit event "budget.alert"
-
     cwd: ROOT,
   })
   .agent('implementer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Implement policy evaluation engine',
-    - Budget enforcement in policy evaluation pipeline
-    - Budget exceeded → automatic deny + audit event "budget.exceeded"
-    - Budget approaching threshold → audit event "budget.alert"
-
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review policy evaluation for correctness and security',
-    - Budget enforcement in policy evaluation pipeline
-    - Budget exceeded → automatic deny + audit event "budget.exceeded"
-    - Budget approaching threshold → audit event "budget.alert"
-
     cwd: ROOT,
   })
 
@@ -171,10 +143,6 @@ Test these behaviors:
     type: 'deterministic',
     dependsOn: ['write-tests'],
     command: `test -f ${ROOT}/packages/server/src/__tests__/policy-evaluation.test.ts && echo "OK" || echo "MISSING"`,
-    - Budget enforcement in policy evaluation pipeline
-    - Budget exceeded → automatic deny + audit event "budget.exceeded"
-    - Budget approaching threshold → audit event "budget.alert"
-
     captureOutput: true,
   })
 
@@ -236,10 +204,6 @@ Algorithm:
     type: 'deterministic',
     dependsOn: ['implement'],
     command: `test -f ${ROOT}/packages/server/src/engine/policy-evaluation.ts && echo "impl OK" || echo "impl MISSING"`,
-    - Budget enforcement in policy evaluation pipeline
-    - Budget exceeded → automatic deny + audit event "budget.exceeded"
-    - Budget approaching threshold → audit event "budget.alert"
-
     captureOutput: true,
     failOnError: false,
   })
@@ -250,10 +214,6 @@ Algorithm:
     type: 'deterministic',
     dependsOn: ['verify-files'],
     command: `cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/policy-evaluation.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
-    - Budget enforcement in policy evaluation pipeline
-    - Budget exceeded → automatic deny + audit event "budget.exceeded"
-    - Budget approaching threshold → audit event "budget.alert"
-
     captureOutput: true,
     failOnError: false,
   })
@@ -309,10 +269,6 @@ Typecheck results:
 
 Fix all issues. Then run:
 cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/policy-evaluation.test.ts && npx turbo typecheck`,
-    - Budget enforcement in policy evaluation pipeline
-    - Budget exceeded → automatic deny + audit event "budget.exceeded"
-    - Budget approaching threshold → audit event "budget.alert"
-
     verification: { type: 'exit_code' },
   })
 

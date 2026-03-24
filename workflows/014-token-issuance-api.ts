@@ -3,12 +3,6 @@
  *
  * Domain 2: Token System
  * POST /v1/tokens — issue access + refresh token pair
-    - sponsor field is REQUIRED — every token traces to a human
-    - parentTokenId: if present, new token scopes MUST be subset of parent (scope narrowing)
-    - Attempting scope escalation returns 403 + audit event
-    - Default TTL: access=1h, refresh=24h, max=30 days. No permanent tokens.
-    - budget field: { maxActionsPerHour, maxCostPerDay, alertThreshold, autoSuspend }
-
  *
  * Depends on: 011
  * Run: agent-relay run workflows/014-token-issuance-api.ts
@@ -23,12 +17,6 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 async function main() {
 const result = await workflow('014-token-issuance-api')
   .description('POST /v1/tokens — issue access + refresh token pair')
-    - sponsor field is REQUIRED — every token traces to a human
-    - parentTokenId: if present, new token scopes MUST be subset of parent (scope narrowing)
-    - Attempting scope escalation returns 403 + audit event
-    - Default TTL: access=1h, refresh=24h, max=30 days. No permanent tokens.
-    - budget field: { maxActionsPerHour, maxCostPerDay, alertThreshold, autoSuspend }
-
   .pattern('dag')
   .channel('wf-relayauth-014')
   .maxConcurrency(4)

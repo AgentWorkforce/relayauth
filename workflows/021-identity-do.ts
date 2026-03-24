@@ -3,12 +3,6 @@
  *
  * Domain 3: Identity Lifecycle
  * IdentityDO durable object — per-agent state
-    - sponsorId (required): human user ID who authorized this agent
-    - sponsorChain: full delegation chain [human, parentAgent, thisAgent]
-    - budget: { maxActionsPerHour, maxCostPerDay, alertThreshold, autoSuspend }
-    - budgetUsage: { actionsThisHour, costToday, lastResetAt } — tracked in DO storage
-    - Auto-suspend: when budget exceeded, identity status → suspended + audit event
-
  *
  * Depends on: 001
  * Run: agent-relay run workflows/021-identity-do.ts
@@ -23,12 +17,6 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 async function main() {
 const result = await workflow('021-identity-do')
   .description('IdentityDO durable object — per-agent state storage')
-    - sponsorId (required): human user ID who authorized this agent
-    - sponsorChain: full delegation chain [human, parentAgent, thisAgent]
-    - budget: { maxActionsPerHour, maxCostPerDay, alertThreshold, autoSuspend }
-    - budgetUsage: { actionsThisHour, costToday, lastResetAt } — tracked in DO storage
-    - Auto-suspend: when budget exceeded, identity status → suspended + audit event
-
   .pattern('dag')
   .channel('wf-relayauth-021')
   .maxConcurrency(4)
@@ -38,48 +26,24 @@ const result = await workflow('021-identity-do')
     cli: 'claude',
     preset: 'lead',
     role: 'Design IdentityDO durable object, review output, fix issues',
-    - sponsorId (required): human user ID who authorized this agent
-    - sponsorChain: full delegation chain [human, parentAgent, thisAgent]
-    - budget: { maxActionsPerHour, maxCostPerDay, alertThreshold, autoSuspend }
-    - budgetUsage: { actionsThisHour, costToday, lastResetAt } — tracked in DO storage
-    - Auto-suspend: when budget exceeded, identity status → suspended + audit event
-
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write tests for IdentityDO durable object',
-    - sponsorId (required): human user ID who authorized this agent
-    - sponsorChain: full delegation chain [human, parentAgent, thisAgent]
-    - budget: { maxActionsPerHour, maxCostPerDay, alertThreshold, autoSuspend }
-    - budgetUsage: { actionsThisHour, costToday, lastResetAt } — tracked in DO storage
-    - Auto-suspend: when budget exceeded, identity status → suspended + audit event
-
     cwd: ROOT,
   })
   .agent('implementer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Implement IdentityDO durable object',
-    - sponsorId (required): human user ID who authorized this agent
-    - sponsorChain: full delegation chain [human, parentAgent, thisAgent]
-    - budget: { maxActionsPerHour, maxCostPerDay, alertThreshold, autoSuspend }
-    - budgetUsage: { actionsThisHour, costToday, lastResetAt } — tracked in DO storage
-    - Auto-suspend: when budget exceeded, identity status → suspended + audit event
-
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review IdentityDO for quality, consistency, spec compliance',
-    - sponsorId (required): human user ID who authorized this agent
-    - sponsorChain: full delegation chain [human, parentAgent, thisAgent]
-    - budget: { maxActionsPerHour, maxCostPerDay, alertThreshold, autoSuspend }
-    - budgetUsage: { actionsThisHour, costToday, lastResetAt } — tracked in DO storage
-    - Auto-suspend: when budget exceeded, identity status → suspended + audit event
-
     cwd: ROOT,
   })
 

@@ -4,12 +4,6 @@
  * Domain 3: Identity Lifecycle
  * E2E: create -> update -> suspend -> reactivate -> retire
     Test scenarios for new concepts:
-    - Create identity with sponsor → verify sponsor in response
-    - Create sub-agent → verify sponsorChain includes parent
-    - Set budget { maxActionsPerHour: 5 } → perform 6 actions → verify auto-suspend
-    - Suspend parent → verify sub-agents also suspended
-    - Attempt create identity without sponsor → verify 400 error
-
  *
  * Depends on: 021, 022, 023, 024, 025, 026, 027, 028, 029
  * Run: agent-relay run workflows/030-identity-lifecycle-e2e.ts
@@ -25,12 +19,6 @@ async function main() {
 const result = await workflow('030-identity-lifecycle-e2e')
   .description('Identity Lifecycle E2E tests')
     Test scenarios for new concepts:
-    - Create identity with sponsor → verify sponsor in response
-    - Create sub-agent → verify sponsorChain includes parent
-    - Set budget { maxActionsPerHour: 5 } → perform 6 actions → verify auto-suspend
-    - Suspend parent → verify sub-agents also suspended
-    - Attempt create identity without sponsor → verify 400 error
-
   .pattern('pipeline')
   .channel('wf-relayauth-030')
   .maxConcurrency(3)
@@ -41,12 +29,6 @@ const result = await workflow('030-identity-lifecycle-e2e')
     preset: 'lead',
     role: 'Design E2E test scenarios, fix failures',
     Test scenarios for new concepts:
-    - Create identity with sponsor → verify sponsor in response
-    - Create sub-agent → verify sponsorChain includes parent
-    - Set budget { maxActionsPerHour: 5 } → perform 6 actions → verify auto-suspend
-    - Suspend parent → verify sub-agents also suspended
-    - Attempt create identity without sponsor → verify 400 error
-
     cwd: ROOT,
   })
   .agent('test-writer', {
@@ -54,12 +36,6 @@ const result = await workflow('030-identity-lifecycle-e2e')
     preset: 'worker',
     role: 'Write E2E test file',
     Test scenarios for new concepts:
-    - Create identity with sponsor → verify sponsor in response
-    - Create sub-agent → verify sponsorChain includes parent
-    - Set budget { maxActionsPerHour: 5 } → perform 6 actions → verify auto-suspend
-    - Suspend parent → verify sub-agents also suspended
-    - Attempt create identity without sponsor → verify 400 error
-
     cwd: ROOT,
   })
   .agent('reviewer', {
@@ -67,12 +43,6 @@ const result = await workflow('030-identity-lifecycle-e2e')
     preset: 'reviewer',
     role: 'Review E2E coverage and results',
     Test scenarios for new concepts:
-    - Create identity with sponsor → verify sponsor in response
-    - Create sub-agent → verify sponsorChain includes parent
-    - Set budget { maxActionsPerHour: 5 } → perform 6 actions → verify auto-suspend
-    - Suspend parent → verify sub-agents also suspended
-    - Attempt create identity without sponsor → verify 400 error
-
     cwd: ROOT,
   })
 
@@ -202,12 +172,6 @@ cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/e2e/identit
 
 console.log(`\n030 Identity Lifecycle E2E: ${result.status}`);
     Test scenarios for new concepts:
-    - Create identity with sponsor → verify sponsor in response
-    - Create sub-agent → verify sponsorChain includes parent
-    - Set budget { maxActionsPerHour: 5 } → perform 6 actions → verify auto-suspend
-    - Suspend parent → verify sub-agents also suspended
-    - Attempt create identity without sponsor → verify 400 error
-
 }
 
 main().catch(console.error);

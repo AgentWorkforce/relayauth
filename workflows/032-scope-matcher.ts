@@ -1,17 +1,11 @@
 /**
  * 032-scope-matcher.ts
-    - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
-    - Scope escalation detection: if requested scope is broader than parent → error
-
  *
  * Domain 4: Scopes & RBAC
  * Match requested scope against granted scopes (with wildcards/paths)
  *
  * Depends on: 031
  * Run: agent-relay run workflows/032-scope-matcher.ts
-    - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
-    - Scope escalation detection: if requested scope is broader than parent → error
-
  */
 
 import { workflow } from '@agent-relay/sdk/workflows';
@@ -22,9 +16,6 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 
 async function main() {
 const result = await workflow('032-scope-matcher')
-    - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
-    - Scope escalation detection: if requested scope is broader than parent → error
-
   .description('Match requested scope against granted scopes (with wildcards/paths)')
   .pattern('dag')
   .channel('wf-relayauth-032')
@@ -35,36 +26,24 @@ const result = await workflow('032-scope-matcher')
     cli: 'claude',
     preset: 'lead',
     role: 'Design scope matcher algorithm, review output, fix issues',
-    - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
-    - Scope escalation detection: if requested scope is broader than parent → error
-
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write tests for scope matcher',
-    - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
-    - Scope escalation detection: if requested scope is broader than parent → error
-
     cwd: ROOT,
   })
   .agent('implementer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Implement scope matcher',
-    - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
-    - Scope escalation detection: if requested scope is broader than parent → error
-
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review scope matcher for correctness and security',
-    - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
-    - Scope escalation detection: if requested scope is broader than parent → error
-
     cwd: ROOT,
   })
 
@@ -72,7 +51,7 @@ const result = await workflow('032-scope-matcher')
 
   .step('read-scope-spec', {
     type: 'deterministic',
-    command: `cat ${ROOT}/specs/scope-format-spec.md`,
+    command: `cat ${ROOT}/specs/scope-format.md`,
     captureOutput: true,
   })
 
@@ -129,9 +108,6 @@ Test these behaviors:
     type: 'deterministic',
     dependsOn: ['write-tests'],
     command: `test -f ${ROOT}/packages/sdk/src/__tests__/scope-matcher.test.ts && echo "OK" || echo "MISSING"`,
-    - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
-    - Scope escalation detection: if requested scope is broader than parent → error
-
     captureOutput: true,
   })
 
@@ -174,9 +150,6 @@ Export from ${ROOT}/packages/sdk/src/index.ts.`,
     type: 'deterministic',
     dependsOn: ['implement'],
     command: `test -f ${ROOT}/packages/sdk/src/scope-matcher.ts && echo "impl OK" || echo "impl MISSING"`,
-    - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
-    - Scope escalation detection: if requested scope is broader than parent → error
-
     captureOutput: true,
     failOnError: false,
   })
@@ -187,9 +160,6 @@ Export from ${ROOT}/packages/sdk/src/index.ts.`,
     type: 'deterministic',
     dependsOn: ['verify-files'],
     command: `cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/scope-matcher.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
-    - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
-    - Scope escalation detection: if requested scope is broader than parent → error
-
     captureOutput: true,
     failOnError: false,
   })
@@ -246,9 +216,6 @@ Typecheck results:
 
 Fix all issues. Then run:
 cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/scope-matcher.test.ts && npx turbo typecheck`,
-    - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
-    - Scope escalation detection: if requested scope is broader than parent → error
-
     verification: { type: 'exit_code' },
   })
 

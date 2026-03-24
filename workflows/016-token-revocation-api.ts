@@ -3,9 +3,6 @@
  *
  * Domain 2: Token System
  * POST /v1/tokens/revoke — revoke token, propagate to KV
-    - Revocation CASCADES to all sub-agent tokens (via parentTokenId chain)
-    - When parent is revoked, all children are revoked in the same KV write
-
  *
  * Depends on: 014
  * Run: agent-relay run workflows/016-token-revocation-api.ts
@@ -20,9 +17,6 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 async function main() {
 const result = await workflow('016-token-revocation-api')
   .description('POST /v1/tokens/revoke — revoke token, propagate to KV')
-    - Revocation CASCADES to all sub-agent tokens (via parentTokenId chain)
-    - When parent is revoked, all children are revoked in the same KV write
-
   .pattern('dag')
   .channel('wf-relayauth-016')
   .maxConcurrency(4)
@@ -122,9 +116,6 @@ Test these behaviors:
 8. Revoke propagates to KV with metadata (revokedAt, reason)
 9. Revoke with optional reason field
 10. Revoking a session (by sid) revokes all tokens in that session`,
-    - Revocation CASCADES to all sub-agent tokens (via parentTokenId chain)
-    - When parent is revoked, all children are revoked in the same KV write
-
     verification: { type: 'exit_code' },
   })
 

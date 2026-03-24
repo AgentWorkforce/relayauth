@@ -143,7 +143,14 @@ List issues.`,
 Reviewer feedback:
 {{steps.review.output}}
 
-Address all feedback. Update files in ${ROOT}/docs/guides/.`,
+Read each issue from the reviewer feedback above. For each one:
+1. Open the file mentioned
+2. Make the specific fix described
+3. Save the file
+
+After all fixes, verify by reading the file again to confirm changes were applied.
+
+Update files in ${ROOT}/docs/guides/.`,
     verification: { type: 'exit_code' },
   })
 

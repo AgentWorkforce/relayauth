@@ -1,0 +1,2622 @@
+openapi: 3.1.0
+info:
+  title: relayauth API
+  version: 1.0.0
+  summary: Identity and authorization plane for the Agent Relay ecosystem.
+  description: |-
+    relayauth issues JWTs, manages identities, evaluates roles and policies,
+    enforces scoped access, and exposes audit and admin APIs for the Agent Relay ecosystem.
+license:
+  name: UNLICENSED
+servers:
+  - url: http://localhost:8787
+    description: Local development
+  - url: https://api.relayauth.dev
+    description: Production
+tags:
+  - name: Health
+  - name: Tokens
+  - name: JWKS
+  - name: Identities
+  - name: Scopes
+  - name: Roles
+  - name: Policies
+  - name: Audit
+  - name: API Keys
+  - name: Admin
+security:
+  - BearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Public health endpoint for local and hosted deployments.
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: Service health status
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/health:
+    get:
+      tags: [Health]
+      summary: Versioned health check
+      description: Public health endpoint under the versioned API namespace.
+      operationId: getVersionedHealth
+      security: []
+      responses:
+        "200":
+          description: Service health status
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /.well-known/jwks.json:
+    get:
+      tags: [JWKS]
+      summary: Get JSON Web Key Set
+      description: Public signing keys for offline JWT validation.
+      operationId: getJwks
+      security: []
+      responses:
+        "200":
+          description: JSON Web Key Set
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JWKSResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/tokens:
+    post:
+      tags: [Tokens]
+      summary: Issue token pair
+      description: Issue a new access and refresh token pair for an identity.
+      operationId: createToken
+      x-required-scopes: [relayauth:token:create]
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XWorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTokenRequest"
+      responses:
+        "201":
+          description: Token pair created
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/tokens/refresh:
+    post:
+      tags: [Tokens]
+      summary: Refresh token pair
+      description: Exchange a refresh token for a new token pair.
+      operationId: refreshToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshTokenRequest"
+      responses:
+        "200":
+          description: Refreshed token pair
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/tokens/revoke:
+    post:
+      tags: [Tokens]
+      summary: Revoke token or identity tokens
+      description: Revoke a specific token, a session, or all tokens for an identity.
+      operationId: revokeToken
+      x-required-scopes: [relayauth:token:manage]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokeTokenRequest"
+      responses:
+        "204":
+          description: Token(s) revoked
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/tokens/validate:
+    post:
+      tags: [Tokens]
+      summary: Validate token
+      description: Validate and introspect a token, optionally checking required scopes.
+      operationId: validateToken
+      x-required-scopes: [relayauth:token:read]
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateTokenRequest"
+      responses:
+        "200":
+          description: Token validation result
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidateTokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/tokens/{identityId}:
+    get:
+      tags: [Tokens]
+      summary: List active tokens for identity
+      description: List active token metadata for an identity without returning raw JWTs.
+      operationId: listIdentityTokens
+      x-required-scopes: [relayauth:token:read]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Active tokens
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedTokenMetadataResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/identities:
+    post:
+      tags: [Identities]
+      summary: Create identity
+      description: Create a new agent, human, or service identity.
+      operationId: createIdentity
+      x-required-scopes: [relayauth:identity:manage]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateIdentityRequest"
+      responses:
+        "201":
+          description: Identity created
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentIdentity"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    get:
+      tags: [Identities]
+      summary: List identities
+      description: List identities with optional filters for status, type, and workspace.
+      operationId: listIdentities
+      x-required-scopes: [relayauth:identity:read]
+      parameters:
+        - in: query
+          name: status
+          schema:
+            $ref: "#/components/schemas/IdentityStatus"
+        - in: query
+          name: type
+          schema:
+            $ref: "#/components/schemas/IdentityType"
+        - in: query
+          name: workspaceId
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Identities page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedIdentityResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/identities/{identityId}:
+    get:
+      tags: [Identities]
+      summary: Get identity
+      description: Retrieve a single identity by ID.
+      operationId: getIdentity
+      x-required-scopes: [relayauth:identity:read]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+      responses:
+        "200":
+          description: Identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentIdentity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    patch:
+      tags: [Identities]
+      summary: Update identity
+      description: Update mutable fields on an identity.
+      operationId: updateIdentity
+      x-required-scopes: [relayauth:identity:manage]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateIdentityRequest"
+      responses:
+        "200":
+          description: Updated identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentIdentity"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [Identities]
+      summary: Delete identity
+      description: Hard delete intended only for identities without durable audit history.
+      operationId: deleteIdentity
+      x-required-scopes: [relayauth:identity:manage]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+      responses:
+        "204":
+          description: Identity deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/identities/{identityId}/suspend:
+    post:
+      tags: [Identities]
+      summary: Suspend identity
+      description: Temporarily deactivate an identity. Can be reactivated later.
+      operationId: suspendIdentity
+      x-required-scopes: [relayauth:identity:manage]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SuspendIdentityRequest"
+      responses:
+        "200":
+          description: Suspended identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentIdentity"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/identities/{identityId}/reactivate:
+    post:
+      tags: [Identities]
+      summary: Reactivate identity
+      description: Reactivate a suspended identity. Retired identities cannot be reactivated.
+      operationId: reactivateIdentity
+      x-required-scopes: [relayauth:identity:manage]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+      responses:
+        "200":
+          description: Reactivated identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentIdentity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/identities/{identityId}/retire:
+    post:
+      tags: [Identities]
+      summary: Retire identity
+      description: Permanently deactivate an identity and revoke all active tokens.
+      operationId: retireIdentity
+      x-required-scopes: [relayauth:identity:manage]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+      responses:
+        "200":
+          description: Retired identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentIdentity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/identities/{identityId}/sub-agents:
+    post:
+      tags: [Identities]
+      summary: Create sub-agent
+      description: Create a child identity with scopes intersected against the parent identity.
+      operationId: createSubAgent
+      x-required-scopes: [relayauth:identity:manage]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSubAgentRequest"
+      responses:
+        "201":
+          description: Sub-agent created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateSubAgentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    get:
+      tags: [Identities]
+      summary: List sub-agents
+      description: List child identities of a parent identity.
+      operationId: listSubAgents
+      x-required-scopes: [relayauth:identity:read]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Sub-agent page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedIdentityResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/identities/{identityId}/budget:
+    get:
+      tags: [Identities]
+      summary: Get behavioral budget
+      operationId: getIdentityBudget
+      x-required-scopes: [relayauth:identity:read]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+      responses:
+        "200":
+          description: Budget state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BudgetResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    put:
+      tags: [Identities]
+      summary: Set behavioral budget
+      operationId: setIdentityBudget
+      x-required-scopes: [relayauth:identity:manage]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetBudgetRequest"
+      responses:
+        "200":
+          description: Updated budget state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BudgetResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/scopes/validate:
+    post:
+      tags: [Scopes]
+      summary: Validate scope string
+      operationId: validateScope
+      x-required-scopes: [relayauth:scope:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateScopeRequest"
+      responses:
+        "200":
+          description: Parsed scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParsedScope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/scopes/templates:
+    get:
+      tags: [Scopes]
+      summary: List scope templates
+      operationId: listScopeTemplates
+      x-required-scopes: [relayauth:scope:read]
+      responses:
+        "200":
+          description: Predefined scope templates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScopeTemplatesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/scopes/check:
+    post:
+      tags: [Scopes]
+      summary: Check effective scope access
+      operationId: checkScope
+      x-required-scopes: [relayauth:scope:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckScopeRequest"
+      responses:
+        "200":
+          description: Scope access result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckScopeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/roles:
+    post:
+      tags: [Roles]
+      summary: Create role
+      operationId: createRole
+      x-required-scopes: [relayauth:role:manage]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRoleRequest"
+      responses:
+        "201":
+          description: Role created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    get:
+      tags: [Roles]
+      summary: List roles
+      operationId: listRoles
+      x-required-scopes: [relayauth:role:read]
+      parameters:
+        - in: query
+          name: workspaceId
+          schema:
+            type: string
+        - in: query
+          name: builtIn
+          schema:
+            type: boolean
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Role page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedRoleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/roles/{roleId}:
+    get:
+      tags: [Roles]
+      summary: Get role
+      operationId: getRole
+      x-required-scopes: [relayauth:role:read]
+      parameters:
+        - $ref: "#/components/parameters/RoleId"
+      responses:
+        "200":
+          description: Role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    patch:
+      tags: [Roles]
+      summary: Update role
+      description: Built-in roles cannot be modified.
+      operationId: updateRole
+      x-required-scopes: [relayauth:role:manage]
+      parameters:
+        - $ref: "#/components/parameters/RoleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRoleRequest"
+      responses:
+        "200":
+          description: Updated role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [Roles]
+      summary: Delete role
+      operationId: deleteRole
+      x-required-scopes: [relayauth:role:manage]
+      parameters:
+        - $ref: "#/components/parameters/RoleId"
+      responses:
+        "204":
+          description: Role deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/roles/{roleId}/assign:
+    post:
+      tags: [Roles]
+      summary: Assign role
+      operationId: assignRole
+      x-required-scopes: [relayauth:role:manage]
+      parameters:
+        - $ref: "#/components/parameters/RoleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignRoleRequest"
+      responses:
+        "204":
+          description: Role assigned
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/roles/{roleId}/unassign:
+    post:
+      tags: [Roles]
+      summary: Unassign role
+      operationId: unassignRole
+      x-required-scopes: [relayauth:role:manage]
+      parameters:
+        - $ref: "#/components/parameters/RoleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnassignRoleRequest"
+      responses:
+        "204":
+          description: Role unassigned
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/policies:
+    post:
+      tags: [Policies]
+      summary: Create policy
+      operationId: createPolicy
+      x-required-scopes: [relayauth:policy:manage]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePolicyRequest"
+      responses:
+        "201":
+          description: Policy created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    get:
+      tags: [Policies]
+      summary: List policies
+      operationId: listPolicies
+      x-required-scopes: [relayauth:policy:read]
+      parameters:
+        - in: query
+          name: workspaceId
+          schema:
+            type: string
+        - in: query
+          name: effect
+          schema:
+            $ref: "#/components/schemas/PolicyEffect"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Policy page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedPolicyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/policies/{policyId}:
+    get:
+      tags: [Policies]
+      summary: Get policy
+      operationId: getPolicy
+      x-required-scopes: [relayauth:policy:read]
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "200":
+          description: Policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    patch:
+      tags: [Policies]
+      summary: Update policy
+      operationId: updatePolicy
+      x-required-scopes: [relayauth:policy:manage]
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePolicyRequest"
+      responses:
+        "200":
+          description: Updated policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [Policies]
+      summary: Delete policy
+      operationId: deletePolicy
+      x-required-scopes: [relayauth:policy:manage]
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "204":
+          description: Policy deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/policies/evaluate:
+    post:
+      tags: [Policies]
+      summary: Evaluate policy
+      operationId: evaluatePolicy
+      x-required-scopes: [relayauth:policy:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EvaluatePolicyRequest"
+      responses:
+        "200":
+          description: Policy evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluatePolicyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/audit:
+    get:
+      tags: [Audit]
+      summary: Query audit log
+      operationId: queryAudit
+      x-required-scopes: [relayauth:audit:read]
+      parameters:
+        - in: query
+          name: identityId
+          schema:
+            type: string
+        - in: query
+          name: action
+          schema:
+            $ref: "#/components/schemas/AuditAction"
+        - in: query
+          name: orgId
+          schema:
+            type: string
+        - in: query
+          name: workspaceId
+          schema:
+            type: string
+        - in: query
+          name: plane
+          schema:
+            type: string
+        - in: query
+          name: result
+          schema:
+            $ref: "#/components/schemas/AuditQueryResult"
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date-time
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Audit entry page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedAuditResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/audit/{entryId}:
+    get:
+      tags: [Audit]
+      summary: Get audit entry
+      operationId: getAuditEntry
+      x-required-scopes: [relayauth:audit:read]
+      parameters:
+        - $ref: "#/components/parameters/EntryId"
+      responses:
+        "200":
+          description: Audit entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/audit/sponsor-chain/{identityId}:
+    get:
+      tags: [Audit]
+      summary: Trace sponsor chain
+      operationId: getSponsorChain
+      x-required-scopes: [relayauth:audit:read]
+      parameters:
+        - $ref: "#/components/parameters/IdentityId"
+      responses:
+        "200":
+          description: Sponsor chain for identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SponsorChainResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/audit/export:
+    post:
+      tags: [Audit]
+      summary: Export audit log
+      operationId: exportAudit
+      x-required-scopes: [relayauth:audit:manage]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExportAuditRequest"
+      responses:
+        "202":
+          description: Export started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportAuditResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/audit/exports/{exportId}:
+    get:
+      tags: [Audit]
+      summary: Get audit export status
+      operationId: getAuditExport
+      x-required-scopes: [relayauth:audit:read]
+      parameters:
+        - $ref: "#/components/parameters/ExportId"
+      responses:
+        "200":
+          description: Export status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportAuditResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/api-keys:
+    post:
+      tags: [API Keys]
+      summary: Create organization API key
+      description: Create an API key for token issuance and other organization-scoped automation.
+      operationId: createApiKey
+      x-required-scopes: [relayauth:apikey:manage]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateApiKeyRequest"
+      responses:
+        "201":
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyCreateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    get:
+      tags: [API Keys]
+      summary: List organization API keys
+      description: List all API keys for the organization. Requires admin-level access.
+      operationId: listApiKeys
+      x-required-scopes: [relayauth:apikey:read]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Organization API keys
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedApiKeyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/api-keys/{apiKeyId}/revoke:
+    post:
+      tags: [API Keys]
+      summary: Revoke API key
+      operationId: revokeApiKey
+      x-required-scopes: [relayauth:apikey:manage]
+      parameters:
+        - $ref: "#/components/parameters/ApiKeyId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokeApiKeyRequest"
+      responses:
+        "200":
+          description: Revoked API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKey"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/admin/keys:
+    get:
+      tags: [Admin]
+      summary: List signing keys
+      operationId: listSigningKeys
+      x-required-scopes: [relayauth:admin:manage]
+      responses:
+        "200":
+          description: Signing keys
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListKeysResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/admin/keys/rotate:
+    post:
+      tags: [Admin]
+      summary: Rotate signing keys
+      operationId: rotateSigningKeys
+      x-required-scopes: [relayauth:admin:manage]
+      responses:
+        "200":
+          description: Signing keys rotated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateKeysResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /v1/admin/org:
+    get:
+      tags: [Admin]
+      summary: Get organization config
+      operationId: getOrgConfig
+      x-required-scopes: [relayauth:admin:read]
+      responses:
+        "200":
+          description: Organization configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgConfigResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    patch:
+      tags: [Admin]
+      summary: Update organization config
+      operationId: updateOrgConfig
+      x-required-scopes: [relayauth:admin:manage]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOrgConfigRequest"
+      responses:
+        "200":
+          description: Updated organization configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgConfigResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT issued by relayauth.
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Organization API key used for token issuance.
+  headers:
+    X-Request-Id:
+      description: Request identifier echoed or generated by the service.
+      schema:
+        type: string
+    X-RateLimit-Limit:
+      description: Max requests in the current rate limit window.
+      schema:
+        type: integer
+    X-RateLimit-Remaining:
+      description: Remaining requests in the current window.
+      schema:
+        type: integer
+    X-RateLimit-Reset:
+      description: UTC epoch second when the current rate limit window resets.
+      schema:
+        type: integer
+    Retry-After:
+      description: Seconds to wait before retrying after rate limit exhaustion.
+      schema:
+        type: integer
+  parameters:
+    Cursor:
+      in: query
+      name: cursor
+      schema:
+        type: string
+      description: Opaque pagination cursor.
+    Limit:
+      in: query
+      name: limit
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+      description: Number of items to return.
+    IdentityId:
+      in: path
+      name: identityId
+      required: true
+      schema:
+        type: string
+      description: Identity identifier.
+    RoleId:
+      in: path
+      name: roleId
+      required: true
+      schema:
+        type: string
+    PolicyId:
+      in: path
+      name: policyId
+      required: true
+      schema:
+        type: string
+    EntryId:
+      in: path
+      name: entryId
+      required: true
+      schema:
+        type: string
+    ExportId:
+      in: path
+      name: exportId
+      required: true
+      schema:
+        type: string
+    ApiKeyId:
+      in: path
+      name: apiKeyId
+      required: true
+      schema:
+        type: string
+    XWorkspaceId:
+      in: header
+      name: X-Workspace-Id
+      required: false
+      schema:
+        type: string
+      description: Optional workspace context override.
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Authentication failed or missing credentials
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Authenticated but not authorized
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: Resource state conflict
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TooManyRequests:
+      description: Rate limited
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/Retry-After"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalServerError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [type, title, status, code, message]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          example: https://relayauth.dev/errors/invalid-scope
+        title:
+          type: string
+          example: Invalid scope
+        status:
+          type: integer
+          example: 403
+        code:
+          type: string
+          example: invalid_scope
+        message:
+          type: string
+          example: Scope 'relayfile:fs:delete:*' is not granted to this identity.
+        details:
+          type: object
+          additionalProperties: true
+        requestId:
+          type: string
+    Pagination:
+      type: object
+      required: [hasMore]
+      properties:
+        cursor:
+          type: string
+          nullable: true
+        hasMore:
+          type: boolean
+        limit:
+          type: integer
+    RelayAuthTokenClaims:
+      type: object
+      required: [sub, org, wks, scopes, iss, aud, exp, iat, jti]
+      properties:
+        sub:
+          type: string
+        org:
+          type: string
+        wks:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        iss:
+          type: string
+        aud:
+          type: array
+          items:
+            type: string
+        exp:
+          type: integer
+        iat:
+          type: integer
+        jti:
+          type: string
+        sid:
+          type: string
+        meta:
+          type: object
+          additionalProperties:
+            type: string
+        sponsor:
+          type: string
+        sponsorChain:
+          type: array
+          items:
+            type: string
+        parentTokenId:
+          type: string
+        budget:
+          $ref: "#/components/schemas/TokenBudget"
+    TokenBudget:
+      type: object
+      properties:
+        maxActionsPerHour:
+          type: integer
+        remaining:
+          type: integer
+    TokenPair:
+      type: object
+      required:
+        - accessToken
+        - refreshToken
+        - accessTokenExpiresAt
+        - refreshTokenExpiresAt
+        - tokenType
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        accessTokenExpiresAt:
+          type: string
+          format: date-time
+        refreshTokenExpiresAt:
+          type: string
+          format: date-time
+        tokenType:
+          type: string
+          enum: [Bearer]
+    JWKSResponse:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/Jwk"
+    Jwk:
+      type: object
+      additionalProperties: true
+      properties:
+        kid:
+          type: string
+        kty:
+          type: string
+        alg:
+          type: string
+        use:
+          type: string
+        n:
+          type: string
+        e:
+          type: string
+        crv:
+          type: string
+        x:
+          type: string
+        y:
+          type: string
+    IdentityStatus:
+      type: string
+      enum: [active, suspended, retired]
+    IdentityType:
+      type: string
+      enum: [agent, human, service]
+    AgentIdentity:
+      type: object
+      required:
+        - id
+        - name
+        - type
+        - orgId
+        - status
+        - scopes
+        - roles
+        - metadata
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          $ref: "#/components/schemas/IdentityType"
+        orgId:
+          type: string
+        workspaceId:
+          type: string
+        status:
+          $ref: "#/components/schemas/IdentityStatus"
+        scopes:
+          type: array
+          items:
+            type: string
+        roles:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        sponsorId:
+          type: string
+        sponsorChain:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        lastActiveAt:
+          type: string
+          format: date-time
+        suspendedAt:
+          type: string
+          format: date-time
+        suspendReason:
+          type: string
+    CreateIdentityInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        type:
+          $ref: "#/components/schemas/IdentityType"
+        scopes:
+          type: array
+          items:
+            type: string
+        roles:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        workspaceId:
+          type: string
+    CreateIdentityRequest:
+      $ref: "#/components/schemas/CreateIdentityInput"
+    UpdateIdentityRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        roles:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+    CreateSubAgentRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        ttl:
+          type: string
+    CreateSubAgentResponse:
+      type: object
+      required: [identity, tokenPair, sponsorChain]
+      properties:
+        identity:
+          $ref: "#/components/schemas/AgentIdentity"
+        tokenPair:
+          $ref: "#/components/schemas/TokenPair"
+        sponsorChain:
+          type: array
+          items:
+            type: string
+    SuspendIdentityRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+        code:
+          type: string
+          enum: [manual, budget_exceeded, parent_suspended]
+    Plane:
+      type: string
+      enum: [relaycast, relayfile, cloud, relayauth]
+    Action:
+      type: string
+      enum: [read, write, create, delete, manage, run, send, invoke, "*"]
+    ParsedScope:
+      type: object
+      required: [plane, resource, action, path, raw]
+      properties:
+        plane:
+          $ref: "#/components/schemas/Plane"
+        resource:
+          type: string
+        action:
+          $ref: "#/components/schemas/Action"
+        path:
+          type: string
+        raw:
+          type: string
+    ScopeTemplate:
+      type: object
+      required: [name, description, scopes]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+    ScopeTemplatesResponse:
+      type: object
+      required: [templates]
+      properties:
+        templates:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScopeTemplate"
+    ValidateScopeRequest:
+      type: object
+      required: [scope]
+      properties:
+        scope:
+          type: string
+    CheckScopeRequest:
+      type: object
+      required: [identityId, scope]
+      properties:
+        identityId:
+          type: string
+        scope:
+          type: string
+        workspaceId:
+          type: string
+    CheckScopeResponse:
+      type: object
+      required: [allowed]
+      properties:
+        allowed:
+          type: boolean
+        grantedVia:
+          type: string
+          enum: [direct, role, inherited]
+        role:
+          type: string
+        matchedScope:
+          type: string
+    Role:
+      type: object
+      required: [id, name, description, scopes, orgId, builtIn, createdAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        orgId:
+          type: string
+        workspaceId:
+          type: string
+        builtIn:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    CreateRoleRequest:
+      type: object
+      required: [name, scopes]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        workspaceId:
+          type: string
+    UpdateRoleRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+    AssignRoleRequest:
+      type: object
+      required: [identityId]
+      properties:
+        identityId:
+          type: string
+    UnassignRoleRequest:
+      type: object
+      required: [identityId]
+      properties:
+        identityId:
+          type: string
+    PolicyEffect:
+      type: string
+      enum: [allow, deny]
+    PolicyConditionType:
+      type: string
+      enum: [time, ip, identity, workspace]
+    PolicyConditionOperator:
+      type: string
+      enum: [eq, neq, in, not_in, gt, lt, matches]
+    PolicyCondition:
+      type: object
+      required: [type, operator, value]
+      properties:
+        type:
+          $ref: "#/components/schemas/PolicyConditionType"
+        operator:
+          $ref: "#/components/schemas/PolicyConditionOperator"
+        value:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+    Policy:
+      type: object
+      required: [id, name, effect, scopes, conditions, priority, orgId, createdAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        effect:
+          $ref: "#/components/schemas/PolicyEffect"
+        scopes:
+          type: array
+          items:
+            type: string
+        conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyCondition"
+        priority:
+          type: integer
+        orgId:
+          type: string
+        workspaceId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    CreatePolicyRequest:
+      type: object
+      required: [name, effect, scopes]
+      properties:
+        name:
+          type: string
+        effect:
+          $ref: "#/components/schemas/PolicyEffect"
+        scopes:
+          type: array
+          items:
+            type: string
+        conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyCondition"
+        priority:
+          type: integer
+          default: 0
+        workspaceId:
+          type: string
+    UpdatePolicyRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        effect:
+          $ref: "#/components/schemas/PolicyEffect"
+        scopes:
+          type: array
+          items:
+            type: string
+        conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyCondition"
+        priority:
+          type: integer
+    EvaluatePolicyRequest:
+      type: object
+      required: [identityId, scope]
+      properties:
+        identityId:
+          type: string
+        scope:
+          type: string
+        context:
+          type: object
+          properties:
+            ip:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+            workspaceId:
+              type: string
+    EvaluatePolicyMatch:
+      type: object
+      properties:
+        policyId:
+          type: string
+        name:
+          type: string
+        effect:
+          $ref: "#/components/schemas/PolicyEffect"
+    EvaluatePolicyResponse:
+      type: object
+      required: [result, matchedPolicies]
+      properties:
+        result:
+          type: string
+          enum: [allowed, denied]
+        matchedPolicies:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluatePolicyMatch"
+        reason:
+          type: string
+    AuditAction:
+      type: string
+      enum:
+        - token.issued
+        - token.refreshed
+        - token.revoked
+        - token.validated
+        - identity.created
+        - identity.updated
+        - identity.suspended
+        - identity.reactivated
+        - identity.retired
+        - identity.deleted
+        - scope.checked
+        - scope.denied
+        - role.assigned
+        - role.removed
+        - policy.created
+        - policy.updated
+        - policy.deleted
+        - key.rotated
+    AuditResult:
+      type: string
+      enum: [allowed, denied, error]
+    AuditQueryResult:
+      type: string
+      enum: [allowed, denied]
+    AuditEntry:
+      type: object
+      required: [id, action, identityId, orgId, result, timestamp]
+      properties:
+        id:
+          type: string
+        action:
+          $ref: "#/components/schemas/AuditAction"
+        identityId:
+          type: string
+        orgId:
+          type: string
+        workspaceId:
+          type: string
+        plane:
+          type: string
+        resource:
+          type: string
+        result:
+          $ref: "#/components/schemas/AuditResult"
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        ip:
+          type: string
+        userAgent:
+          type: string
+        sponsorChain:
+          type: array
+          items:
+            type: string
+        timestamp:
+          type: string
+          format: date-time
+    AuditQuery:
+      type: object
+      properties:
+        identityId:
+          type: string
+        action:
+          $ref: "#/components/schemas/AuditAction"
+        orgId:
+          type: string
+        workspaceId:
+          type: string
+        plane:
+          type: string
+        result:
+          $ref: "#/components/schemas/AuditQueryResult"
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        cursor:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 200
+    SponsorChainNode:
+      type: object
+      required: [identityId, type]
+      properties:
+        identityId:
+          type: string
+        type:
+          $ref: "#/components/schemas/IdentityType"
+        name:
+          type: string
+        createdBy:
+          type: string
+    SponsorChainResponse:
+      type: object
+      required: [chain]
+      properties:
+        chain:
+          type: array
+          items:
+            $ref: "#/components/schemas/SponsorChainNode"
+    ExportAuditRequest:
+      type: object
+      required: [from, to]
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        format:
+          type: string
+          enum: [json, csv]
+          default: json
+        filter:
+          $ref: "#/components/schemas/AuditQuery"
+    ExportAuditResponse:
+      type: object
+      required: [exportId, status]
+      properties:
+        exportId:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, complete, failed]
+        downloadUrl:
+          type: string
+          format: uri
+    BudgetResponse:
+      type: object
+      required: [identityId]
+      properties:
+        identityId:
+          type: string
+        maxActionsPerHour:
+          type: integer
+          nullable: true
+        maxCostPerDay:
+          type: number
+          nullable: true
+        alertThreshold:
+          type: number
+        autoSuspend:
+          type: boolean
+        currentActionsThisHour:
+          type: integer
+        currentCostToday:
+          type: number
+        alertWebhookUrl:
+          type: string
+          format: uri
+    SetBudgetRequest:
+      type: object
+      properties:
+        maxActionsPerHour:
+          type: integer
+          nullable: true
+        maxCostPerDay:
+          type: number
+          nullable: true
+        alertThreshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        autoSuspend:
+          type: boolean
+        alertWebhookUrl:
+          type: string
+          format: uri
+    CreateTokenRequest:
+      type: object
+      required: [identityId]
+      properties:
+        identityId:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        workspaceId:
+          type: string
+        ttl:
+          type: string
+          default: 1h
+        audience:
+          type: array
+          items:
+            type: string
+    RefreshTokenRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+    RevokeTokenRequest:
+      type: object
+      properties:
+        tokenId:
+          type: string
+        identityId:
+          type: string
+        sessionId:
+          type: string
+        reason:
+          type: string
+      anyOf:
+        - required: [tokenId]
+        - required: [identityId]
+        - required: [sessionId]
+    ValidateTokenRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+        requiredScopes:
+          type: array
+          items:
+            type: string
+    ValidateTokenResponse:
+      type: object
+      required: [valid, claims]
+      properties:
+        valid:
+          type: boolean
+        claims:
+          $ref: "#/components/schemas/RelayAuthTokenClaims"
+        missingScopes:
+          type: array
+          items:
+            type: string
+    TokenMetadata:
+      type: object
+      required: [jti, scopes, issuedAt, expiresAt]
+      properties:
+        jti:
+          type: string
+        sid:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        audience:
+          type: array
+          items:
+            type: string
+        issuedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        revoked:
+          type: boolean
+        parentTokenId:
+          type: string
+    ApiKey:
+      type: object
+      required: [id, orgId, prefix, name, scopes, createdAt, revoked]
+      properties:
+        id:
+          type: string
+        orgId:
+          type: string
+        prefix:
+          type: string
+          description: Non-secret key prefix for identification.
+        maskedKey:
+          type: string
+          description: Safe masked representation, such as rk_abcd...wxyz.
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        revoked:
+          type: boolean
+        revokedAt:
+          type: string
+          format: date-time
+    CreateApiKeyRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+    ApiKeyCreateResponse:
+      type: object
+      required: [apiKey, key]
+      properties:
+        apiKey:
+          $ref: "#/components/schemas/ApiKey"
+        key:
+          type: string
+          description: Raw API key shown only once at creation time.
+    ApiKeyListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApiKey"
+    PaginatedApiKeyResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApiKey"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    RevokeApiKeyRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+    SigningKey:
+      type: object
+      properties:
+        keyId:
+          type: string
+        algorithm:
+          type: string
+          enum: [RS256, EdDSA]
+        status:
+          type: string
+          enum: [active, rotating, expired]
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+    RotateKeysResponse:
+      type: object
+      required: [newKeyId, oldKeyId, rotatedAt]
+      properties:
+        newKeyId:
+          type: string
+        oldKeyId:
+          type: string
+        rotatedAt:
+          type: string
+          format: date-time
+        oldKeyExpiresAt:
+          type: string
+          format: date-time
+    ListKeysResponse:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/SigningKey"
+    OrgConfigResponse:
+      type: object
+      properties:
+        orgId:
+          type: string
+        name:
+          type: string
+        maxTokenTTL:
+          type: string
+        defaultTokenTTL:
+          type: string
+        auditRetentionDays:
+          type: integer
+        allowedAlgorithms:
+          type: array
+          items:
+            type: string
+            enum: [RS256, EdDSA]
+    UpdateOrgConfigRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        maxTokenTTL:
+          type: string
+        defaultTokenTTL:
+          type: string
+        auditRetentionDays:
+          type: integer
+        allowedAlgorithms:
+          type: array
+          items:
+            type: string
+            enum: [RS256, EdDSA]
+    HealthDependencyStatus:
+      type: string
+      enum: [up, down]
+    HealthResponse:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        version:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        services:
+          type: object
+          properties:
+            kv:
+              $ref: "#/components/schemas/HealthDependencyStatus"
+            d1:
+              $ref: "#/components/schemas/HealthDependencyStatus"
+            do:
+              $ref: "#/components/schemas/HealthDependencyStatus"
+    PaginatedTokenMetadataResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenMetadata"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    PaginatedIdentityResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentIdentity"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    PaginatedRoleResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Role"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    PaginatedPolicyResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Policy"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    PaginatedAuditResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEntry"
+        pagination:
+          $ref: "#/components/schemas/Pagination"

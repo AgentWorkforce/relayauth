@@ -1,7 +1,6 @@
 {
   "name": "relayauth",
   "private": true,
-  "packageManager": "pnpm@10.31.0",
   "scripts": {
     "build": "turbo build",
     "test": "turbo test",
@@ -11,9 +10,15 @@
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
-    "turbo": "^2",
     "tsx": "^4.20.6",
+    "turbo": "^2",
     "typescript": "^5.7",
     "wrangler": "^4"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "dependencies": {
+    "@agent-relay/sdk": "^3.2.15"
   }
 }

@@ -635,7 +635,12 @@ Build output:
 Reviewer feedback:
 {{steps.review-scaffold.output}}
 
-Fix all issues raised by the reviewer.
+Read each issue from the review/test output above. For each one:
+1. Identify the exact file and line
+2. Make the specific fix
+3. Save the file
+
+Then run by the reviewer.
 If EXIT: 0 and no issues, summarize what was created.
 Then run: cd ${ROOT} && npx turbo build && npx turbo typecheck`,
     verification: { type: 'exit_code' },

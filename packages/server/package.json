@@ -5,7 +5,7 @@
   "type": "module",
   "dependencies": {
     "hono": "^4",
-    "@relayauth/types": "workspace:*"
+    "@relayauth/types": "*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4",

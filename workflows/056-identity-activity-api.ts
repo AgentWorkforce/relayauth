@@ -1,23 +1,11 @@
 /**
  * 056-identity-activity-api.ts
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
  *
  * Domain 6: Audit & Observability
  * GET /v1/identities/:id/activity — identity-scoped audit view
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
  *
  * Depends on: 052, 022
  * Run: agent-relay run workflows/056-identity-activity-api.ts
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
  */
 
 import { workflow } from '@agent-relay/sdk/workflows';
@@ -28,15 +16,7 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 
 async function main() {
 const result = await workflow('056-identity-activity-api')
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
   .description('GET /v1/identities/:id/activity — identity-scoped audit view')
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
   .pattern('dag')
   .channel('wf-relayauth-056')
   .maxConcurrency(4)
@@ -46,40 +26,24 @@ const result = await workflow('056-identity-activity-api')
     cli: 'claude',
     preset: 'lead',
     role: 'Design identity activity API, review output, fix issues',
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write tests for identity activity API',
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
     cwd: ROOT,
   })
   .agent('implementer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Implement identity activity API route',
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review identity activity API for quality, consistency, spec compliance',
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
     cwd: ROOT,
   })
 
@@ -158,10 +122,6 @@ Test these behaviors:
     type: 'deterministic',
     dependsOn: ['write-tests'],
     command: `test -f ${ROOT}/packages/server/src/__tests__/identity-activity-api.test.ts && echo "OK" || echo "MISSING"`,
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
     captureOutput: true,
   })
 
@@ -213,10 +173,6 @@ Register the route in the server.`,
     type: 'deterministic',
     dependsOn: ['implement'],
     command: `test -f ${ROOT}/packages/server/src/routes/identity-activity.ts && echo "impl OK" || echo "impl MISSING"`,
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
     captureOutput: true,
     failOnError: false,
   })
@@ -227,10 +183,6 @@ Register the route in the server.`,
     type: 'deterministic',
     dependsOn: ['verify-files'],
     command: `cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/identity-activity-api.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
     captureOutput: true,
     failOnError: false,
   })
@@ -285,10 +237,6 @@ Typecheck results:
 
 Fix all issues. Then run:
 cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/identity-activity-api.test.ts && npx turbo typecheck`,
-    - Budget usage in response: actionsThisHour, costToday, percentOfBudget
-    - sponsorChain in activity response
-    - Sub-agent tree: list all agents spawned by this identity
-
     verification: { type: 'exit_code' },
   })
 

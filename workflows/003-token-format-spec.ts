@@ -22,13 +22,7 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 
 async function main() {
 const result = await workflow('003-token-format-spec')
-  .description('Define JWT claims, signing algorithms, JWKS format')
-    - sponsorId (string, required): human user ID accountable for this agent
-    - sponsorChain (string[]): delegation chain tracing back to human
-    - parentTokenId (string, optional): for sub-agent delegation — scopes must be subset of parent
-    - budget ({ maxActionsPerHour, maxCostPerDay, remaining }): behavioral rate limits
-    - MANDATORY EXPIRY: every token must have exp. Default: 1h access, 24h refresh. Max: 30 days. No permanent tokens.
-
+  .description('Define JWT claims, signing algorithms, JWKS format — including sponsorId, sponsorChain, parentTokenId, budget, mandatory expiry')
   .pattern('dag')
   .channel('wf-relayauth-003')
   .maxConcurrency(3)
@@ -89,7 +83,7 @@ Write design outline to ${ROOT}/docs/token-format-design.md covering:
 
 - Signing algorithms: RS256 for compatibility, EdDSA for performance
 - JWKS format: key structure, rotation semantics, kid convention
-- Token lifetime: access (15min), refresh (7d)
+- Token lifetime: access (1h), refresh (24h)
 - Token ID format: tok_xxxx (nanoid)`,
     verification: { type: 'exit_code' },
   })
@@ -154,7 +148,14 @@ List issues.`,
 Reviewer feedback:
 {{steps.review-spec.output}}
 
-Address all feedback. Update ${ROOT}/specs/token-format.md.`,
+Read each issue from the reviewer feedback above. For each one:
+1. Open the file mentioned
+2. Make the specific fix described
+3. Save the file
+
+After all fixes, verify by reading the file again to confirm changes were applied.
+
+Update ${ROOT}/specs/token-format.md.`,
     verification: { type: 'exit_code' },
   })
 

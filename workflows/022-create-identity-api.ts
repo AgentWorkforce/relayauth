@@ -1,23 +1,11 @@
 /**
  * 022-create-identity-api.ts
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
  *
  * Domain 3: Identity Lifecycle
  * POST /v1/identities — create agent identity
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
  *
  * Depends on: 021
  * Run: agent-relay run workflows/022-create-identity-api.ts
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
  */
 
 import { workflow } from '@agent-relay/sdk/workflows';
@@ -28,15 +16,7 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 
 async function main() {
 const result = await workflow('022-create-identity-api')
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
   .description('POST /v1/identities — create agent identity')
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
   .pattern('dag')
   .channel('wf-relayauth-022')
   .maxConcurrency(4)
@@ -46,40 +26,24 @@ const result = await workflow('022-create-identity-api')
     cli: 'claude',
     preset: 'lead',
     role: 'Design create identity API, review output, fix issues',
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write tests for create identity endpoint',
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
     cwd: ROOT,
   })
   .agent('implementer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Implement create identity route and handler',
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review create identity API for quality and spec compliance',
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
     cwd: ROOT,
   })
 
@@ -144,10 +108,6 @@ Test:
     type: 'deterministic',
     dependsOn: ['write-tests'],
     command: `test -f ${ROOT}/packages/server/src/__tests__/create-identity.test.ts && echo "OK" || echo "MISSING"`,
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
     captureOutput: true,
   })
 
@@ -197,10 +157,6 @@ Create ${ROOT}/packages/server/src/routes/identities.ts with the create handler.
     type: 'deterministic',
     dependsOn: ['verify-files'],
     command: `cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/create-identity.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
     captureOutput: true,
     failOnError: false,
   })
@@ -255,10 +211,6 @@ Typecheck results:
 
 Fix all issues. Then run:
 cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/create-identity.test.ts && npx turbo typecheck`,
-    - sponsor field is REQUIRED in CreateIdentityInput — no identity without a human sponsor
-    - sponsorChain auto-populated: if created by another agent, chain = parent.chain + [parentId]
-    - budget optional, defaults to org-level budget if not set
-
     verification: { type: 'exit_code' },
   })
 

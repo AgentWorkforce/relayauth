@@ -1,23 +1,11 @@
 /**
  * 055-audit-webhooks.ts
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
  *
  * Domain 6: Audit & Observability
  * POST /v1/audit/webhooks — notify external systems on events
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
  *
  * Depends on: 051
  * Run: agent-relay run workflows/055-audit-webhooks.ts
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
  */
 
 import { workflow } from '@agent-relay/sdk/workflows';
@@ -28,15 +16,7 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 
 async function main() {
 const result = await workflow('055-audit-webhooks')
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
   .description('POST /v1/audit/webhooks — notify external systems on events')
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
   .pattern('dag')
   .channel('wf-relayauth-055')
   .maxConcurrency(4)
@@ -46,40 +26,24 @@ const result = await workflow('055-audit-webhooks')
     cli: 'claude',
     preset: 'lead',
     role: 'Design audit webhooks system, review output, fix issues',
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write tests for audit webhooks',
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
     cwd: ROOT,
   })
   .agent('implementer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Implement audit webhooks routes and engine',
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review audit webhooks for quality, consistency, spec compliance',
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
     cwd: ROOT,
   })
 
@@ -168,10 +132,6 @@ Test these behaviors:
 8. Returns 401 without valid auth token
 9. Returns 403 without relayauth:audit:manage scope
 10. Returns 400 for invalid webhook URL`,
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
     verification: { type: 'exit_code' },
   })
 
@@ -179,10 +139,6 @@ Test these behaviors:
     type: 'deterministic',
     dependsOn: ['write-tests'],
     command: `test -f ${ROOT}/packages/server/src/__tests__/audit-webhooks.test.ts && echo "OK" || echo "MISSING"`,
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
     captureOutput: true,
   })
 
@@ -255,10 +211,6 @@ Register routes in the server.`,
     type: 'deterministic',
     dependsOn: ['implement'],
     command: `test -f ${ROOT}/packages/server/src/routes/audit-webhooks.ts && echo "route OK" || echo "route MISSING"; test -f ${ROOT}/packages/server/src/engine/audit-webhook-dispatcher.ts && echo "dispatcher OK" || echo "dispatcher MISSING"`,
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
     captureOutput: true,
     failOnError: false,
   })
@@ -269,10 +221,6 @@ Register routes in the server.`,
     type: 'deterministic',
     dependsOn: ['verify-files'],
     command: `cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/audit-webhooks.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
     captureOutput: true,
     failOnError: false,
   })
@@ -328,10 +276,6 @@ Typecheck results:
 
 Fix all issues. Then run:
 cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/audit-webhooks.test.ts && npx turbo typecheck`,
-    - Budget alert webhook: fires when agent hits alertThreshold % of budget
-    - Auto-suspend webhook: fires when agent is auto-suspended by budget breach
-    - Sponsor notification: webhook includes sponsorId so the human is notified
-
     verification: { type: 'exit_code' },
   })
 

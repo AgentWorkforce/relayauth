@@ -139,7 +139,14 @@ List issues.`,
 Reviewer feedback:
 {{steps.review.output}}
 
-Address all feedback. Update ${ROOT}/docs/api-reference.md.`,
+Read each issue from the reviewer feedback above. For each one:
+1. Open the file mentioned
+2. Make the specific fix described
+3. Save the file
+
+After all fixes, verify by reading the file again to confirm changes were applied.
+
+Update ${ROOT}/docs/api-reference.md.`,
     verification: { type: 'exit_code' },
   })
 
