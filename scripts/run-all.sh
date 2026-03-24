@@ -17,7 +17,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ROOT=$(pwd)
-STATE_FILE="$ROOT/.workflow-state.json"
+STATE_FILE="/tmp/relayauth-workflow-state.json"
 BRANCH_BASE="main"
 DRY_RUN=false
 SKIP_PR=false
