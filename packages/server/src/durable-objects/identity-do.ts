@@ -1,0 +1,343 @@
+import type { AgentIdentity, IdentityStatus, IdentityType } from "@relayauth/types";
+import type { AppEnv } from "../env.js";
+
+export type { AgentIdentity, IdentityStatus, IdentityType };
+
+export interface IdentityBudget {
+  maxActionsPerHour?: number;
+  maxCostPerDay?: number;
+  alertThreshold?: number;
+  autoSuspend?: boolean;
+}
+
+export interface IdentityBudgetUsage {
+  actionsThisHour: number;
+  costToday: number;
+  lastResetAt: string;
+}
+
+export interface StoredIdentity extends AgentIdentity {
+  sponsorId: string;
+  sponsorChain: string[];
+  workspaceId: string;
+  budget?: IdentityBudget;
+  budgetUsage?: IdentityBudgetUsage;
+}
+
+type IdentityUpdate = Partial<StoredIdentity>;
+type Bindings = AppEnv["Bindings"];
+
+interface SqlRow {
+  data: string;
+}
+
+interface SqlCursor<T> {
+  one(): T | null;
+}
+
+interface DurableObjectSqlStorage {
+  exec<T = Record<string, unknown>>(query: string, ...params: unknown[]): SqlCursor<T>;
+}
+
+const SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS identity_records (
+    id TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_identity_records_updated_at
+    ON identity_records(updated_at);
+`;
+
+const SELECT_SQL = `
+  SELECT data
+  FROM identity_records
+  ORDER BY updated_at DESC, id DESC
+  LIMIT 1
+`;
+
+const UPSERT_SQL = `
+  INSERT OR REPLACE INTO identity_records (id, data, updated_at)
+  VALUES (?, ?, ?)
+`;
+
+// No WHERE clause: each DO instance holds exactly one identity, so DELETE removes that single row.
+const DELETE_SQL = `DELETE FROM identity_records`;
+
+// Use DurableObject base when available (Cloudflare Workers runtime), otherwise fall back to a
+// minimal shim so the module can be loaded in Node.js test environments.
+const _global = globalThis as Record<string, unknown>;
+const DurableObjectBase = (_global.DurableObject as { new (ctx: DurableObjectState, env: unknown): { ctx: DurableObjectState; env: unknown } }) ??
+  class {
+    ctx: DurableObjectState;
+    env: unknown;
+    constructor(ctx: DurableObjectState, env: unknown) {
+      this.ctx = ctx;
+      this.env = env;
+    }
+  };
+
+export class IdentityDO extends DurableObjectBase {
+  private readonly schemaReady: Promise<void>;
+  declare readonly ctx: DurableObjectState;
+  declare readonly env: Bindings;
+
+  constructor(ctx: DurableObjectState, env: Bindings) {
+    super(ctx, env);
+    this.schemaReady = this.ctx.blockConcurrencyWhile(async () => {
+      this.sql.exec(SCHEMA_SQL);
+    });
+  }
+
+  async create(input: StoredIdentity): Promise<StoredIdentity> {
+    await this.schemaReady;
+    this.assertCreateInput(input);
+
+    const timestamp = new Date().toISOString();
+    const finalIdentity = await this.applyBudgetPolicy(input, input, timestamp);
+
+    await this.save(finalIdentity);
+    await this.syncBudgetUsage(finalIdentity);
+
+    return finalIdentity;
+  }
+
+  async get(): Promise<StoredIdentity | null> {
+    await this.schemaReady;
+    return this.read();
+  }
+
+  async update(input: IdentityUpdate): Promise<StoredIdentity> {
+    await this.schemaReady;
+
+    const current = await this.requireIdentity();
+    const timestamp = new Date().toISOString();
+    const merged = this.mergeIdentity(current, input, timestamp);
+    const finalIdentity = await this.applyBudgetPolicy(current, merged, timestamp);
+
+    await this.save(finalIdentity);
+    await this.syncBudgetUsage(finalIdentity);
+    return finalIdentity;
+  }
+
+  async suspend(reason: string): Promise<StoredIdentity> {
+    await this.schemaReady;
+
+    const current = await this.requireIdentity();
+    if (current.status === "retired") {
+      throw new Error("Retired identities cannot be suspended");
+    }
+
+    const timestamp = new Date().toISOString();
+    const suspended: StoredIdentity = {
+      ...current,
+      status: "suspended",
+      suspendReason: reason,
+      suspendedAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    await this.save(suspended);
+    return suspended;
+  }
+
+  async reactivate(): Promise<StoredIdentity> {
+    await this.schemaReady;
+
+    const current = await this.requireIdentity();
+    if (current.status === "retired") {
+      throw new Error("Retired identities cannot be reactivated");
+    }
+
+    const timestamp = new Date().toISOString();
+    const reactivated: StoredIdentity = {
+      ...current,
+      status: "active",
+      suspendedAt: undefined,
+      suspendReason: undefined,
+      updatedAt: timestamp,
+    };
+
+    await this.save(reactivated);
+    return reactivated;
+  }
+
+  async retire(): Promise<StoredIdentity> {
+    await this.schemaReady;
+
+    const current = await this.requireIdentity();
+    const timestamp = new Date().toISOString();
+    const retired: StoredIdentity = {
+      ...current,
+      status: "retired",
+      suspendedAt: undefined,
+      suspendReason: undefined,
+      updatedAt: timestamp,
+    };
+
+    await this.save(retired);
+    await this.syncBudgetUsage(retired);
+    return retired;
+  }
+
+  async delete(): Promise<void> {
+    await this.schemaReady;
+    this.sql.exec(DELETE_SQL);
+    await this.ctx.storage.delete("budgetUsage");
+  }
+
+  private get sql(): DurableObjectSqlStorage {
+    return (this.ctx.storage as DurableObjectStorage & { sql: DurableObjectSqlStorage }).sql;
+  }
+
+  private async read(): Promise<StoredIdentity | null> {
+    const row = this.sql.exec<SqlRow>(SELECT_SQL).one();
+    if (!row) {
+      return null;
+    }
+
+    return this.hydrateIdentity(JSON.parse(row.data) as StoredIdentity);
+  }
+
+  private async requireIdentity(): Promise<StoredIdentity> {
+    const identity = await this.read();
+    if (!identity) {
+      throw new Error("Identity not found");
+    }
+
+    return identity;
+  }
+
+  private async save(identity: StoredIdentity): Promise<void> {
+    this.sql.exec(UPSERT_SQL, identity.id, JSON.stringify(identity), identity.updatedAt);
+  }
+
+  private async syncBudgetUsage(identity: StoredIdentity): Promise<void> {
+    if (identity.budgetUsage) {
+      await this.ctx.storage.put("budgetUsage", identity.budgetUsage);
+      return;
+    }
+
+    await this.ctx.storage.delete("budgetUsage");
+  }
+
+  private hydrateIdentity(identity: StoredIdentity): StoredIdentity {
+    return identity;
+  }
+
+  private mergeIdentity(current: StoredIdentity, update: IdentityUpdate, timestamp: string): StoredIdentity {
+    return {
+      ...current,
+      ...update,
+      metadata: update.metadata ? { ...current.metadata, ...update.metadata } : current.metadata,
+      scopes: update.scopes ?? current.scopes,
+      roles: update.roles ?? current.roles,
+      sponsorChain: update.sponsorChain ?? current.sponsorChain,
+      budget: update.budget ?? current.budget,
+      budgetUsage: update.budgetUsage ?? current.budgetUsage,
+      updatedAt: timestamp,
+    };
+  }
+
+  private async applyBudgetPolicy(
+    previous: StoredIdentity,
+    identity: StoredIdentity,
+    timestamp: string,
+  ): Promise<StoredIdentity> {
+    if (!this.isBudgetExceeded(identity) || identity.status === "retired") {
+      return identity;
+    }
+
+    if (!identity.budget?.autoSuspend) {
+      return identity;
+    }
+
+    const suspended: StoredIdentity = {
+      ...identity,
+      status: "suspended",
+      suspendReason: "budget_exceeded",
+      suspendedAt: identity.suspendedAt ?? timestamp,
+      updatedAt: timestamp,
+    };
+
+    if (previous.status !== "suspended" || previous.suspendReason !== "budget_exceeded") {
+      await this.writeBudgetAuditEvent(suspended);
+    }
+
+    return suspended;
+  }
+
+  private isBudgetExceeded(identity: StoredIdentity): boolean {
+    const budget = identity.budget;
+    const usage = identity.budgetUsage;
+    if (!budget || !usage) {
+      return false;
+    }
+
+    const actionsExceeded =
+      typeof budget.maxActionsPerHour === "number" && usage.actionsThisHour > budget.maxActionsPerHour;
+    const costExceeded =
+      typeof budget.maxCostPerDay === "number" && usage.costToday > budget.maxCostPerDay;
+
+    return actionsExceeded || costExceeded;
+  }
+
+  private async writeBudgetAuditEvent(identity: StoredIdentity): Promise<void> {
+    const query = `
+      INSERT INTO audit_events (
+        id,
+        org_id,
+        workspace_id,
+        identity_id,
+        action,
+        reason,
+        payload,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    const payload = JSON.stringify({
+      eventType: "budget.exceeded",
+      status: identity.status,
+      sponsorId: identity.sponsorId,
+      sponsorChain: identity.sponsorChain,
+      budget: identity.budget,
+      budgetUsage: identity.budgetUsage,
+    });
+
+    try {
+      await this.env.DB.prepare(query)
+        .bind(
+          crypto.randomUUID(),
+          identity.orgId,
+          identity.workspaceId,
+          identity.id,
+          "identity.suspended",
+          "budget_exceeded",
+          payload,
+          identity.updatedAt,
+        )
+        .run();
+    } catch (err) {
+      // Audit writes should not block the state transition, but log for observability.
+      console.error("Failed to write budget audit event", err);
+    }
+  }
+
+  private assertCreateInput(input: StoredIdentity): void {
+    if (!input.sponsorId) {
+      throw new Error("sponsorId is required");
+    }
+
+    if (!Array.isArray(input.sponsorChain) || input.sponsorChain.length === 0) {
+      throw new Error("sponsorChain is required");
+    }
+
+    if (!input.workspaceId) {
+      throw new Error("workspaceId is required");
+    }
+  }
+}
+
+export default IdentityDO;
