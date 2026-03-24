@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-header='{"alg":"HS256","typ":"JWT"}'
+header='{"alg":"HS256","typ":"JWT","kid":"dev-key"}'
 now="$(date +%s)"
 exp="$((now + ${RELAYAUTH_TTL_SECONDS:-3600}))"
 jti="dev-${now}-${RANDOM}"
