@@ -47,6 +47,34 @@ const ORG_BUDGET_SQL = `
   LIMIT 1
 `;
 
+identities.get("/:id", async (c) => {
+  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  if (!auth.ok) {
+    return c.json({ error: auth.error }, 401);
+  }
+
+  const id = c.req.param("id").trim();
+  const durableObjectId = c.env.IDENTITY_DO.idFromName(id);
+  const durableObject = c.env.IDENTITY_DO.get(durableObjectId);
+  const response = await durableObject.fetch(
+    new Request("http://identity-do/internal/get", {
+      method: "GET",
+    }),
+  );
+
+  if (response.status === 404) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
+  if (!response.ok) {
+    const message = await response.text().catch(() => "");
+    return c.json({ error: message || "Failed to fetch identity" }, response.status as 400 | 401 | 403 | 500);
+  }
+
+  const identity = await response.json<StoredIdentity>();
+  return c.json(identity, 200);
+});
+
 identities.post("/", async (c) => {
   const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
   if (!auth.ok) {

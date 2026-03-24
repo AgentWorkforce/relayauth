@@ -117,18 +117,26 @@ export function generateTestToken(
   secret = "dev-secret",
 ): string {
   const now = Math.floor(Date.now() / 1000);
+  const sub = claims.sub ?? "agent_test";
+  const sponsorId = claims.sponsorId ?? "user_test";
   const payload: RelayAuthTokenClaims = {
-    sub: claims.sub ?? "agent_test",
+    sub,
     org: claims.org ?? "org_test",
     wks: claims.wks ?? "ws_test",
     scopes: claims.scopes ?? ["*"],
+    sponsorId,
+    sponsorChain: claims.sponsorChain ?? [sponsorId, sub],
+    token_type: claims.token_type ?? "access",
     iss: claims.iss ?? "relayauth:test",
     aud: claims.aud ?? ["relayauth"],
     exp: claims.exp ?? now + 3600,
     iat: claims.iat ?? now,
     jti: claims.jti ?? crypto.randomUUID(),
+    nbf: claims.nbf,
     sid: claims.sid,
     meta: claims.meta,
+    parentTokenId: claims.parentTokenId,
+    budget: claims.budget,
   };
 
   return signHs256(payload, secret);
@@ -147,9 +155,9 @@ export function generateTestIdentity(overrides: Partial<AgentIdentity> = {}): Ag
     metadata: overrides.metadata ?? {},
     createdAt: overrides.createdAt ?? now,
     updatedAt: overrides.updatedAt ?? now,
-    lastActiveAt: overrides.lastActiveAt,
-    suspendedAt: overrides.suspendedAt,
-    suspendReason: overrides.suspendReason,
+    ...(overrides.lastActiveAt !== undefined ? { lastActiveAt: overrides.lastActiveAt } : {}),
+    ...(overrides.suspendedAt !== undefined ? { suspendedAt: overrides.suspendedAt } : {}),
+    ...(overrides.suspendReason !== undefined ? { suspendReason: overrides.suspendReason } : {}),
   };
 }
 
