@@ -16,6 +16,10 @@ type CreateIdentityRequest = CreateIdentityInput & {
 
 type UpdateIdentityRequest = Partial<StoredIdentity>;
 
+type SuspendIdentityRequest = {
+  reason?: string;
+};
+
 type JwtHeader = {
   alg?: string;
   typ?: string;
@@ -37,6 +41,17 @@ type OrgBudgetRow = {
   default_budget?: string;
   data?: string;
   settings_json?: string;
+};
+
+type ChildIdentityRow = {
+  id?: string;
+};
+
+type ActiveTokenRow = {
+  id?: string;
+  jti?: string;
+  tokenId?: string;
+  token_id?: string;
 };
 
 type ListIdentityRow = {
@@ -78,6 +93,33 @@ const ORG_BUDGET_SQL = `
   FROM org_budgets
   WHERE org_id = ?
   LIMIT 1
+`;
+
+const CHILD_IDENTITIES_SQL = `
+  SELECT id
+  FROM identities
+  WHERE org_id = ? AND sponsor_id = ?
+  ORDER BY created_at DESC, id DESC
+`;
+
+const ACTIVE_TOKENS_SQL = `
+  SELECT id, jti, token_id AS tokenId
+  FROM tokens
+  WHERE identity_id = ? AND status = 'active'
+`;
+
+const INSERT_AUDIT_EVENT_SQL = `
+  INSERT INTO audit_events (
+    id,
+    org_id,
+    workspace_id,
+    identity_id,
+    action,
+    reason,
+    payload,
+    created_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 identities.get("/", async (c) => {
@@ -184,6 +226,52 @@ identities.patch("/:id", async (c) => {
 
   const identity = await response.json<StoredIdentity>();
   return c.json(identity, 200);
+});
+
+identities.post("/:id/suspend", async (c) => {
+  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  if (!auth.ok) {
+    return c.json({ error: auth.error }, 401);
+  }
+
+  const id = c.req.param("id").trim();
+  const body = await c.req.json<SuspendIdentityRequest>().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  if (!reason) {
+    return c.json({ error: "reason is required" }, 400);
+  }
+
+  const suspended = await suspendIdentity(c.env.IDENTITY_DO, id, reason);
+  if (!suspended.ok) {
+    return c.json({ error: suspended.error }, suspended.status);
+  }
+
+  const activeTokenIds = await listActiveTokenIds(c.env.DB, suspended.identity.id);
+  await revokeIdentityTokens(c.env.REVOCATION_KV, suspended.identity.id, activeTokenIds, suspended.identity.updatedAt);
+
+  const childIdentityIds = await listChildIdentityIds(c.env.DB, suspended.identity.orgId, suspended.identity.id);
+  for (const childIdentityId of childIdentityIds) {
+    const childSuspended = await suspendIdentity(c.env.IDENTITY_DO, childIdentityId, "parent_suspended");
+    if (!childSuspended.ok) {
+      if (childSuspended.status === 404 || childSuspended.status === 409) {
+        continue;
+      }
+
+      return c.json({ error: childSuspended.error }, childSuspended.status);
+    }
+
+    const childActiveTokenIds = await listActiveTokenIds(c.env.DB, childSuspended.identity.id);
+    await revokeIdentityTokens(c.env.REVOCATION_KV, childSuspended.identity.id, childActiveTokenIds, childSuspended.identity.updatedAt);
+
+    await writeIdentitySuspendedAuditEvent(c.env.DB, childSuspended.identity, "parent_suspended", auth.claims.sub);
+  }
+
+  await writeIdentitySuspendedAuditEvent(c.env.DB, suspended.identity, reason, auth.claims.sub);
+  return c.json(suspended.identity, 200);
 });
 
 identities.post("/", async (c) => {
@@ -636,6 +724,133 @@ async function findDuplicateIdentity(
   return db.prepare(DUPLICATE_NAME_SQL).bind(orgId, name).first<DuplicateIdentityRow>();
 }
 
+async function suspendIdentity(
+  identityNamespace: DurableObjectNamespace,
+  identityId: string,
+  reason: string,
+): Promise<
+  | { ok: true; identity: StoredIdentity }
+  | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 409 | 500 }
+> {
+  const durableObjectId = identityNamespace.idFromName(identityId);
+  const durableObject = identityNamespace.get(durableObjectId);
+  const response = await durableObject.fetch(
+    new Request("http://identity-do/internal/suspend", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ reason }),
+    }),
+  );
+
+  if (response.ok) {
+    return {
+      ok: true,
+      identity: await response.json<StoredIdentity>(),
+    };
+  }
+
+  return {
+    ok: false,
+    error: (await readResponseError(response, "Failed to suspend identity")) ?? "Failed to suspend identity",
+    status: response.status as 400 | 401 | 403 | 404 | 409 | 500,
+  };
+}
+
+async function listChildIdentityIds(db: D1Database, orgId: string, sponsorId: string): Promise<string[]> {
+  const result = await db.prepare(CHILD_IDENTITIES_SQL).bind(orgId, sponsorId).all<ChildIdentityRow>();
+  return Array.from(
+    new Set(
+      (result.results ?? [])
+        .map((row) => (typeof row.id === "string" ? row.id.trim() : ""))
+        .filter((id): id is string => id.length > 0 && id !== sponsorId),
+    ),
+  );
+}
+
+async function listActiveTokenIds(db: D1Database, identityId: string): Promise<string[]> {
+  const result = await db.prepare(ACTIVE_TOKENS_SQL).bind(identityId).all<ActiveTokenRow>();
+  return Array.from(
+    new Set(
+      (result.results ?? [])
+        .map((row) => {
+          if (typeof row.id === "string" && row.id.trim()) {
+            return row.id.trim();
+          }
+
+          if (typeof row.jti === "string" && row.jti.trim()) {
+            return row.jti.trim();
+          }
+
+          if (typeof row.tokenId === "string" && row.tokenId.trim()) {
+            return row.tokenId.trim();
+          }
+
+          if (typeof row.token_id === "string" && row.token_id.trim()) {
+            return row.token_id.trim();
+          }
+
+          return "";
+        })
+        .filter((tokenId): tokenId is string => tokenId.length > 0),
+    ),
+  );
+}
+
+async function revokeIdentityTokens(
+  revocationKv: KVNamespace,
+  identityId: string,
+  tokenIds: string[],
+  revokedAt: string,
+): Promise<void> {
+  await Promise.all(
+    tokenIds.map((tokenId) =>
+      revocationKv.put(
+        `revoked:${tokenId}`,
+        JSON.stringify({
+          tokenId,
+          identityId,
+          revokedAt,
+        }),
+      ),
+    ),
+  );
+}
+
+async function writeIdentitySuspendedAuditEvent(
+  db: D1Database,
+  identity: StoredIdentity,
+  reason: string,
+  actorId: string,
+): Promise<void> {
+  const payload = JSON.stringify({
+    eventType: "identity.suspended",
+    status: identity.status,
+    sponsorId: identity.sponsorId,
+    sponsorChain: identity.sponsorChain,
+    actorId,
+    reason,
+  });
+
+  try {
+    await db.prepare(INSERT_AUDIT_EVENT_SQL)
+      .bind(
+        crypto.randomUUID(),
+        identity.orgId,
+        identity.workspaceId,
+        identity.id,
+        "identity.suspended",
+        reason,
+        payload,
+        identity.updatedAt,
+      )
+      .run();
+  } catch (err) {
+    console.error("Failed to write identity suspended audit event", err);
+  }
+}
+
 async function loadOrgBudget(db: D1Database, orgId: string): Promise<IdentityBudget | undefined> {
   const row = await db.prepare(ORG_BUDGET_SQL).bind(orgId).first<OrgBudgetRow>();
   if (!row) {
@@ -690,6 +905,20 @@ function isIdentityBudget(value: unknown): value is IdentityBudget {
 
 function isIdentityBudgetUsage(value: unknown): value is StoredIdentity["budgetUsage"] {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+async function readResponseError(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = await response.clone().json<{ error?: unknown }>();
+    if (typeof body?.error === "string" && body.error.trim()) {
+      return body.error;
+    }
+  } catch {
+    // Fall back to plain text below.
+  }
+
+  const text = await response.text().catch(() => "");
+  return text || fallback;
 }
 
 export default identities;
