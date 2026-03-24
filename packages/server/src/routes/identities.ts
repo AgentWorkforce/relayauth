@@ -232,6 +232,32 @@ identities.patch("/:id", async (c) => {
   return c.json(identity, 200);
 });
 
+identities.delete("/:id", async (c) => {
+  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  if (!auth.ok) {
+    return c.json({ error: auth.error }, 401);
+  }
+
+  if (c.req.header("x-confirm-delete") !== "true") {
+    return c.json({ error: "X-Confirm-Delete: true header is required" }, 400);
+  }
+
+  const id = c.req.param("id").trim();
+  const existing = await getStoredIdentity(c.env.IDENTITY_DO, id);
+  if (!existing.ok) {
+    return c.json({ error: existing.error }, existing.status);
+  }
+
+  const activeTokenIds = await listActiveTokenIds(c.env.DB, existing.identity.id);
+  const deleted = await deleteStoredIdentity(c.env.IDENTITY_DO, existing.identity.id);
+  if (!deleted.ok) {
+    return c.json({ error: deleted.error }, deleted.status);
+  }
+
+  await revokeIdentityTokens(c.env.REVOCATION_KV, existing.identity.id, activeTokenIds, new Date().toISOString());
+  return c.body(null, 204);
+});
+
 identities.post("/:id/suspend", async (c) => {
   const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
   if (!auth.ok) {
@@ -788,6 +814,63 @@ async function parseOptionalJsonObjectBody<T extends object>(
   } catch {
     return { ok: false };
   }
+}
+
+async function getStoredIdentity(
+  identityNamespace: DurableObjectNamespace,
+  identityId: string,
+): Promise<
+  | { ok: true; identity: StoredIdentity }
+  | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 500 }
+> {
+  const durableObjectId = identityNamespace.idFromName(identityId);
+  const durableObject = identityNamespace.get(durableObjectId);
+  const response = await durableObject.fetch(
+    new Request("http://identity-do/internal/get", {
+      method: "GET",
+    }),
+  );
+
+  if (response.ok) {
+    return {
+      ok: true,
+      identity: await response.json<StoredIdentity>(),
+    };
+  }
+
+  return {
+    ok: false,
+    error: (await readResponseError(response, "Failed to fetch identity")) ?? "Failed to fetch identity",
+    status: response.status as 400 | 401 | 403 | 404 | 500,
+  };
+}
+
+async function deleteStoredIdentity(
+  identityNamespace: DurableObjectNamespace,
+  identityId: string,
+): Promise<
+  | { ok: true }
+  | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 500 }
+> {
+  const durableObjectId = identityNamespace.idFromName(identityId);
+  const durableObject = identityNamespace.get(durableObjectId);
+  const response = await durableObject.fetch(
+    new Request("http://identity-do/internal/delete", {
+      method: "DELETE",
+    }),
+  );
+
+  if (response.ok) {
+    return {
+      ok: true,
+    };
+  }
+
+  return {
+    ok: false,
+    error: (await readResponseError(response, "Failed to delete identity")) ?? "Failed to delete identity",
+    status: response.status as 400 | 401 | 403 | 404 | 500,
+  };
 }
 
 async function suspendIdentity(
