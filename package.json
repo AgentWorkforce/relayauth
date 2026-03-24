@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "description": "relayauth — agent identity and authorization",
+  "scripts": {
+    "workflow": "agent-relay run"
+  },
+  "dependencies": {
+    "@agent-relay/sdk": "latest"
+  }
+}
