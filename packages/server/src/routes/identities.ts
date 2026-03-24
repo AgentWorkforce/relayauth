@@ -274,6 +274,21 @@ identities.post("/:id/suspend", async (c) => {
   return c.json(suspended.identity, 200);
 });
 
+identities.post("/:id/reactivate", async (c) => {
+  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  if (!auth.ok) {
+    return c.json({ error: auth.error }, 401);
+  }
+
+  const id = c.req.param("id").trim();
+  const reactivated = await reactivateIdentity(c.env.IDENTITY_DO, id);
+  if (!reactivated.ok) {
+    return c.json({ error: reactivated.error }, reactivated.status);
+  }
+
+  return c.json(reactivated.identity, 200);
+});
+
 identities.post("/", async (c) => {
   const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
   if (!auth.ok) {
@@ -754,6 +769,35 @@ async function suspendIdentity(
   return {
     ok: false,
     error: (await readResponseError(response, "Failed to suspend identity")) ?? "Failed to suspend identity",
+    status: response.status as 400 | 401 | 403 | 404 | 409 | 500,
+  };
+}
+
+async function reactivateIdentity(
+  identityNamespace: DurableObjectNamespace,
+  identityId: string,
+): Promise<
+  | { ok: true; identity: StoredIdentity }
+  | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 409 | 500 }
+> {
+  const durableObjectId = identityNamespace.idFromName(identityId);
+  const durableObject = identityNamespace.get(durableObjectId);
+  const response = await durableObject.fetch(
+    new Request("http://identity-do/internal/reactivate", {
+      method: "POST",
+    }),
+  );
+
+  if (response.ok) {
+    return {
+      ok: true,
+      identity: await response.json<StoredIdentity>(),
+    };
+  }
+
+  return {
+    ok: false,
+    error: (await readResponseError(response, "Failed to reactivate identity")) ?? "Failed to reactivate identity",
     status: response.status as 400 | 401 | 403 | 404 | 409 | 500,
   };
 }
