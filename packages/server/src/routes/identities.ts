@@ -20,6 +20,10 @@ type SuspendIdentityRequest = {
   reason?: string;
 };
 
+type RetireIdentityRequest = {
+  reason?: string;
+};
+
 type JwtHeader = {
   alg?: string;
   typ?: string;
@@ -272,6 +276,30 @@ identities.post("/:id/suspend", async (c) => {
 
   await writeIdentitySuspendedAuditEvent(c.env.DB, suspended.identity, reason, auth.claims.sub);
   return c.json(suspended.identity, 200);
+});
+
+identities.post("/:id/retire", async (c) => {
+  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  if (!auth.ok) {
+    return c.json({ error: auth.error }, 401);
+  }
+
+  const id = c.req.param("id").trim();
+  const parsedBody = await parseOptionalJsonObjectBody<RetireIdentityRequest>(c.req.raw);
+  if (!parsedBody.ok) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const reason = typeof parsedBody.body?.reason === "string" ? parsedBody.body.reason.trim() : undefined;
+  const retired = await retireIdentity(c.env.IDENTITY_DO, id, reason);
+  if (!retired.ok) {
+    return c.json({ error: retired.error }, retired.status);
+  }
+
+  const activeTokenIds = await listActiveTokenIds(c.env.DB, retired.identity.id);
+  await revokeIdentityTokens(c.env.REVOCATION_KV, retired.identity.id, activeTokenIds, retired.identity.updatedAt);
+
+  return c.json(retired.identity, 200);
 });
 
 identities.post("/:id/reactivate", async (c) => {
@@ -739,6 +767,29 @@ async function findDuplicateIdentity(
   return db.prepare(DUPLICATE_NAME_SQL).bind(orgId, name).first<DuplicateIdentityRow>();
 }
 
+async function parseOptionalJsonObjectBody<T extends object>(
+  request: Request,
+): Promise<
+  | { ok: true; body?: T }
+  | { ok: false }
+> {
+  const rawBody = await request.clone().text().catch(() => "");
+  if (!rawBody.trim()) {
+    return { ok: true };
+  }
+
+  try {
+    const parsed = JSON.parse(rawBody) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false };
+    }
+
+    return { ok: true, body: parsed as T };
+  } catch {
+    return { ok: false };
+  }
+}
+
 async function suspendIdentity(
   identityNamespace: DurableObjectNamespace,
   identityId: string,
@@ -769,6 +820,44 @@ async function suspendIdentity(
   return {
     ok: false,
     error: (await readResponseError(response, "Failed to suspend identity")) ?? "Failed to suspend identity",
+    status: response.status as 400 | 401 | 403 | 404 | 409 | 500,
+  };
+}
+
+async function retireIdentity(
+  identityNamespace: DurableObjectNamespace,
+  identityId: string,
+  reason: string | undefined,
+): Promise<
+  | { ok: true; identity: StoredIdentity }
+  | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 409 | 500 }
+> {
+  const durableObjectId = identityNamespace.idFromName(identityId);
+  const durableObject = identityNamespace.get(durableObjectId);
+  const response = await durableObject.fetch(
+    new Request("http://identity-do/internal/retire", {
+      method: "POST",
+      ...(reason
+        ? {
+            headers: {
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ reason }),
+          }
+        : {}),
+    }),
+  );
+
+  if (response.ok) {
+    return {
+      ok: true,
+      identity: await response.json<StoredIdentity>(),
+    };
+  }
+
+  return {
+    ok: false,
+    error: (await readResponseError(response, "Failed to retire identity")) ?? "Failed to retire identity",
     status: response.status as 400 | 401 | 403 | 404 | 409 | 500,
   };
 }
