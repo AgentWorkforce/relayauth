@@ -14,6 +14,8 @@ type CreateIdentityRequest = CreateIdentityInput & {
   budget?: IdentityBudget;
 };
 
+type UpdateIdentityRequest = Partial<StoredIdentity>;
+
 type JwtHeader = {
   alg?: string;
   typ?: string;
@@ -136,6 +138,48 @@ identities.get("/:id", async (c) => {
   if (!response.ok) {
     const message = await response.text().catch(() => "");
     return c.json({ error: message || "Failed to fetch identity" }, response.status as 400 | 401 | 403 | 500);
+  }
+
+  const identity = await response.json<StoredIdentity>();
+  return c.json(identity, 200);
+});
+
+identities.patch("/:id", async (c) => {
+  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  if (!auth.ok) {
+    return c.json({ error: auth.error }, 401);
+  }
+
+  const id = c.req.param("id").trim();
+  const body = await c.req.json<UpdateIdentityRequest>().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const update = sanitizeIdentityUpdate(body);
+  if (Object.keys(update).length === 0) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const durableObjectId = c.env.IDENTITY_DO.idFromName(id);
+  const durableObject = c.env.IDENTITY_DO.get(durableObjectId);
+  const response = await durableObject.fetch(
+    new Request("http://identity-do/internal/update", {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(update),
+    }),
+  );
+
+  if (response.status === 404) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
+  if (!response.ok) {
+    const message = await response.text().catch(() => "");
+    return c.json({ error: message || "Failed to update identity" }, response.status as 400 | 401 | 403 | 500);
   }
 
   const identity = await response.json<StoredIdentity>();
@@ -393,6 +437,71 @@ function normalizeWorkspaceId(workspaceId: string | undefined, fallback: string)
   return typeof workspaceId === "string" && workspaceId.trim() ? workspaceId.trim() : fallback;
 }
 
+function sanitizeIdentityUpdate(body: UpdateIdentityRequest): UpdateIdentityRequest {
+  const update: UpdateIdentityRequest = {};
+
+  if (typeof body.name === "string") {
+    const name = body.name.trim();
+    if (name) {
+      update.name = name;
+    }
+  }
+
+  if (body.type && parseIdentityTypeFilter(body.type)) {
+    update.type = body.type;
+  }
+
+  if (body.status && normalizeIdentityStatus(body.status)) {
+    update.status = body.status;
+  }
+
+  if ("scopes" in body) {
+    update.scopes = normalizeStringList(body.scopes);
+  }
+
+  if ("roles" in body) {
+    update.roles = normalizeStringList(body.roles);
+  }
+
+  if ("metadata" in body) {
+    update.metadata = normalizeMetadata(body.metadata);
+  }
+
+  if (typeof body.lastActiveAt === "string") {
+    update.lastActiveAt = body.lastActiveAt;
+  }
+
+  if (typeof body.suspendedAt === "string") {
+    update.suspendedAt = body.suspendedAt;
+  }
+
+  if (typeof body.suspendReason === "string") {
+    update.suspendReason = body.suspendReason;
+  }
+
+  if (typeof body.sponsorId === "string" && body.sponsorId.trim()) {
+    update.sponsorId = body.sponsorId.trim();
+  }
+
+  if (Array.isArray(body.sponsorChain)) {
+    update.sponsorChain = normalizeStringList(body.sponsorChain);
+  }
+
+  if (typeof body.workspaceId === "string" && body.workspaceId.trim()) {
+    update.workspaceId = body.workspaceId.trim();
+  }
+
+  if (isIdentityBudget(body.budget)) {
+    update.budget = body.budget;
+  }
+
+  if (isIdentityBudgetUsage(body.budgetUsage)) {
+    update.budgetUsage = body.budgetUsage;
+  }
+
+  return update;
+}
+
 function hydrateListIdentity(row: ListIdentityRow): AgentIdentity | null {
   const id = typeof row.id === "string" ? row.id : undefined;
   const name = typeof row.name === "string" ? row.name : undefined;
@@ -576,6 +685,10 @@ function parseBudgetValue(value: string | undefined): IdentityBudget | undefined
 }
 
 function isIdentityBudget(value: unknown): value is IdentityBudget {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isIdentityBudgetUsage(value: unknown): value is StoredIdentity["budgetUsage"] {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
