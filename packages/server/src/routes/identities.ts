@@ -1,4 +1,10 @@
-import type { CreateIdentityInput, IdentityType, RelayAuthTokenClaims } from "@relayauth/types";
+import type {
+  AgentIdentity,
+  CreateIdentityInput,
+  IdentityStatus,
+  IdentityType,
+  RelayAuthTokenClaims,
+} from "@relayauth/types";
 import { Hono } from "hono";
 import type { IdentityBudget, StoredIdentity } from "../durable-objects/identity-do.js";
 import type { AppEnv } from "../env.js";
@@ -31,6 +37,31 @@ type OrgBudgetRow = {
   settings_json?: string;
 };
 
+type ListIdentityRow = {
+  id?: string;
+  name?: string;
+  type?: string;
+  orgId?: string;
+  org_id?: string;
+  status?: string;
+  scopes?: string | string[];
+  scopes_json?: string;
+  roles?: string | string[];
+  roles_json?: string;
+  metadata?: string | Record<string, string>;
+  metadata_json?: string;
+  createdAt?: string;
+  created_at?: string;
+  updatedAt?: string;
+  updated_at?: string;
+  lastActiveAt?: string;
+  last_active_at?: string;
+  suspendedAt?: string;
+  suspended_at?: string;
+  suspendReason?: string;
+  suspend_reason?: string;
+};
+
 const identities = new Hono<AppEnv>();
 
 const DUPLICATE_NAME_SQL = `
@@ -46,6 +77,42 @@ const ORG_BUDGET_SQL = `
   WHERE org_id = ?
   LIMIT 1
 `;
+
+identities.get("/", async (c) => {
+  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  if (!auth.ok) {
+    return c.json({ error: auth.error }, 401);
+  }
+
+  const status = normalizeIdentityStatus(c.req.query("status"));
+  const type = parseIdentityTypeFilter(c.req.query("type"));
+  const limit = parseIdentityListLimit(c.req.query("limit"));
+  const cursorId = decodeIdentityCursor(c.req.query("cursor"));
+
+  const query = buildListIdentitiesQuery(auth.claims.org, status, type);
+  const result = await c.env.DB.prepare(query.sql).bind(...query.params).all<ListIdentityRow>();
+  const identities = (result.results ?? [])
+    .map(hydrateListIdentity)
+    .filter((identity): identity is AgentIdentity => identity !== null)
+    .sort(compareIdentitiesByCreatedAtDesc);
+
+  const startIndex = cursorId
+    ? Math.max(
+        identities.findIndex((identity) => identity.id === cursorId) + 1,
+        0,
+      )
+    : 0;
+  const page = identities.slice(startIndex, startIndex + limit);
+  const hasMore = startIndex + limit < identities.length;
+
+  return c.json(
+    {
+      data: page,
+      ...(hasMore && page.length > 0 ? { cursor: encodeIdentityCursor(page[page.length - 1].id) } : {}),
+    },
+    200,
+  );
+});
 
 identities.get("/:id", async (c) => {
   const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
@@ -258,6 +325,52 @@ function normalizeIdentityType(type: IdentityType | undefined): IdentityType {
   return type === "human" || type === "service" ? type : "agent";
 }
 
+function normalizeIdentityStatus(status: string | undefined): IdentityStatus | undefined {
+  return status === "active" || status === "suspended" || status === "retired" ? status : undefined;
+}
+
+function parseIdentityTypeFilter(type: string | undefined): IdentityType | undefined {
+  return type === "agent" || type === "human" || type === "service" ? type : undefined;
+}
+
+function parseIdentityListLimit(value: string | undefined): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return 50;
+  }
+
+  return Math.min(parsed, 100);
+}
+
+function buildListIdentitiesQuery(
+  orgId: string,
+  status: IdentityStatus | undefined,
+  type: IdentityType | undefined,
+): { sql: string; params: string[] } {
+  const clauses = ["org_id = ?"];
+  const params = [orgId];
+
+  if (status) {
+    clauses.push("status = ?");
+    params.push(status);
+  }
+
+  if (type) {
+    clauses.push("type = ?");
+    params.push(type);
+  }
+
+  return {
+    sql: `
+      SELECT *
+      FROM identities
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY created_at DESC, id DESC
+    `,
+    params,
+  };
+}
+
 function normalizeStringList(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -280,8 +393,130 @@ function normalizeWorkspaceId(workspaceId: string | undefined, fallback: string)
   return typeof workspaceId === "string" && workspaceId.trim() ? workspaceId.trim() : fallback;
 }
 
+function hydrateListIdentity(row: ListIdentityRow): AgentIdentity | null {
+  const id = typeof row.id === "string" ? row.id : undefined;
+  const name = typeof row.name === "string" ? row.name : undefined;
+  const orgId =
+    typeof row.orgId === "string"
+      ? row.orgId
+      : typeof row.org_id === "string"
+        ? row.org_id
+        : undefined;
+  const createdAt =
+    typeof row.createdAt === "string"
+      ? row.createdAt
+      : typeof row.created_at === "string"
+        ? row.created_at
+        : undefined;
+  const updatedAt =
+    typeof row.updatedAt === "string"
+      ? row.updatedAt
+      : typeof row.updated_at === "string"
+        ? row.updated_at
+        : undefined;
+
+  if (!id || !name || !orgId || !createdAt || !updatedAt) {
+    return null;
+  }
+
+  const status = normalizeIdentityStatus(row.status) ?? "active";
+  const scopes = parseStringListColumn(row.scopes_json ?? row.scopes);
+  const roles = parseStringListColumn(row.roles_json ?? row.roles);
+  const metadata = parseMetadataColumn(row.metadata_json ?? row.metadata);
+
+  return {
+    id,
+    name,
+    type: normalizeIdentityType(parseIdentityTypeFilter(row.type)),
+    orgId,
+    status,
+    scopes,
+    roles,
+    metadata,
+    createdAt,
+    updatedAt,
+    ...(typeof row.lastActiveAt === "string"
+      ? { lastActiveAt: row.lastActiveAt }
+      : typeof row.last_active_at === "string"
+        ? { lastActiveAt: row.last_active_at }
+        : {}),
+    ...(typeof row.suspendedAt === "string"
+      ? { suspendedAt: row.suspendedAt }
+      : typeof row.suspended_at === "string"
+        ? { suspendedAt: row.suspended_at }
+        : {}),
+    ...(typeof row.suspendReason === "string"
+      ? { suspendReason: row.suspendReason }
+      : typeof row.suspend_reason === "string"
+        ? { suspendReason: row.suspend_reason }
+        : {}),
+  };
+}
+
+function parseStringListColumn(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return normalizeStringList(value);
+  }
+
+  if (typeof value !== "string" || !value.trim()) {
+    return [];
+  }
+
+  try {
+    return normalizeStringList(JSON.parse(value) as unknown);
+  } catch {
+    return [];
+  }
+}
+
+function parseMetadataColumn(value: unknown): Record<string, string> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return normalizeMetadata(value);
+  }
+
+  if (typeof value !== "string" || !value.trim()) {
+    return {};
+  }
+
+  try {
+    return normalizeMetadata(JSON.parse(value) as unknown);
+  } catch {
+    return {};
+  }
+}
+
+function compareIdentitiesByCreatedAtDesc(left: AgentIdentity, right: AgentIdentity): number {
+  return right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
+}
+
 function createIdentityId(): string {
   return `agent_${crypto.randomUUID().replace(/-/g, "")}`;
+}
+
+function encodeIdentityCursor(id: string): string {
+  return btoa(JSON.stringify({ id }))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function decodeIdentityCursor(cursor: string | undefined): string | undefined {
+  const trimmed = cursor?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const decoded = decodeBase64UrlJson<{ id?: unknown }>(trimmed);
+  if (typeof decoded?.id === "string" && decoded.id) {
+    return decoded.id;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as { id?: unknown };
+    return typeof parsed.id === "string" && parsed.id ? parsed.id : trimmed;
+  } catch {
+    return trimmed;
+  }
 }
 
 async function findDuplicateIdentity(
