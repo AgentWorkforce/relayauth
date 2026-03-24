@@ -2008,6 +2008,385 @@ The session report includes collaboration metrics:
 
 ---
 
+## File Tracking & Git
+
+### What's tracked in git?
+
+The `/.relay/` metadata directory is **NOT git-tracked**. It contains
+ephemeral coordination data that only exists during active sessions:
+
+```gitignore
+# In .gitignore
+.relay/files.json
+.relay/intents.json
+.relay/activity.json
+.relay/claims/
+.relay/summaries/
+.relay/audit.log
+```
+
+**What IS tracked in git:**
+- `.relay/permissions.yaml` — the permission configuration (team-shared)
+- `.trajectories/` — trajectory records (the durable story of agent work)
+
+**What is NOT tracked (ephemeral):**
+- `/.relay/files.json` — file metadata (rebuilt each session)
+- `/.relay/intents.json` — active claims (cleared on session end)
+- `/.relay/activity.json` — activity feed (ring buffer, session-scoped)
+- `/.relay/audit.log` — local audit (uploaded to relayauth, then rotated)
+- `/.relay/claims/` — intent request/response files
+- `/.relay/summaries/` — agent-provided edit summaries
+
+**Why not track metadata?**
+Metadata is coordination data, not source of truth. Git history and
+trajectories are the durable records. Tracking ephemeral metadata in git
+would cause constant meaningless diffs and merge conflicts.
+
+**Durable records live elsewhere:**
+- **Audit log** → relayauth (distributed, 90-day retention)
+- **Trajectories** → `.trajectories/` directory (git-tracked)
+- **Git history** → commits, blame, diffs (the actual code changes)
+
+---
+
+## Trajectories Integration
+
+### Overview
+
+[Agent Trajectories](https://github.com/AgentWorkforce/trajectories) captures
+the complete story of agent work — chapters, events, decisions, retrospectives.
+Relay metadata captures the operational reality — file operations, permission
+denials, collaboration events.
+
+Together they provide the complete picture: trajectories tell you *what the
+agent was thinking and why*, relay tells you *what actually happened at the
+system level*.
+
+### What Relay Feeds Into Trajectories
+
+When a trajectory is active (`trail start "implement auth"`) and relay
+integration is enabled, the relay daemon automatically records events
+into the trajectory:
+
+**Permission events:**
+```json
+{
+  "type": "relay:permission",
+  "timestamp": "2026-03-24T20:35:12Z",
+  "agent": "coder-2 (codex)",
+  "action": "fs:write",
+  "target": "/.env.production",
+  "result": "denied",
+  "scope_held": ["relayfile:fs:write:/src/*"],
+  "impact": "Agent pivoted to reading config from environment variables"
+}
+```
+
+**Collaboration events:**
+```json
+{
+  "type": "relay:collaboration",
+  "timestamp": "2026-03-24T20:36:01Z",
+  "event": "intent_registered",
+  "agent": "coder-1 (claude)",
+  "path": "/src/api/route.ts",
+  "reason": "Adding authentication middleware",
+  "conflictsWith": null
+}
+```
+
+```json
+{
+  "type": "relay:collaboration",
+  "timestamp": "2026-03-24T20:36:15Z",
+  "event": "conflict_avoided",
+  "agent": "coder-2 (codex)",
+  "path": "/src/api/route.ts",
+  "action": "Read intent from coder-1, chose /src/lib/auth.ts instead",
+  "coordinationMethod": "relay_intent_check"
+}
+```
+
+```json
+{
+  "type": "relay:collaboration",
+  "timestamp": "2026-03-24T20:37:00Z",
+  "event": "auto_merge",
+  "path": "/src/utils.ts",
+  "agents": ["coder-1 (claude)", "coder-2 (codex)"],
+  "result": "success",
+  "linesAdded": 12,
+  "linesRemoved": 3
+}
+```
+
+**VCS events:**
+```json
+{
+  "type": "relay:vcs",
+  "timestamp": "2026-03-24T20:38:00Z",
+  "agent": "coder-2 (codex)",
+  "action": "push",
+  "ref": "refs/heads/main",
+  "result": "denied",
+  "allowedRefs": ["refs/heads/feat/*", "refs/heads/fix/*"],
+  "resolution": "Pushed to feat/auth instead"
+}
+```
+
+**File operation summaries:**
+```json
+{
+  "type": "relay:file_summary",
+  "agent": "coder-1 (claude)",
+  "session": "sess_abc123",
+  "duration": "5m 12s",
+  "operations": {
+    "reads": 87,
+    "writes": 42,
+    "denials": 3
+  },
+  "filesModified": [
+    "/src/lib/auth.ts",
+    "/src/api/route.ts",
+    "/tests/auth.test.ts"
+  ],
+  "hotFiles": ["/src/api/route.ts"],
+  "intentsRegistered": 2,
+  "conflictsAvoided": 1
+}
+```
+
+### Configuration
+
+```yaml
+# In .relay/permissions.yaml
+settings:
+  trajectories:
+    # Enable relay → trajectory event feeding
+    enabled: true
+
+    # What to capture
+    capturePermissions: true     # log allowed/denied ops
+    captureCollaboration: true   # log intents, conflicts, merges
+    captureFileHistory: true     # include edit summaries
+    captureVCS: true             # log git push allowed/denied
+    captureMCP: true             # log MCP tool calls allowed/denied
+
+    # Verbosity: "summary" or "detailed"
+    # summary: one event per session with aggregate stats
+    # detailed: individual events for each operation
+    verbosity: summary
+
+    # Only capture denied operations (reduces noise)
+    deniedOnly: false
+
+    # Auto-start trajectory when relay session begins
+    # (requires trail CLI installed)
+    autoStart: false
+
+    # Trajectory storage backend (inherits from trail config)
+    # Defaults to .trajectories/ directory
+    storage: filesystem
+```
+
+### Trajectory Output with Relay Data
+
+A trajectory record enriched with relay data:
+
+```json
+{
+  "id": "traj_abc123",
+  "task": "Implement JWT authentication",
+  "status": "completed",
+  "startedAt": "2026-03-24T20:30:00Z",
+  "completedAt": "2026-03-24T20:42:15Z",
+  "agents": [
+    {
+      "name": "coder-1",
+      "cli": "claude",
+      "role": "lead",
+      "profile": "coder",
+      "relay": {
+        "operations": 142,
+        "denied": 3,
+        "intentsRegistered": 2,
+        "conflictsAvoided": 1,
+        "filesModified": 5
+      }
+    },
+    {
+      "name": "coder-2",
+      "cli": "codex",
+      "role": "contributor",
+      "profile": "coder",
+      "relay": {
+        "operations": 89,
+        "denied": 1,
+        "intentsRegistered": 1,
+        "conflictsAvoided": 0,
+        "filesModified": 3
+      }
+    }
+  ],
+  "chapters": [
+    {
+      "title": "Exploration",
+      "agent": "coder-1 (claude)",
+      "events": [
+        { "type": "tool_call", "tool": "read_file", "target": "/src/auth/" },
+        { "type": "decision", "summary": "JWT over sessions — stateless scaling" },
+        {
+          "type": "relay:permission",
+          "action": "read /.env.local",
+          "result": "denied",
+          "impact": "Discovered auth secrets managed externally"
+        }
+      ]
+    },
+    {
+      "title": "Implementation",
+      "agent": "coder-2 (codex)",
+      "events": [
+        {
+          "type": "relay:collaboration",
+          "event": "intent_registered",
+          "path": "/src/api/route.ts"
+        },
+        { "type": "tool_call", "tool": "write_file", "target": "/src/api/route.ts" },
+        {
+          "type": "relay:vcs",
+          "action": "push refs/heads/main",
+          "result": "denied",
+          "resolution": "Pushed to feat/auth"
+        }
+      ]
+    },
+    {
+      "title": "Parallel Coordination",
+      "agents": ["coder-1 (claude)", "coder-2 (codex)"],
+      "events": [
+        {
+          "type": "relay:collaboration",
+          "event": "hot_file_detected",
+          "path": "/src/utils.ts"
+        },
+        {
+          "type": "relay:collaboration",
+          "event": "auto_merge",
+          "path": "/src/utils.ts",
+          "result": "success"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "JWT auth implemented with middleware pattern",
+    "relay_summary": {
+      "total_operations": 231,
+      "denials_prevented": 4,
+      "auto_merges": 1,
+      "conflicts_avoided": 1,
+      "coordination_method": "relay intent system"
+    },
+    "lessonsLearned": [
+      "Intent registration prevented 2 file conflicts",
+      "Permission denial on .env led to better config pattern",
+      "Auto-merge handled concurrent utils.ts edits cleanly"
+    ]
+  },
+  "artifacts": {
+    "commits": ["abc123", "def456"],
+    "pr": "#42",
+    "filesChanged": 8,
+    "relay_audit_id": "audit_xyz789"
+  }
+}
+```
+
+### Human-Readable Trajectory (Markdown export)
+
+```markdown
+# Trajectory: Implement JWT Authentication
+**Task:** traj_abc123 | **Duration:** 12m 15s | **Agents:** 2
+
+## Chapter 1: Exploration (claude, coder-1)
+- Read existing auth code (12 files)
+- Evaluated JWT vs session approach
+- 🔒 **Relay: read /.env.local DENIED** → discovered auth secrets managed externally
+- ✅ Decision: Use JWT with env-based secret injection
+
+## Chapter 2: Implementation (codex, coder-2)
+- 📋 **Relay: claimed /src/api/route.ts** — "Adding JWT middleware"
+- Implemented JWT middleware in all route handlers
+- 🔒 **Relay: write /infra/auth.yaml DENIED** → stayed in application layer
+- 🔒 **Relay: push refs/heads/main DENIED** → pushed to feat/auth instead
+
+## Chapter 3: Parallel Coordination
+- claude: /src/lib/auth.ts (JWT validation)
+- codex: /src/api/route.ts (middleware)
+- 🔥 **Relay: hot file /src/utils.ts** (both agents editing)
+- 🔀 **Relay: auto-merge SUCCESS** on /src/utils.ts
+- No manual conflict resolution needed
+
+## Retrospective
+- 2 permission denials prevented unsafe operations (.env read, infra write)
+- 1 VCS denial enforced branch policy (main → feat/auth)
+- 1 auto-merge saved manual conflict resolution
+- Intent system prevented 2 potential file conflicts
+
+## Relay Summary
+| Metric | claude (coder-1) | codex (coder-2) | Total |
+|--------|-----------------|-----------------|-------|
+| File ops | 142 | 89 | 231 |
+| Denied | 3 | 1 | 4 |
+| Intents | 2 | 1 | 3 |
+| Files modified | 5 | 3 | 8 |
+| Conflicts avoided | 1 | 0 | 1 |
+```
+
+### PR Review Experience
+
+When a PR is opened with a trajectory that includes relay data, the reviewer
+gets a complete picture without reading 500 lines of code:
+
+1. **What happened:** Trajectory chapters tell the story
+2. **What was considered:** Decision events show alternatives
+3. **What was prevented:** Relay denials show guardrails in action
+4. **How agents coordinated:** Collaboration events show the interaction
+5. **What merged automatically:** Auto-merge events show parallel work
+6. **What the agent's confidence was:** Retrospective with relay metrics
+
+This is fundamentally different from a code diff. The diff shows *what changed*.
+The trajectory + relay data shows *why it changed, who changed it, what was
+tried and rejected, and what guardrails kept it safe*.
+
+### trail CLI Integration
+
+The `trail` CLI can query relay data:
+
+```bash
+trail show traj_abc123 --relay          # show relay events in trajectory
+trail show traj_abc123 --denials        # show only permission denials
+trail show traj_abc123 --collaboration  # show only collaboration events
+trail search --relay-denied "env"       # find trajectories with .env denials
+trail search --hot-files                # find trajectories with hot file events
+trail stats --relay                     # aggregate relay stats across trajectories
+```
+
+Output:
+```
+Relay Stats (last 30 days, 47 trajectories):
+  Total file operations: 12,847
+  Permission denials:    89 (0.7%)
+  Top denied paths:      /.env (34x), /infra/ (21x), main push (12x)
+  Auto-merges:           23 (all successful)
+  Conflicts avoided:     41 (intent system)
+  Hot files:             /src/api/route.ts (7 trajectories), /package.json (5)
+```
+
+---
+
 ## Non-Goals
 
 - **Runtime permission escalation** — agent cannot request more scopes mid-session
@@ -2019,3 +2398,6 @@ The session report includes collaboration metrics:
   filesystem permissions, user isolation, or container boundaries
 - **DRM / anti-piracy** — not designed to prevent determined human adversaries,
   designed to constrain well-intentioned-but-overpowered AI agents
+- **Replacing git** — relay metadata is coordination data, not version control.
+  Git remains the source of truth for code. Trajectories are the source of
+  truth for the story of how the code came to be.
