@@ -1,0 +1,94 @@
+{
+  "id": "traj_1774426749839_37d7d4d4",
+  "version": 1,
+  "task": {
+    "title": "060-sdk-client-tokens-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "ba393ada0b2652c173643e62"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-25T08:19:09.839Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-25T08:19:09.839Z"
+    },
+    {
+      "name": "test-writer",
+      "role": "specialist",
+      "joinedAt": "2026-03-25T08:19:19.706Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_2f54d652",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T08:19:09.839Z",
+      "events": [
+        {
+          "ts": 1774426749839,
+          "type": "note",
+          "content": "Purpose: RelayAuthClient token methods (issue, refresh, revoke)"
+        },
+        {
+          "ts": 1774426749839,
+          "type": "note",
+          "content": "Approach: 12-step dag workflow — Parsed 12 steps, 4 parallel tracks, 8 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-25T08:19:13.659Z"
+    },
+    {
+      "id": "ch_893ae71d",
+      "title": "Execution: read-client, read-token-types, read-errors, read-server-token-routes",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T08:19:13.659Z",
+      "events": [],
+      "endedAt": "2026-03-25T08:19:19.703Z"
+    },
+    {
+      "id": "ch_7fd3b8a5",
+      "title": "Convergence: read-client + read-token-types + read-errors + read-server-token-routes",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T08:19:19.703Z",
+      "events": [
+        {
+          "ts": 1774426759704,
+          "type": "reflection",
+          "content": "read-client + read-token-types + read-errors + read-server-token-routes resolved. 4/4 steps completed. All steps completed on first attempt. Unblocking: write-tests, implement.",
+          "significance": "high",
+          "raw": {
+            "confidence": 0.75,
+            "focalPoints": [
+              "read-client: completed",
+              "read-token-types: completed",
+              "read-errors: completed",
+              "read-server-token-routes: completed"
+            ]
+          }
+        }
+      ],
+      "endedAt": "2026-03-25T08:19:19.706Z"
+    },
+    {
+      "id": "ch_30841b76",
+      "title": "Execution: write-tests",
+      "agentName": "test-writer",
+      "startedAt": "2026-03-25T08:19:19.706Z",
+      "events": [
+        {
+          "ts": 1774426759706,
+          "type": "note",
+          "content": "\"write-tests\": Write tests for RelayAuthClient token methods",
+          "raw": {
+            "agent": "test-writer"
+          }
+        }
+      ]
+    }
+  ]
+}

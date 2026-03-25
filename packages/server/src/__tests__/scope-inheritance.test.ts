@@ -387,6 +387,17 @@ function filterIdentitiesByQuery(
 function filterRolesByQuery(allRoles: Role[], query: string, params: unknown[]): Role[] {
   const sql = normalizeSql(query);
   let roles = [...allRoles];
+
+  // Handle WHERE id IN (?, ?, ...) queries
+  const inMatch = /\bid\s+in\s*\(([^)]+)\)/i.exec(sql);
+  if (inMatch) {
+    const placeholderCount = (inMatch[1].match(/\?/g) ?? []).length;
+    const inIds = params.slice(0, placeholderCount).filter((p): p is string => typeof p === "string");
+    roles = roles.filter((role) => inIds.includes(role.id));
+    roles.sort((left, right) => left.id.localeCompare(right.id));
+    return roles;
+  }
+
   const orderedClauses = extractClauseOrder(sql, [
     { field: "orgId", regexes: [/\borg_id\s*=\s*\?/i, /\borgid\s*=\s*\?/i] },
     { field: "id", regexes: [/\bid\s*=\s*\?/i] },

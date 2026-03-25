@@ -1,11 +1,12 @@
 import type { Policy, Role } from "@relayauth/types";
 import { parseScope } from "@relayauth/sdk/src/scope-parser.js";
 
-import type { StoredIdentity } from "../durable-objects/identity-do.js";
+import type { StoredIdentity as BaseStoredIdentity } from "../durable-objects/identity-do.js";
+
+type StoredIdentity = Omit<BaseStoredIdentity, "workspaceId"> & { workspaceId?: string };
 import { applyPolicies, evaluateCondition } from "./policy-evaluation.js";
 import { listPolicies } from "./policies.js";
 import { listIdentityRoles } from "./role-assignments.js";
-import { getRole } from "./roles.js";
 
 type IdentityRow = {
   id?: string;
@@ -183,13 +184,20 @@ export async function getInheritanceChain(
   );
 
   const orgEffective = applyDenyPolicies(orgContext.scopes, orgPolicies, context);
-  const workspaceBoundary = intersectScopes(orgContext.scopes, workspaceContext.scopes);
-  const workspaceEffective = applyDenyPolicies(
-    workspaceBoundary,
-    [...orgPolicies, ...workspacePolicies],
-    context,
-  );
-  const agentBoundary = intersectScopes(workspaceBoundary, agentContext.scopes);
+
+  const hasWorkspace = Boolean(identity.workspaceId);
+  const workspaceBoundary = hasWorkspace
+    ? intersectScopes(orgContext.scopes, workspaceContext.scopes)
+    : [];
+  const workspaceEffective = hasWorkspace
+    ? applyDenyPolicies(
+        workspaceBoundary,
+        [...orgPolicies, ...workspacePolicies],
+        context,
+      )
+    : [];
+  const agentParentBoundary = hasWorkspace ? workspaceBoundary : orgContext.scopes;
+  const agentBoundary = intersectScopes(agentParentBoundary, agentContext.scopes);
   const agentEffective = applyDenyPolicies(
     agentBoundary,
     [...orgPolicies, ...workspacePolicies],
@@ -319,8 +327,67 @@ async function loadRolesByIds(db: D1Database, roleIds: string[]): Promise<Role[]
     return [];
   }
 
-  const roles = await Promise.all(uniqueRoleIds.map((roleId) => getRole(db, roleId)));
-  return roles.filter((role): role is Role => role !== null);
+  const placeholders = uniqueRoleIds.map(() => "?").join(", ");
+  const result = await db
+    .prepare(`
+      SELECT
+        id,
+        name,
+        description,
+        scopes,
+        scopes_json,
+        org_id AS orgId,
+        workspace_id AS workspaceId,
+        built_in AS builtIn,
+        created_at AS createdAt
+      FROM roles
+      WHERE id IN (${placeholders})
+    `)
+    .bind(...uniqueRoleIds)
+    .all<{
+      id?: string;
+      name?: string;
+      description?: string;
+      scopes?: string | string[];
+      scopes_json?: string | string[];
+      orgId?: string;
+      org_id?: string;
+      workspaceId?: string | null;
+      workspace_id?: string | null;
+      builtIn?: boolean | number;
+      built_in?: boolean | number;
+      createdAt?: string;
+      created_at?: string;
+    }>();
+
+  return (result.results ?? [])
+    .map((row) => {
+      const id = normalizeOptionalString(row.id);
+      const name = normalizeOptionalString(row.name);
+      const description = normalizeOptionalString(row.description);
+      const orgId = normalizeOptionalString(row.orgId) ?? normalizeOptionalString(row.org_id);
+      const createdAt = normalizeOptionalString(row.createdAt) ?? normalizeOptionalString(row.created_at);
+
+      if (!id || !name || !description || !orgId || !createdAt) {
+        return null;
+      }
+
+      const scopes = parseStringArrayColumn(row.scopes_json ?? row.scopes);
+      const workspaceId = normalizeOptionalString(row.workspaceId) ?? normalizeOptionalString(row.workspace_id);
+      const builtIn = row.builtIn === true || row.builtIn === 1 || row.built_in === true || row.built_in === 1;
+
+      return {
+        id,
+        name,
+        description,
+        scopes,
+        orgId,
+        ...(workspaceId ? { workspaceId } : {}),
+        builtIn,
+        createdAt,
+      } as Role;
+    })
+    .filter((role): role is Role => role !== null);
 }
 
 async function getIdentity(
@@ -346,7 +413,7 @@ function hydrateIdentity(row: IdentityRow | null): StoredIdentity | null {
   const sponsorId = normalizeOptionalString(row.sponsorId) ?? normalizeOptionalString(row.sponsor_id);
   const workspaceId = normalizeOptionalString(row.workspaceId) ?? normalizeOptionalString(row.workspace_id);
 
-  if (!id || !name || !type || !orgId || !status || !createdAt || !updatedAt || !sponsorId || !workspaceId) {
+  if (!id || !name || !type || !orgId || !status || !createdAt || !updatedAt || !sponsorId) {
     return null;
   }
 
@@ -368,7 +435,7 @@ function hydrateIdentity(row: IdentityRow | null): StoredIdentity | null {
     updatedAt,
     sponsorId,
     sponsorChain: sponsorChain.length > 0 ? sponsorChain : [sponsorId, id],
-    workspaceId,
+    ...(workspaceId ? { workspaceId } : {}),
   };
 }
 
