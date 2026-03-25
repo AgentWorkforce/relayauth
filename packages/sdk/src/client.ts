@@ -4,6 +4,7 @@ import type {
   AuditQuery,
   CreateIdentityInput,
   IdentityStatus,
+  RelayAuthTokenClaims,
   TokenPair,
 } from "@relayauth/types";
 
@@ -29,15 +30,25 @@ type ListIdentitiesOptions = {
   status?: IdentityStatus;
 };
 
+type IssueTokenOptions = {
+  scopes?: string[];
+  audience?: string[];
+  expiresIn?: number;
+};
+
 type RequestOptions = Omit<RequestInit, "body" | "headers"> & {
   body?: unknown;
   headers?: HeadersInit;
   query?: Record<string, string | number | undefined>;
+  errorContext?: {
+    identityId?: string;
+  };
 };
 
 export class RelayAuthClient {
   declare private readonly __types?: {
     tokenPair: TokenPair;
+    tokenClaims: RelayAuthTokenClaims;
     identity: AgentIdentity;
     createIdentityInput: CreateIdentityInput;
     auditQuery: AuditQuery;
@@ -62,6 +73,45 @@ export class RelayAuthClient {
 
   async getIdentity(identityId: string): Promise<AgentIdentity> {
     return this._request<AgentIdentity>(`/v1/identities/${encodeURIComponent(identityId)}`);
+  }
+
+  async issueToken(identityId: string, options?: IssueTokenOptions): Promise<TokenPair> {
+    return this._request<TokenPair>("/v1/tokens", {
+      method: "POST",
+      body: {
+        identityId,
+        ...options,
+      },
+      errorContext: {
+        identityId,
+      },
+    });
+  }
+
+  async refreshToken(refreshToken: string): Promise<TokenPair> {
+    return this._request<TokenPair>("/v1/tokens/refresh", {
+      method: "POST",
+      body: {
+        refreshToken,
+      },
+    });
+  }
+
+  async revokeToken(tokenId: string): Promise<void> {
+    await this._request<void>("/v1/tokens/revoke", {
+      method: "POST",
+      body: {
+        tokenId,
+      },
+    });
+  }
+
+  async introspectToken(token: string): Promise<RelayAuthTokenClaims | null> {
+    return this._request<RelayAuthTokenClaims | null>("/v1/tokens/introspect", {
+      query: {
+        token,
+      },
+    });
   }
 
   async listIdentities(
@@ -131,7 +181,7 @@ export class RelayAuthClient {
   }
 
   private async _request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    const { body, headers, query, ...init } = options;
+    const { body, errorContext, headers, query, ...init } = options;
     const url = new URL(path, normalizeBaseUrl(this.options.baseUrl));
 
     if (query) {
@@ -168,7 +218,7 @@ export class RelayAuthClient {
     const payload = text ? parseJson(text) : undefined;
 
     if (!response.ok) {
-      throw createRequestError(response.status, path, payload);
+      throw createRequestError(response.status, path, payload, errorContext);
     }
 
     if (!text) {
@@ -191,8 +241,13 @@ function parseJson(value: string): unknown {
   }
 }
 
-function createRequestError(status: number, path: string, payload: unknown): RelayAuthError {
-  const identityId = extractIdentityId(path);
+function createRequestError(
+  status: number,
+  path: string,
+  payload: unknown,
+  context?: RequestOptions["errorContext"],
+): RelayAuthError {
+  const identityId = context?.identityId ?? extractIdentityId(path);
   const errorCode = getString(payload, "error");
   const message = getString(payload, "message") ?? `Request failed with status ${status}`;
 

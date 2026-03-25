@@ -1,0 +1,92 @@
+{
+  "id": "traj_1774426876595_b643fefe",
+  "version": 1,
+  "task": {
+    "title": "040-rbac-e2e-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "ebe5f3ba0c77249474959176"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-25T08:21:16.595Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-25T08:21:16.595Z"
+    },
+    {
+      "name": "test-writer",
+      "role": "specialist",
+      "joinedAt": "2026-03-25T08:21:21.212Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_4861b112",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T08:21:16.595Z",
+      "events": [
+        {
+          "ts": 1774426876595,
+          "type": "note",
+          "content": "Purpose: Scopes & RBAC E2E tests"
+        },
+        {
+          "ts": 1774426876595,
+          "type": "note",
+          "content": "Approach: 7-step pipeline workflow — Parsed 7 steps, 2 parallel tracks, 5 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-25T08:21:21.157Z"
+    },
+    {
+      "id": "ch_8f6825f8",
+      "title": "Execution: read-implementations, read-test-helpers",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T08:21:21.157Z",
+      "events": [],
+      "endedAt": "2026-03-25T08:21:21.209Z"
+    },
+    {
+      "id": "ch_dce10fa4",
+      "title": "Convergence: read-implementations + read-test-helpers",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T08:21:21.209Z",
+      "events": [
+        {
+          "ts": 1774426881211,
+          "type": "reflection",
+          "content": "read-implementations + read-test-helpers resolved. 2/2 steps completed. All steps completed on first attempt. Unblocking: write-e2e.",
+          "significance": "high",
+          "raw": {
+            "confidence": 0.75,
+            "focalPoints": [
+              "read-implementations: completed",
+              "read-test-helpers: completed"
+            ]
+          }
+        }
+      ],
+      "endedAt": "2026-03-25T08:21:21.212Z"
+    },
+    {
+      "id": "ch_c0014d2d",
+      "title": "Execution: write-e2e",
+      "agentName": "test-writer",
+      "startedAt": "2026-03-25T08:21:21.212Z",
+      "events": [
+        {
+          "ts": 1774426881212,
+          "type": "note",
+          "content": "\"write-e2e\": Write E2E tests for the Scopes & RBAC domain",
+          "raw": {
+            "agent": "test-writer"
+          }
+        }
+      ]
+    }
+  ]
+}
