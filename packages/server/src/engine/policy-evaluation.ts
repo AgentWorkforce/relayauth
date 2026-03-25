@@ -1,5 +1,4 @@
-import type { Policy, PolicyCondition } from "@relayauth/types";
-import { matchParsedScope, matchScope } from "@relayauth/sdk/src/scope-matcher.js";
+import type { Action, Policy, PolicyCondition } from "@relayauth/types";
 import { parseScope } from "@relayauth/sdk/src/scope-parser.js";
 
 import { writeAuditEntry } from "./audit-logger.js";
@@ -103,6 +102,7 @@ const SELECT_IDENTITY_SQL = `
 `;
 
 const WEEKDAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+const MANAGE_IMPLIES = new Set<Action>(["read", "write", "create", "delete"]);
 
 export async function evaluatePermissions(
   db: D1Database,
@@ -119,14 +119,26 @@ export async function evaluatePermissions(
     };
   }
 
-  const roles = await listIdentityRoles(db, identity.id);
+  const evaluationContext = createEvaluationContext(identity, context);
+  const [roles, policies] = await Promise.all([
+    listIdentityRoles(db, identity.id),
+    listPolicies(db, identity.orgId, evaluationContext.workspaceId),
+  ]);
+
+  return evaluatePermissionsWithData(identity, roles, policies, evaluationContext);
+}
+
+function evaluatePermissionsWithData(
+  identity: StoredIdentity,
+  roles: { scopes: string[] }[],
+  policies: Policy[],
+  context: EvaluationContext,
+): EvaluationResult {
   const roleScopes = roles.flatMap((role) => role.scopes);
   const mergedScopes = mergeScopes(identity.scopes, roleScopes);
 
-  const evaluationContext = createEvaluationContext(identity, context);
-  const policies = await listPolicies(db, identity.orgId, evaluationContext.workspaceId);
   const applicablePolicies = policies.filter((policy) =>
-    policy.conditions.every((condition) => evaluateCondition(condition, evaluationContext)),
+    policy.conditions.every((condition) => evaluateCondition(condition, context)),
   );
 
   const outcome = applyPoliciesDetailed(mergedScopes, applicablePolicies);
@@ -183,10 +195,14 @@ export async function checkAccess(
     await writeBudgetAudit(db, identity, requestedScope, "budget.alert", "allowed");
   }
 
-  const result = await evaluatePermissions(db, identity.id, identity.orgId, evaluationContext);
-  const matchingDecision = await resolveRequestPolicyDecision(
-    db,
-    identity,
+  const [roles, policies] = await Promise.all([
+    listIdentityRoles(db, identity.id),
+    listPolicies(db, identity.orgId, evaluationContext.workspaceId),
+  ]);
+
+  const result = evaluatePermissionsWithData(identity, roles, policies, evaluationContext);
+  const matchingDecision = resolveRequestPolicyDecisionFromPolicies(
+    policies,
     requestedScope,
     evaluationContext,
   );
@@ -199,7 +215,7 @@ export async function checkAccess(
     };
   }
 
-  if (matchScope(requestedScope, result.effectiveScopes)) {
+  if (scopeMatchesAny(requestedScope, result.effectiveScopes)) {
     return {
       allowed: true,
       reason: "scope_allowed",
@@ -319,8 +335,16 @@ async function resolveRequestPolicyDecision(
   context: EvaluationContext,
 ): Promise<ScopeDecision | null> {
   const policies = await listPolicies(db, identity.orgId, context.workspaceId);
+  return resolveRequestPolicyDecisionFromPolicies(policies, requestedScope, context);
+}
+
+function resolveRequestPolicyDecisionFromPolicies(
+  policies: Policy[],
+  requestedScope: string,
+  context: EvaluationContext,
+): ScopeDecision | null {
   const applicablePolicies = policies.filter((policy) =>
-    policy.scopes.some((scope) => matchScope(requestedScope, [scope]))
+    policy.scopes.some((scope) => scopeMatches(requestedScope, scope))
     && policy.conditions.every((condition) => evaluateCondition(condition, context)),
   );
 
@@ -364,9 +388,7 @@ function comparePolicies(left: Policy, right: Policy): number {
 
 function scopesOverlap(left: string, right: string): boolean {
   try {
-    const parsedLeft = parseScope(left);
-    const parsedRight = parseScope(right);
-    return matchParsedScope(parsedLeft, parsedRight) || matchParsedScope(parsedRight, parsedLeft);
+    return scopeMatches(left, right) || scopeMatches(right, left);
   } catch {
     return left === right;
   }
@@ -676,6 +698,60 @@ function parseScopePlane(scope: string): string | undefined {
   }
 }
 
+function scopeMatchesAny(requested: string, granted: string[]): boolean {
+  return granted.some((scope) => scopeMatches(requested, scope));
+}
+
+function scopeMatches(requested: string, granted: string): boolean {
+  const parsedRequested = parseScope(requested);
+  const parsedGranted = parseScope(granted);
+
+  if (parsedGranted.plane !== "*" && parsedGranted.plane !== parsedRequested.plane) {
+    return false;
+  }
+
+  if (parsedGranted.resource !== "*" && parsedGranted.resource !== parsedRequested.resource) {
+    return false;
+  }
+
+  if (!actionMatches(parsedRequested.action, parsedGranted.action)) {
+    return false;
+  }
+
+  return pathMatches(parsedRequested.path, parsedGranted.path, parsedRequested.plane, parsedRequested.resource);
+}
+
+function actionMatches(requested: Action, granted: Action): boolean {
+  if (granted === "*" || granted === requested) {
+    return true;
+  }
+
+  return granted === "manage" && MANAGE_IMPLIES.has(requested);
+}
+
+function pathMatches(
+  requestedPath: string,
+  grantedPath: string,
+  plane: string,
+  resource: string,
+): boolean {
+  if (grantedPath === "*" || grantedPath === requestedPath) {
+    return true;
+  }
+
+  if (plane === "relayfile" && resource === "fs" && grantedPath.endsWith("/*")) {
+    const prefix = grantedPath.slice(0, -1);
+    return requestedPath.startsWith(prefix);
+  }
+
+  if (!grantedPath.includes("*")) {
+    return false;
+  }
+
+  const pattern = `^${escapeRegExp(grantedPath).replace(/\\\*/g, ".*")}$`;
+  return new RegExp(pattern).test(requestedPath);
+}
+
 function dedupeScopes(scopes: string[]): string[] {
   return Array.from(
     new Set(
@@ -818,6 +894,10 @@ function isTimeOfDay(value: string): boolean {
 
 function padTime(value: number): string {
   return String(value).padStart(2, "0");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function ipv4ToNumber(value: string): number | null {

@@ -1,0 +1,92 @@
+{
+  "id": "traj_1774425195462_0b4b3c48",
+  "version": 1,
+  "task": {
+    "title": "058-audit-e2e-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "704a8e81c69fd233b3297974"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-25T07:53:15.462Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-25T07:53:15.462Z"
+    },
+    {
+      "name": "test-writer",
+      "role": "specialist",
+      "joinedAt": "2026-03-25T07:53:19.716Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_5f7b528f",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T07:53:15.462Z",
+      "events": [
+        {
+          "ts": 1774425195462,
+          "type": "note",
+          "content": "Purpose: Audit & Observability E2E tests"
+        },
+        {
+          "ts": 1774425195462,
+          "type": "note",
+          "content": "Approach: 7-step pipeline workflow — Parsed 7 steps, 2 parallel tracks, 5 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-25T07:53:19.660Z"
+    },
+    {
+      "id": "ch_f2642e06",
+      "title": "Execution: read-implementations, read-test-helpers",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T07:53:19.660Z",
+      "events": [],
+      "endedAt": "2026-03-25T07:53:19.713Z"
+    },
+    {
+      "id": "ch_7440e76b",
+      "title": "Convergence: read-implementations + read-test-helpers",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T07:53:19.713Z",
+      "events": [
+        {
+          "ts": 1774425199715,
+          "type": "reflection",
+          "content": "read-implementations + read-test-helpers resolved. 2/2 steps completed. All steps completed on first attempt. Unblocking: write-e2e.",
+          "significance": "high",
+          "raw": {
+            "confidence": 0.75,
+            "focalPoints": [
+              "read-implementations: completed",
+              "read-test-helpers: completed"
+            ]
+          }
+        }
+      ],
+      "endedAt": "2026-03-25T07:53:19.716Z"
+    },
+    {
+      "id": "ch_7908b600",
+      "title": "Execution: write-e2e",
+      "agentName": "test-writer",
+      "startedAt": "2026-03-25T07:53:19.716Z",
+      "events": [
+        {
+          "ts": 1774425199716,
+          "type": "note",
+          "content": "\"write-e2e\": Write E2E tests for the Audit & Observability domain",
+          "raw": {
+            "agent": "test-writer"
+          }
+        }
+      ]
+    }
+  ]
+}
