@@ -3,7 +3,6 @@
  *
  * Domain 3: Identity Lifecycle
  * E2E: create -> update -> suspend -> reactivate -> retire
-    Test scenarios for new concepts:
  *
  * Depends on: 021, 022, 023, 024, 025, 026, 027, 028, 029
  * Run: agent-relay run workflows/030-identity-lifecycle-e2e.ts
@@ -17,8 +16,7 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 
 async function main() {
 const result = await workflow('030-identity-lifecycle-e2e')
-  .description('Identity Lifecycle E2E tests')
-    Test scenarios for new concepts:
+  .description('Identity Lifecycle E2E tests — full lifecycle scenarios')
   .pattern('pipeline')
   .channel('wf-relayauth-030')
   .maxConcurrency(3)
@@ -28,21 +26,18 @@ const result = await workflow('030-identity-lifecycle-e2e')
     cli: 'claude',
     preset: 'lead',
     role: 'Design E2E test scenarios, fix failures',
-    Test scenarios for new concepts:
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write E2E test file',
-    Test scenarios for new concepts:
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review E2E coverage and results',
-    Test scenarios for new concepts:
     cwd: ROOT,
   })
 
@@ -64,7 +59,6 @@ const result = await workflow('030-identity-lifecycle-e2e')
     agent: 'test-writer',
     dependsOn: ['read-implementations', 'read-test-helpers'],
     task: `Write E2E tests for the Identity Lifecycle domain.
-    Test scenarios for new concepts:
     - Create identity with sponsor → verify sponsor in response
     - Create sub-agent → verify sponsorChain includes parent
     - Set budget { maxActionsPerHour: 5 } → perform 6 actions → verify auto-suspend
@@ -120,7 +114,6 @@ Test the full lifecycle flow in a single describe block:
     agent: 'reviewer',
     dependsOn: ['run-e2e'],
     task: `Review E2E test results.
-    Test scenarios for new concepts:
     - Create identity with sponsor → verify sponsor in response
     - Create sub-agent → verify sponsorChain includes parent
     - Set budget { maxActionsPerHour: 5 } → perform 6 actions → verify auto-suspend
@@ -145,7 +138,6 @@ List issues.`,
     agent: 'architect',
     dependsOn: ['review-results'],
     task: `Fix E2E failures.
-    Test scenarios for new concepts:
     - Create identity with sponsor → verify sponsor in response
     - Create sub-agent → verify sponsorChain includes parent
     - Set budget { maxActionsPerHour: 5 } → perform 6 actions → verify auto-suspend
@@ -171,7 +163,6 @@ cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/e2e/identit
   });
 
 console.log(`\n030 Identity Lifecycle E2E: ${result.status}`);
-    Test scenarios for new concepts:
 }
 
 main().catch(console.error);
