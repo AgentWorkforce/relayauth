@@ -1,0 +1,48 @@
+{
+  "id": "traj_1774421236470_c7373ca9",
+  "version": 1,
+  "task": {
+    "title": "035-role-crud-api-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "9e17ab1ebd1facea2881ecbb"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-25T06:47:16.470Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-25T06:47:16.470Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_f39950be",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T06:47:16.470Z",
+      "events": [
+        {
+          "ts": 1774421236470,
+          "type": "note",
+          "content": "Purpose: /v1/roles — create, read, update, delete roles"
+        },
+        {
+          "ts": 1774421236470,
+          "type": "note",
+          "content": "Approach: 13-step dag workflow — Parsed 13 steps, 5 parallel tracks, 8 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-25T06:47:20.039Z"
+    },
+    {
+      "id": "ch_c41f82e5",
+      "title": "Execution: read-rbac-spec, read-rbac-types, read-server-env, read-test-helpers, read-worker",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T06:47:20.039Z",
+      "events": []
+    }
+  ]
+}
