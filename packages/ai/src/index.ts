@@ -1,5 +1,9 @@
 export { RelayAuthAdapter } from "./adapter.js";
 export { createOpenAITools, createToolHandler } from "./adapters/openai.js";
+export {
+  createAnthropicTools,
+  createToolHandler as createAnthropicToolHandler,
+} from "./adapters/anthropic.js";
 export { createRelayAuthTools } from "./adapters/vercel.js";
 export { RELAYAUTH_TOOLS } from "./tools.js";
 export type {
