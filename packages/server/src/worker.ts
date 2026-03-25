@@ -4,6 +4,7 @@ export { IdentityDO } from "./durable-objects/index.js";
 import auditExport from "./routes/audit-export.js";
 import auditQuery from "./routes/audit-query.js";
 import auditWebhooks from "./routes/audit-webhooks.js";
+import dashboardStats from "./routes/dashboard-stats.js";
 import identityActivity from "./routes/identity-activity.js";
 import identities from "./routes/identities.js";
 import policies from "./routes/policies.js";
@@ -21,5 +22,6 @@ app.route("/v1/identities", identities);
 app.route("/v1/identities", roleAssignments);
 app.route("/v1/policies", policies);
 app.route("/v1/roles", roles);
+app.route("/v1/stats", dashboardStats);
 
 export default app;
