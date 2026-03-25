@@ -50,6 +50,7 @@ type RequestOptions = Omit<RequestInit, "body" | "headers"> & {
   body?: unknown;
   headers?: HeadersInit;
   query?: Record<string, string | number | undefined>;
+  responseType?: "json" | "text";
   errorContext?: {
     identityId?: string;
     disableIdentityErrorMapping?: boolean;
@@ -146,6 +147,42 @@ export class RelayAuthClient {
       identities: response.data,
       cursor: response.cursor,
     };
+  }
+
+  async queryAudit(query: AuditQuery): Promise<{ entries: AuditEntry[]; cursor?: string }> {
+    const response = await this._request<{
+      entries?: AuditEntry[];
+      nextCursor?: string | null;
+    }>("/v1/audit", {
+      query: serializeAuditQuery(query),
+    });
+
+    return mapAuditPage(response);
+  }
+
+  async getIdentityActivity(
+    identityId: string,
+    options?: Omit<AuditQuery, "identityId" | "orgId">,
+  ): Promise<{ entries: AuditEntry[]; cursor?: string }> {
+    const response = await this._request<{
+      entries?: AuditEntry[];
+      nextCursor?: string | null;
+    }>(`/v1/identities/${encodeURIComponent(identityId)}/activity`, {
+      query: serializeAuditQuery(options),
+    });
+
+    return mapAuditPage(response);
+  }
+
+  async exportAudit(query: AuditQuery, format: "json" | "csv"): Promise<string> {
+    return this._request<string>("/v1/audit/export", {
+      method: "POST",
+      body: {
+        ...query,
+        format,
+      },
+      responseType: "text",
+    });
   }
 
   async createRole(orgId: string, input: CreateRoleInput): Promise<Role> {
@@ -270,7 +307,7 @@ export class RelayAuthClient {
   }
 
   private async _request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    const { body, errorContext, headers, query, ...init } = options;
+    const { body, errorContext, headers, query, responseType = "json", ...init } = options;
     const url = new URL(path, normalizeBaseUrl(this.options.baseUrl));
 
     if (query) {
@@ -314,8 +351,41 @@ export class RelayAuthClient {
       return undefined as T;
     }
 
+    if (responseType === "text") {
+      return text as T;
+    }
+
     return payload as T;
   }
+}
+
+function serializeAuditQuery(query?: Partial<AuditQuery>): Record<string, string | number | undefined> {
+  return {
+    identityId: query?.identityId,
+    action: query?.action,
+    orgId: query?.orgId,
+    workspaceId: query?.workspaceId,
+    plane: query?.plane,
+    result: query?.result,
+    from: query?.from,
+    to: query?.to,
+    cursor: query?.cursor,
+    limit: query?.limit,
+  };
+}
+
+function mapAuditPage(response: {
+  entries?: AuditEntry[];
+  nextCursor?: string | null;
+}): { entries: AuditEntry[]; cursor?: string } {
+  return response.nextCursor
+    ? {
+        entries: response.entries ?? [],
+        cursor: response.nextCursor,
+      }
+    : {
+        entries: response.entries ?? [],
+      };
 }
 
 function normalizeBaseUrl(baseUrl: string): string {

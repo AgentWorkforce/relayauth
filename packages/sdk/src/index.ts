@@ -2,6 +2,8 @@ export { RelayAuthClient } from "./client.js";
 export type { RelayAuthClientOptions } from "./client.js";
 export type {
   AgentIdentity,
+  AuditEntry,
+  AuditQuery,
   CreateIdentityInput,
   IdentityStatus,
   IdentityType,
