@@ -4,13 +4,13 @@ import { Hono } from "hono";
 import type { AppEnv } from "../env.js";
 import { requireScope } from "../middleware/scope.js";
 
-type ScopeContextVars = {
+export type ScopeContextVars = {
   identity?: {
     org: string;
   };
 };
 
-type AuditLogRow = {
+export type AuditLogRow = {
   id: string;
   action: AuditAction;
   identity_id: string;
@@ -26,11 +26,11 @@ type AuditLogRow = {
   created_at: string | null;
 };
 
-type AuditEntryResponse = AuditEntry & {
+export type AuditEntryResponse = AuditEntry & {
   createdAt?: string;
 };
 
-type AuditQueryParams = {
+export type AuditQueryParams = {
   orgId: string;
   identityId?: string;
   action?: AuditAction;
@@ -46,9 +46,18 @@ type AuditQueryParams = {
   limit: number;
 };
 
+type ParseAuditQueryOptions = {
+  defaultLimit?: number;
+  maxLimit?: number;
+};
+
+type BuildAuditQueryOptions = {
+  includeOverflowRow?: boolean;
+};
+
 const auditQuery = new Hono<AppEnv>();
 
-const AUDIT_ACTIONS = new Set<AuditAction>([
+export const AUDIT_ACTIONS = new Set<AuditAction>([
   "token.issued",
   "token.refreshed",
   "token.revoked",
@@ -97,9 +106,10 @@ auditQuery.get("/", async (c) => {
   );
 });
 
-function parseAuditQuery(
-  query: Record<string, string | undefined>,
+export function parseAuditQuery(
+  query: Record<string, unknown>,
   authenticatedOrgId: string | undefined,
+  options: ParseAuditQueryOptions = {},
 ): { ok: true; value: AuditQueryParams } | { ok: false; error: string } {
   const orgId = normalizeQueryValue(query.orgId);
   if (!orgId) {
@@ -136,7 +146,7 @@ function parseAuditQuery(
     return { ok: false, error: "invalid cursor" };
   }
 
-  const limit = parseLimit(query.limit);
+  const limit = parseLimit(query.limit, options.defaultLimit ?? 50, options.maxLimit ?? 200);
   if (limit === null) {
     return { ok: false, error: "limit must be a positive integer" };
   }
@@ -158,7 +168,10 @@ function parseAuditQuery(
   };
 }
 
-function buildAuditQuery(params: AuditQueryParams): { sql: string; params: unknown[] } {
+export function buildAuditQuery(
+  params: AuditQueryParams,
+  options: BuildAuditQueryOptions = {},
+): { sql: string; params: unknown[] } {
   const clauses = ["org_id = ?"];
   const values: unknown[] = [params.orgId];
 
@@ -202,7 +215,7 @@ function buildAuditQuery(params: AuditQueryParams): { sql: string; params: unkno
     values.push(params.cursor.timestamp, params.cursor.timestamp, params.cursor.id);
   }
 
-  values.push(params.limit + 1);
+  values.push(params.limit + (options.includeOverflowRow ?? true ? 1 : 0));
 
   return {
     sql: `
@@ -217,7 +230,7 @@ function buildAuditQuery(params: AuditQueryParams): { sql: string; params: unkno
   };
 }
 
-function toAuditEntry(row: AuditLogRow): AuditEntryResponse {
+export function toAuditEntry(row: AuditLogRow): AuditEntryResponse {
   return {
     id: row.id,
     action: row.action,
@@ -235,7 +248,7 @@ function toAuditEntry(row: AuditLogRow): AuditEntryResponse {
   };
 }
 
-function parseMetadata(value: string): Record<string, string> {
+export function parseMetadata(value: string): Record<string, string> {
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
     const metadata: Record<string, string> = {};
@@ -252,7 +265,7 @@ function parseMetadata(value: string): Record<string, string> {
   }
 }
 
-function normalizeQueryValue(value: string | undefined): string | undefined {
+function normalizeQueryValue(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
@@ -261,12 +274,20 @@ function normalizeQueryValue(value: string | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function parseLimit(value: string | undefined): number | null {
+function parseLimit(value: unknown, defaultLimit: number, maxLimit: number): number | null {
   if (value === undefined) {
-    return 50;
+    return defaultLimit;
   }
 
-  if (!/^\d+$/.test(value)) {
+  if (typeof value === "number") {
+    if (!Number.isInteger(value) || value < 1) {
+      return null;
+    }
+
+    return Math.min(value, maxLimit);
+  }
+
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
     return null;
   }
 
@@ -275,7 +296,7 @@ function parseLimit(value: string | undefined): number | null {
     return null;
   }
 
-  return Math.min(parsed, 200);
+  return Math.min(parsed, maxLimit);
 }
 
 function isIsoTimestamp(value: string): boolean {
