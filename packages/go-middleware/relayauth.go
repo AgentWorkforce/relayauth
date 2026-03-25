@@ -19,6 +19,7 @@ import (
 )
 
 const defaultCacheTTL = 5 * time.Minute
+const clockSkewLeeway = 30 * time.Second
 
 var (
 	ErrInvalidToken         = errors.New("invalid access token")
@@ -245,11 +246,13 @@ func (v *Verifier) validateClaims(claims *Claims) error {
 		return ErrInvalidToken
 	}
 
-	now := time.Now().Unix()
-	if claims.Nbf != nil && *claims.Nbf > now {
+	now := time.Now()
+	leeway := int64(clockSkewLeeway.Seconds())
+	nowUnix := now.Unix()
+	if claims.Nbf != nil && *claims.Nbf > nowUnix+leeway {
 		return ErrInvalidToken
 	}
-	if claims.Exp <= now {
+	if claims.Exp <= nowUnix-leeway {
 		return ErrTokenExpired
 	}
 	if v.opts.Issuer != "" && claims.Iss != v.opts.Issuer {

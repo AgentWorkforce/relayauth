@@ -56,7 +56,7 @@ func TestVerifyToken_Expired(t *testing.T) {
 
 	now := time.Now().Unix()
 	claims := validClaims(now)
-	claims.Exp = now - 1
+	claims.Exp = now - 60 // must exceed the 30s clock skew leeway
 	token := mustSignToken(t, privateKey, "kid-expired", claims)
 
 	verifier := NewVerifier(VerifyOptions{
