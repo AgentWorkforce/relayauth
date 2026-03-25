@@ -14,7 +14,6 @@ const ACTIONS = [
   "invoke",
   "*",
 ] as const;
-const MANAGE_IMPLIES = new Set<Action>(["read", "write", "create", "delete"]);
 const IDENTIFIER_PATTERN = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 
 function isPlane(value: string): value is Plane {
@@ -64,7 +63,10 @@ function normalizeFsPath(raw: string, path: string): string {
 
   if (normalized.endsWith("/*")) {
     const base = normalized.slice(0, -2);
-    return `${base === "" ? "/" : base}/*`;
+    if (base === "" || base === "/") {
+      return "/*";
+    }
+    return `${base}/*`;
   }
 
   return normalized;
@@ -167,52 +169,4 @@ export function parseScopes(
   return parsed;
 }
 
-function matchAction(granted: Action, requested: Action): boolean {
-  if (granted === "*" || granted === requested) {
-    return true;
-  }
-
-  return granted === "manage" && MANAGE_IMPLIES.has(requested);
-}
-
-function matchFsPath(granted: string, requested: string): boolean {
-  if (granted === "*" || granted === requested) {
-    return true;
-  }
-
-  if (!granted.endsWith("/*")) {
-    return false;
-  }
-
-  const prefix = granted.slice(0, -1);
-  return requested.startsWith(prefix);
-}
-
-function matches(granted: ParsedScope, requested: ParsedScope): boolean {
-  if (granted.plane !== "*" && granted.plane !== requested.plane) {
-    return false;
-  }
-
-  if (granted.resource !== "*" && granted.resource !== requested.resource) {
-    return false;
-  }
-
-  if (!matchAction(granted.action, requested.action)) {
-    return false;
-  }
-
-  if (requested.plane === "relayfile" && requested.resource === "fs") {
-    return matchFsPath(granted.path, requested.path);
-  }
-
-  return granted.path === "*" || granted.path === requested.path;
-}
-
-export function isSubsetOf(scopes: string[], parents: string[]): boolean {
-  const parsedScopes = parseScopes(scopes);
-  const parsedParents = parseScopes(parents);
-
-  return parsedScopes.every((scope) =>
-    parsedParents.some((parent) => matches(parent, scope)),
-  );
-}
+export { isSubsetOf } from "./scope-matcher.js";
