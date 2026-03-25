@@ -74,6 +74,9 @@ export const AUDIT_ACTIONS = new Set<AuditAction>([
   "policy.updated",
   "policy.deleted",
   "key.rotated",
+  "budget.exceeded",
+  "budget.alert",
+  "scope.escalation_denied",
 ]);
 
 auditQuery.use("*", requireScope("relayauth:audit:read"));
