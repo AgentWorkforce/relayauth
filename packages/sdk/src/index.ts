@@ -26,6 +26,12 @@ export type {
   ScopeDefinition,
 } from "./openapi-scopes.js";
 export {
+  agentCardToConfiguration,
+  assertValidA2aAgentCard,
+  configurationToAgentCard,
+} from "./a2a-bridge.js";
+export type { A2aAgentCard, A2aAgentSkill } from "./a2a-bridge.js";
+export {
   parseScope,
   parseScopes,
   validateScope,

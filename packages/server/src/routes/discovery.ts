@@ -3,15 +3,23 @@ import type {
   DiscoveryEndpoint,
   ScopeDefinition,
 } from "@relayauth/types";
-import { Hono } from "hono";
+import {
+  agentCardToConfiguration,
+  assertValidA2aAgentCard,
+  configurationToAgentCard,
+} from "@relayauth/sdk/src/a2a-bridge.js";
+import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 
 const discovery = new Hono<AppEnv>();
+export const apiDiscovery = new Hono<AppEnv>();
 
 const CACHE_CONTROL_HEADER = "public, max-age=3600";
 const SCHEMA_VERSION = "1.0";
 const SERVICE_NAME = "relayauth";
 const SERVER_VERSION = "0.0.0";
+const AGENT_CARD_FETCH_TIMEOUT_MS = 5_000;
+const MAX_AGENT_CARD_BYTES = 1_000_000;
 const BUILT_IN_PLANES = ["relaycast", "relayfile", "cloud", "relayauth"] as const;
 const BUILT_IN_ACTIONS = [
   "read",
@@ -105,6 +113,41 @@ discovery.get("/agent-configuration", (c) => {
 
   c.header("Cache-Control", CACHE_CONTROL_HEADER);
   return c.json(configuration, 200);
+});
+
+apiDiscovery.get("/agent-card", (c) => {
+  const origin = new URL(c.req.url).origin;
+  const configuration = buildAgentConfiguration(origin);
+  const card = configurationToAgentCard(configuration, SERVICE_NAME);
+
+  c.header("Cache-Control", CACHE_CONTROL_HEADER);
+  return c.json(card, 200);
+});
+
+apiDiscovery.post("/bridge", async (c) => {
+  const body = await c.req.json<{ url?: string }>().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  if (typeof body.url !== "string" || body.url.trim() === "") {
+    return c.json({ error: "url is required" }, 400);
+  }
+
+  try {
+    const agentCardUrl = parseBridgeTargetUrl(body.url);
+    const card = await fetchAgentCard(agentCardUrl);
+    try {
+      assertValidA2aAgentCard(card);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Fetched agent card is invalid";
+      throw new DiscoveryBridgeError(422, message);
+    }
+    const configuration = agentCardToConfiguration(card);
+    return c.json(configuration, 200);
+  } catch (error) {
+    return handleBridgeError(c, error);
+  }
 });
 
 function buildAgentConfiguration(origin: string): AgentConfiguration {
@@ -388,6 +431,203 @@ function endpoint(
 
 function absoluteUrl(origin: string, path: string): string {
   return new URL(path, origin).toString();
+}
+
+async function fetchAgentCard(baseUrl: URL): Promise<unknown> {
+  const candidateUrls = buildAgentCardUrls(baseUrl);
+  let lastNotFound = false;
+
+  for (const candidateUrl of candidateUrls) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), AGENT_CARD_FETCH_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(candidateUrl, {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+        },
+        redirect: "follow",
+        signal: controller.signal,
+      });
+
+      // Guard against SSRF via redirect to a private IP
+      if (response.url) {
+        const finalUrl = new URL(response.url);
+        if (isPrivateHost(finalUrl.hostname)) {
+          throw new DiscoveryBridgeError(403, "Private or loopback hosts are not allowed");
+        }
+      }
+
+      if (response.status === 404) {
+        lastNotFound = true;
+        continue;
+      }
+
+      if (!response.ok) {
+        throw new DiscoveryBridgeError(
+          502,
+          `Failed to fetch agent card: upstream returned ${response.status}`,
+        );
+      }
+
+      const contentLength = response.headers.get("content-length");
+      if (contentLength && Number(contentLength) > MAX_AGENT_CARD_BYTES) {
+        throw new DiscoveryBridgeError(422, "Fetched agent card exceeds size limit");
+      }
+
+      const text = await response.text();
+      if (text.length > MAX_AGENT_CARD_BYTES) {
+        throw new DiscoveryBridgeError(422, "Fetched agent card exceeds size limit");
+      }
+
+      const card = JSON.parse(text) as unknown;
+      return card;
+    } catch (error) {
+      if (error instanceof DiscoveryBridgeError) {
+        throw error;
+      }
+
+      if (error instanceof SyntaxError) {
+        throw new DiscoveryBridgeError(422, "Fetched agent card is not valid JSON");
+      }
+
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new DiscoveryBridgeError(502, "Timed out while fetching agent card");
+      }
+
+      throw new DiscoveryBridgeError(502, "Unable to reach the specified agent card URL");
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  if (lastNotFound) {
+    throw new DiscoveryBridgeError(502, "Agent card was not found at the provided URL");
+  }
+
+  throw new DiscoveryBridgeError(502, "Unable to locate an A2A agent card");
+}
+
+function buildAgentCardUrls(baseUrl: URL): URL[] {
+  const normalizedPath = baseUrl.pathname.replace(/\/+$/, "");
+
+  if (
+    normalizedPath.endsWith("/.well-known/agent-card.json") ||
+    normalizedPath.endsWith("/.well-known/agent.json")
+  ) {
+    return [new URL(baseUrl.toString())];
+  }
+
+  return [
+    new URL("/.well-known/agent-card.json", baseUrl),
+    new URL("/.well-known/agent.json", baseUrl),
+  ];
+}
+
+function parseBridgeTargetUrl(rawUrl: string): URL {
+  let url: URL;
+
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new DiscoveryBridgeError(400, "url must be a valid absolute URL");
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new DiscoveryBridgeError(400, "url must use http or https");
+  }
+
+  if (isPrivateHost(url.hostname)) {
+    throw new DiscoveryBridgeError(403, "Private or loopback hosts are not allowed");
+  }
+
+  return url;
+}
+
+function isPrivateHost(hostname: string): boolean {
+  const normalizedHost = hostname.trim().toLowerCase();
+
+  // Block localhost and .localhost subdomains (RFC 6761)
+  if (
+    normalizedHost === "localhost" ||
+    normalizedHost.endsWith(".localhost") ||
+    normalizedHost === "0.0.0.0" ||
+    normalizedHost === "::1" ||
+    normalizedHost === "[::1]"
+  ) {
+    return true;
+  }
+
+  // Block known DNS-rebinding services
+  if (
+    normalizedHost.endsWith(".nip.io") ||
+    normalizedHost.endsWith(".sslip.io") ||
+    normalizedHost.endsWith(".xip.io")
+  ) {
+    return true;
+  }
+
+  if (normalizedHost.includes(":")) {
+    const compact = normalizedHost.replace(/^\[|\]$/g, "");
+    return compact.startsWith("fc") ||
+      compact.startsWith("fd") ||
+      compact.startsWith("fe80:") ||
+      compact === "::1" ||
+      compact.startsWith("::ffff:127.");
+  }
+
+  // Try parsing as a decimal IP (e.g. 2130706433 = 127.0.0.1)
+  if (/^\d+$/.test(normalizedHost)) {
+    const decimal = Number(normalizedHost);
+    if (decimal >= 0 && decimal <= 0xFFFFFFFF) {
+      const a = (decimal >>> 24) & 0xFF;
+      const b = (decimal >>> 16) & 0xFF;
+      return isPrivateIPv4(a, b);
+    }
+  }
+
+  // Parse dotted notation — handle octal (0177) and hex (0x7f) segments
+  const segments = normalizedHost.split(".");
+  if (segments.length === 4) {
+    const octets = segments.map((s) => {
+      if (s.startsWith("0x") || s.startsWith("0X")) return parseInt(s, 16);
+      if (s.startsWith("0") && s.length > 1) return parseInt(s, 8);
+      return Number(s);
+    });
+    if (octets.every((o) => Number.isInteger(o) && o >= 0 && o <= 255)) {
+      return isPrivateIPv4(octets[0], octets[1]);
+    }
+  }
+
+  return false;
+}
+
+function isPrivateIPv4(a: number, b: number): boolean {
+  return a === 10 ||
+    a === 127 ||
+    a === 0 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168);
+}
+
+function handleBridgeError(c: Context<AppEnv>, error: unknown): Response {
+  if (error instanceof DiscoveryBridgeError) {
+    return c.json({ error: error.message }, error.status);
+  }
+
+  return c.json({ error: "internal_error" }, 500);
+}
+
+class DiscoveryBridgeError extends Error {
+  constructor(
+    readonly status: 400 | 403 | 422 | 502,
+    message: string,
+  ) {
+    super(message);
+    this.name = "DiscoveryBridgeError";
+  }
 }
 
 export default discovery;

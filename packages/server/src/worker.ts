@@ -6,7 +6,7 @@ import auditExport from "./routes/audit-export.js";
 import auditQuery from "./routes/audit-query.js";
 import auditWebhooks from "./routes/audit-webhooks.js";
 import dashboardStats from "./routes/dashboard-stats.js";
-import discovery from "./routes/discovery.js";
+import discovery, { apiDiscovery } from "./routes/discovery.js";
 import identityActivity from "./routes/identity-activity.js";
 import identities from "./routes/identities.js";
 import policies from "./routes/policies.js";
@@ -30,6 +30,7 @@ app.use("*", async (c, next) => {
 
 app.get("/health", (c) => c.json({ status: "ok" }));
 app.route("/.well-known", discovery);
+app.route("/v1/discovery", apiDiscovery);
 app.route("/v1/audit", auditWebhooks);
 app.route("/v1/audit", auditExport);
 app.route("/v1/audit", auditQuery);
