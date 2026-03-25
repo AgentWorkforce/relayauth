@@ -5,6 +5,7 @@ import type {
   CreateIdentityInput,
   IdentityStatus,
   RelayAuthTokenClaims,
+  Role,
   TokenPair,
 } from "@relayauth/types";
 
@@ -36,12 +37,22 @@ type IssueTokenOptions = {
   expiresIn?: number;
 };
 
+type CreateRoleInput = {
+  name: string;
+  description: string;
+  scopes: string[];
+  workspaceId?: string;
+};
+
+type UpdateRoleInput = Partial<Pick<CreateRoleInput, "name" | "description" | "scopes">>;
+
 type RequestOptions = Omit<RequestInit, "body" | "headers"> & {
   body?: unknown;
   headers?: HeadersInit;
   query?: Record<string, string | number | undefined>;
   errorContext?: {
     identityId?: string;
+    disableIdentityErrorMapping?: boolean;
   };
 };
 
@@ -50,6 +61,7 @@ export class RelayAuthClient {
     tokenPair: TokenPair;
     tokenClaims: RelayAuthTokenClaims;
     identity: AgentIdentity;
+    role: Role;
     createIdentityInput: CreateIdentityInput;
     auditQuery: AuditQuery;
     auditEntry: AuditEntry;
@@ -134,6 +146,83 @@ export class RelayAuthClient {
       identities: response.data,
       cursor: response.cursor,
     };
+  }
+
+  async createRole(orgId: string, input: CreateRoleInput): Promise<Role> {
+    return this._request<Role>("/v1/roles", {
+      method: "POST",
+      body: {
+        orgId,
+        ...input,
+      },
+      errorContext: {
+        disableIdentityErrorMapping: true,
+      },
+    });
+  }
+
+  async getRole(roleId: string): Promise<Role> {
+    return this._request<Role>(`/v1/roles/${encodeURIComponent(roleId)}`, {
+      errorContext: {
+        disableIdentityErrorMapping: true,
+      },
+    });
+  }
+
+  async listRoles(orgId: string): Promise<Role[]> {
+    const response = await this._request<{ data: Role[] }>("/v1/roles", {
+      query: {
+        orgId,
+      },
+      errorContext: {
+        disableIdentityErrorMapping: true,
+      },
+    });
+
+    return response.data;
+  }
+
+  async updateRole(roleId: string, updates: UpdateRoleInput): Promise<Role> {
+    return this._request<Role>(`/v1/roles/${encodeURIComponent(roleId)}`, {
+      method: "PATCH",
+      body: updates,
+      errorContext: {
+        disableIdentityErrorMapping: true,
+      },
+    });
+  }
+
+  async deleteRole(roleId: string): Promise<void> {
+    await this._request<void>(`/v1/roles/${encodeURIComponent(roleId)}`, {
+      method: "DELETE",
+      errorContext: {
+        disableIdentityErrorMapping: true,
+      },
+    });
+  }
+
+  async assignRole(identityId: string, roleId: string): Promise<void> {
+    await this._request<void>(`/v1/identities/${encodeURIComponent(identityId)}/roles`, {
+      method: "POST",
+      body: {
+        roleId,
+      },
+      errorContext: {
+        disableIdentityErrorMapping: true,
+      },
+    });
+  }
+
+  async removeRole(identityId: string, roleId: string): Promise<void> {
+    await this._request<void>(
+      `/v1/identities/${encodeURIComponent(identityId)}/roles/${encodeURIComponent(roleId)}`,
+      {
+        method: "DELETE",
+        errorContext: {
+          disableIdentityErrorMapping: true,
+        },
+      },
+    );
   }
 
   async updateIdentity(
@@ -247,7 +336,9 @@ function createRequestError(
   payload: unknown,
   context?: RequestOptions["errorContext"],
 ): RelayAuthError {
-  const identityId = context?.identityId ?? extractIdentityId(path);
+  const identityId = context?.disableIdentityErrorMapping
+    ? undefined
+    : (context?.identityId ?? extractIdentityId(path));
   const errorCode = getString(payload, "error");
   const message = getString(payload, "message") ?? `Request failed with status ${status}`;
 

@@ -6,6 +6,7 @@ export type {
   IdentityStatus,
   IdentityType,
   RelayAuthTokenClaims,
+  Role,
   TokenPair,
 } from "@relayauth/types";
 export { TokenVerifier } from "./verify.js";

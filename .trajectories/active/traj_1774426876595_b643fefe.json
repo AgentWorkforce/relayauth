@@ -20,6 +20,11 @@
       "name": "test-writer",
       "role": "specialist",
       "joinedAt": "2026-03-25T08:21:21.212Z"
+    },
+    {
+      "name": "reviewer",
+      "role": "specialist",
+      "joinedAt": "2026-03-25T08:34:32.151Z"
     }
   ],
   "chapters": [
@@ -84,6 +89,57 @@
           "content": "\"write-e2e\": Write E2E tests for the Scopes & RBAC domain",
           "raw": {
             "agent": "test-writer"
+          }
+        },
+        {
+          "ts": 1774427671840,
+          "type": "completion-evidence",
+          "content": "\"write-e2e\" verification-based completion — Verification passed (3 signal(s), 6 file change(s), exit=0; signals=0, OpenAI Codex v0.116.0 (research preview), Verification passed; files=created:.turbo/cache/0b68bbf5bd9c479e-manifest.json, created:.turbo/cache/0b68bbf5bd9c479e-meta.json, created:.turbo/cache/0b68bbf5bd9c479e.tar.zst, created:.turbo/cache/55c061fc302c27d1-manifest.json, created:.turbo/cache/55c061fc302c27d1-meta.json, created:.turbo/cache/55c061fc302c27d1.tar.zst; exit=0)",
+          "significance": "medium",
+          "raw": {
+            "stepName": "write-e2e",
+            "completionMode": "verification",
+            "reason": "Verification passed",
+            "evidence": {
+              "summary": "3 signal(s), 6 file change(s), exit=0",
+              "signals": [
+                "0",
+                "OpenAI Codex v0.116.0 (research preview)",
+                "Verification passed"
+              ],
+              "files": [
+                "created:.turbo/cache/0b68bbf5bd9c479e-manifest.json",
+                "created:.turbo/cache/0b68bbf5bd9c479e-meta.json",
+                "created:.turbo/cache/0b68bbf5bd9c479e.tar.zst",
+                "created:.turbo/cache/55c061fc302c27d1-manifest.json",
+                "created:.turbo/cache/55c061fc302c27d1-meta.json",
+                "created:.turbo/cache/55c061fc302c27d1.tar.zst"
+              ],
+              "exitCode": 0
+            }
+          }
+        },
+        {
+          "ts": 1774427671840,
+          "type": "finding",
+          "content": "\"write-e2e\" completed → Result: `14` tests passed, `0` failed.",
+          "significance": "medium"
+        }
+      ],
+      "endedAt": "2026-03-25T08:34:32.151Z"
+    },
+    {
+      "id": "ch_1c55bc84",
+      "title": "Execution: review-results",
+      "agentName": "reviewer",
+      "startedAt": "2026-03-25T08:34:32.151Z",
+      "events": [
+        {
+          "ts": 1774427672151,
+          "type": "note",
+          "content": "\"review-results\": Review E2E test results for Scopes & RBAC",
+          "raw": {
+            "agent": "reviewer"
           }
         }
       ]
