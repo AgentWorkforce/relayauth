@@ -51,7 +51,7 @@ const result = await workflow('053-audit-export-api')
 
   .step('read-audit-spec', {
     type: 'deterministic',
-    command: `cat ${ROOT}/specs/audit-spec.md`,
+    command: `cat ${ROOT}/specs/audit.md`,
     captureOutput: true,
   })
 

@@ -3,7 +3,6 @@
  *
  * Domain 4: Scopes & RBAC
  * E2E: create role → assign → verify access → policy deny → verify denied
-    Test scenarios:
  *
  * Depends on: 031, 032, 033, 034, 035, 036, 037, 038, 039
  * Run: agent-relay run workflows/040-rbac-e2e.ts
@@ -18,7 +17,6 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 async function main() {
 const result = await workflow('040-rbac-e2e')
   .description('Scopes & RBAC E2E tests')
-    Test scenarios:
   .pattern('pipeline')
   .channel('wf-relayauth-040')
   .maxConcurrency(3)
@@ -28,21 +26,18 @@ const result = await workflow('040-rbac-e2e')
     cli: 'claude',
     preset: 'lead',
     role: 'Design E2E test scenarios, fix failures',
-    Test scenarios:
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write E2E test file',
-    Test scenarios:
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review E2E coverage and results',
-    Test scenarios:
     cwd: ROOT,
   })
 
@@ -64,7 +59,6 @@ const result = await workflow('040-rbac-e2e')
     agent: 'test-writer',
     dependsOn: ['read-implementations', 'read-test-helpers'],
     task: `Write E2E tests for the Scopes & RBAC domain.
-    Test scenarios:
     - Sub-agent scope narrowing: parent has A+B, child requests A+B+C → only gets A+B
     - Budget exceeded → action denied with clear error
     - Scope escalation attempt → 403 + audit event logged
@@ -116,7 +110,6 @@ Test the full RBAC flow:
     agent: 'reviewer',
     dependsOn: ['run-e2e'],
     task: `Review E2E test results for Scopes & RBAC.
-    Test scenarios:
     - Sub-agent scope narrowing: parent has A+B, child requests A+B+C → only gets A+B
     - Budget exceeded → action denied with clear error
     - Scope escalation attempt → 403 + audit event logged
@@ -141,7 +134,6 @@ List issues.`,
     agent: 'architect',
     dependsOn: ['review-results'],
     task: `Fix E2E failures for Scopes & RBAC.
-    Test scenarios:
     - Sub-agent scope narrowing: parent has A+B, child requests A+B+C → only gets A+B
     - Budget exceeded → action denied with clear error
     - Scope escalation attempt → 403 + audit event logged
@@ -165,7 +157,6 @@ cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/e2e/rbac.te
   });
 
 console.log(`\n040 RBAC E2E: ${result.status}`);
-    Test scenarios:
 }
 
 main().catch(console.error);
