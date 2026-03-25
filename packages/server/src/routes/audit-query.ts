@@ -79,9 +79,7 @@ export const AUDIT_ACTIONS = new Set<AuditAction>([
   "scope.escalation_denied",
 ]);
 
-auditQuery.use("*", requireScope("relayauth:audit:read"));
-
-auditQuery.get("/", async (c) => {
+auditQuery.get("/", requireScope("relayauth:audit:read"), async (c) => {
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
   const parsed = parseAuditQuery(c.req.query(), claims?.org);
 

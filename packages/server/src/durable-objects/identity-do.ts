@@ -89,6 +89,76 @@ export class IdentityDO extends DurableObjectBase {
     });
   }
 
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    try {
+      if (request.method === "POST" && url.pathname === "/internal/create") {
+        const body = await request.json<StoredIdentity>().catch(() => null);
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+          return jsonErrorResponse("Invalid JSON body", 400);
+        }
+
+        const identity = await this.create(body);
+        return Response.json(identity, { status: 201 });
+      }
+
+      if (request.method === "GET" && url.pathname === "/internal/get") {
+        const identity = await this.get();
+        if (!identity) {
+          return jsonErrorResponse("identity_not_found", 404);
+        }
+
+        return Response.json(identity, { status: 200 });
+      }
+
+      if (request.method === "PATCH" && url.pathname === "/internal/update") {
+        const body = await request.json<IdentityUpdate>().catch(() => null);
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+          return jsonErrorResponse("Invalid JSON body", 400);
+        }
+
+        const identity = await this.update(body);
+        return Response.json(identity, { status: 200 });
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/suspend") {
+        const body = await request.json<{ reason?: unknown }>().catch(() => null);
+        const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
+        if (!reason) {
+          return jsonErrorResponse("reason is required", 400);
+        }
+
+        const identity = await this.suspend(reason);
+        return Response.json(identity, { status: 200 });
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/retire") {
+        const identity = await this.retire();
+        return Response.json(identity, { status: 200 });
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/reactivate") {
+        const identity = await this.reactivate();
+        return Response.json(identity, { status: 200 });
+      }
+
+      if (request.method === "DELETE" && url.pathname === "/internal/delete") {
+        const existing = await this.get();
+        if (!existing) {
+          return jsonErrorResponse("identity_not_found", 404);
+        }
+
+        await this.delete();
+        return new Response(null, { status: 204 });
+      }
+
+      return jsonErrorResponse("Not found", 404);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  }
+
   async create(input: StoredIdentity): Promise<StoredIdentity> {
     await this.schemaReady;
     this.assertCreateInput(input);
@@ -337,3 +407,35 @@ export class IdentityDO extends DurableObjectBase {
 }
 
 export default IdentityDO;
+
+function jsonErrorResponse(message: string, status: number): Response {
+  return Response.json({ error: message }, { status });
+}
+
+function toErrorResponse(error: unknown): Response {
+  if (error instanceof Error) {
+    if (error.message === "Identity not found") {
+      return jsonErrorResponse("identity_not_found", 404);
+    }
+
+    if (error.message === "Retired identities cannot be suspended") {
+      return jsonErrorResponse(error.message, 409);
+    }
+
+    if (error.message === "Retired identities cannot be reactivated") {
+      return jsonErrorResponse(error.message, 409);
+    }
+
+    if (
+      error.message === "sponsorId is required"
+      || error.message === "sponsorChain is required"
+      || error.message === "workspaceId is required"
+    ) {
+      return jsonErrorResponse(error.message, 400);
+    }
+
+    return jsonErrorResponse(error.message || "internal_error", 500);
+  }
+
+  return jsonErrorResponse("internal_error", 500);
+}

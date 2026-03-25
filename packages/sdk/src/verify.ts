@@ -189,17 +189,17 @@ export class TokenVerifier {
 
   _validateClaims(claims: unknown): asserts claims is RelayAuthTokenClaims {
     const now = Math.floor(Date.now() / 1000);
-    const leeway = 30;
+    const notBeforeLeeway = 30;
 
     if (!isRelayAuthTokenClaims(claims)) {
       throw invalidTokenError();
     }
 
-    if (claims.nbf !== undefined && claims.nbf > now + leeway) {
+    if (claims.nbf !== undefined && claims.nbf > now + notBeforeLeeway) {
       throw invalidTokenError();
     }
 
-    if (claims.exp <= now - leeway) {
+    if (claims.exp <= now) {
       throw new TokenExpiredError();
     }
 
