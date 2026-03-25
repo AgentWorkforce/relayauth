@@ -51,7 +51,7 @@ const result = await workflow('039-scope-inheritance')
 
   .step('read-rbac-spec', {
     type: 'deterministic',
-    command: `cat ${ROOT}/specs/rbac-spec.md`,
+    command: `cat ${ROOT}/specs/rbac.md`,
     captureOutput: true,
   })
 

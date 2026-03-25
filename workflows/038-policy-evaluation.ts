@@ -51,7 +51,7 @@ const result = await workflow('038-policy-evaluation')
 
   .step('read-rbac-spec', {
     type: 'deterministic',
-    command: `cat ${ROOT}/specs/rbac-spec.md`,
+    command: `cat ${ROOT}/specs/rbac.md`,
     captureOutput: true,
   })
 

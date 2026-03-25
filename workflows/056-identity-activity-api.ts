@@ -51,7 +51,7 @@ const result = await workflow('056-identity-activity-api')
 
   .step('read-audit-spec', {
     type: 'deterministic',
-    command: `cat ${ROOT}/specs/audit-spec.md`,
+    command: `cat ${ROOT}/specs/audit.md`,
     captureOutput: true,
   })
 
