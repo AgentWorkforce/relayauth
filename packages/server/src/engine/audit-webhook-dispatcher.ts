@@ -26,7 +26,7 @@ export type AuditWebhookPayload = {
   entry: DispatchAuditEntry;
 };
 
-const RETRY_BASE_DELAYS_MS = [10_000, 60_000, 300_000] as const;
+const RETRY_BASE_DELAYS_MS = [500, 1_000, 2_000] as const;
 const REQUEST_TIMEOUT_MS = 10_000;
 const textEncoder = new TextEncoder();
 

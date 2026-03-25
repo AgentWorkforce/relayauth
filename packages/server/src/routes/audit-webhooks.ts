@@ -215,13 +215,13 @@ auditWebhooks.delete("/webhooks/:id", async (c) => {
   return c.body(null, 204);
 });
 
-let tableInitialized = false;
+const initializedDbs = new WeakSet<D1Database>();
 
 async function ensureAuditWebhookTable(db: D1Database): Promise<void> {
-  if (tableInitialized) return;
+  if (initializedDbs.has(db)) return;
   await db.exec(CREATE_AUDIT_WEBHOOKS_TABLE_SQL);
   await db.exec(CREATE_AUDIT_WEBHOOKS_INDEX_SQL);
-  tableInitialized = true;
+  initializedDbs.add(db);
 }
 
 function toAuditWebhookRecord(row: AuditWebhookRow): AuditWebhookRecord {

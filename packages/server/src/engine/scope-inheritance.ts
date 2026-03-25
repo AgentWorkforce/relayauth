@@ -114,7 +114,7 @@ const SELECT_IDENTITY_SQL = `
     sponsor_chain_json,
     workspace_id AS workspaceId
   FROM identities
-  WHERE org_id = ? AND id = ?
+  WHERE id = ?
   LIMIT 1
 `;
 
@@ -147,19 +147,17 @@ const SELECT_WORKSPACE_SQL = `
 
 export async function resolveInheritedScopes(
   db: D1Database,
-  orgId: string,
   identityId: string,
 ): Promise<string[]> {
-  const chain = await getInheritanceChain(db, orgId, identityId);
+  const chain = await getInheritanceChain(db, identityId);
   return chain.effective;
 }
 
 export async function getInheritanceChain(
   db: D1Database,
-  orgId: string,
   identityId: string,
 ): Promise<InheritanceChain> {
-  const identity = await getIdentity(db, orgId, identityId);
+  const identity = await getIdentity(db, identityId);
   if (!identity || identity.status !== "active") {
     return emptyInheritanceChain();
   }
@@ -241,8 +239,8 @@ async function getWorkspaceScopes(db: D1Database, workspaceId: string): Promise<
   return context.scopes;
 }
 
-async function getAgentScopes(db: D1Database, orgId: string, identityId: string): Promise<string[]> {
-  const identity = await getIdentity(db, orgId, identityId);
+async function getAgentScopes(db: D1Database, identityId: string): Promise<string[]> {
+  const identity = await getIdentity(db, identityId);
   if (!identity) {
     return [];
   }
@@ -392,10 +390,9 @@ async function loadRolesByIds(db: D1Database, roleIds: string[]): Promise<Role[]
 
 async function getIdentity(
   db: D1Database,
-  orgId: string,
   identityId: string,
 ): Promise<StoredIdentity | null> {
-  const row = await db.prepare(SELECT_IDENTITY_SQL).bind(orgId.trim(), identityId.trim()).first<IdentityRow>();
+  const row = await db.prepare(SELECT_IDENTITY_SQL).bind(identityId.trim()).first<IdentityRow>();
   return hydrateIdentity(row);
 }
 
