@@ -749,8 +749,32 @@ function pathMatches(
     return false;
   }
 
-  const pattern = `^${escapeRegExp(grantedPath).replace(/\\\*/g, ".*")}$`;
-  return new RegExp(pattern).test(requestedPath);
+  // Use non-regex wildcard matching to avoid ReDoS with multiple wildcards
+  const segments = grantedPath.split("*");
+  let pos = 0;
+
+  // First segment must match at the start
+  if (!requestedPath.startsWith(segments[0])) {
+    return false;
+  }
+  pos = segments[0].length;
+
+  // Middle segments must appear in order
+  for (let i = 1; i < segments.length - 1; i++) {
+    const idx = requestedPath.indexOf(segments[i], pos);
+    if (idx === -1) {
+      return false;
+    }
+    pos = idx + segments[i].length;
+  }
+
+  // Last segment must match at the end
+  const last = segments[segments.length - 1];
+  if (!requestedPath.endsWith(last) || requestedPath.length - last.length < pos) {
+    return false;
+  }
+
+  return true;
 }
 
 function dedupeScopes(scopes: string[]): string[] {
