@@ -5,3 +5,11 @@ dist
 .env
 *.log
 .turbo
+
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+.eggs/
