@@ -3,7 +3,6 @@
  *
  * Domain 6: Audit & Observability
  * E2E: perform actions → query audit → verify entries → test retention
-    Test scenarios:
  *
  * Depends on: 051, 052, 053, 054, 055, 056, 057
  * Run: agent-relay run workflows/058-audit-e2e.ts
@@ -18,7 +17,6 @@ const RELAYFILE = '/Users/khaliqgant/Projects/AgentWorkforce/relayfile';
 async function main() {
 const result = await workflow('058-audit-e2e')
   .description('Audit & Observability E2E tests')
-    Test scenarios:
   .pattern('pipeline')
   .channel('wf-relayauth-058')
   .maxConcurrency(3)
@@ -28,21 +26,18 @@ const result = await workflow('058-audit-e2e')
     cli: 'claude',
     preset: 'lead',
     role: 'Design E2E test scenarios, fix failures',
-    Test scenarios:
     cwd: ROOT,
   })
   .agent('test-writer', {
     cli: 'codex',
     preset: 'worker',
     role: 'Write E2E test file',
-    Test scenarios:
     cwd: ROOT,
   })
   .agent('reviewer', {
     cli: 'claude',
     preset: 'reviewer',
     role: 'Review E2E coverage and results',
-    Test scenarios:
     cwd: ROOT,
   })
 
@@ -64,7 +59,6 @@ const result = await workflow('058-audit-e2e')
     agent: 'test-writer',
     dependsOn: ['read-implementations', 'read-test-helpers'],
     task: `Write E2E tests for the Audit & Observability domain.
-    Test scenarios:
     - Audit entry includes full sponsorChain
     - Budget breach generates "budget.exceeded" audit event
     - Budget alert webhook fires at configured threshold
@@ -120,7 +114,6 @@ Test the full audit flow:
     agent: 'reviewer',
     dependsOn: ['run-e2e'],
     task: `Review E2E test results.
-    Test scenarios:
     - Audit entry includes full sponsorChain
     - Budget breach generates "budget.exceeded" audit event
     - Budget alert webhook fires at configured threshold
@@ -145,7 +138,6 @@ List issues.`,
     agent: 'architect',
     dependsOn: ['review-results'],
     task: `Fix E2E failures.
-    Test scenarios:
     - Audit entry includes full sponsorChain
     - Budget breach generates "budget.exceeded" audit event
     - Budget alert webhook fires at configured threshold
@@ -170,7 +162,6 @@ cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/e2e/audit.t
   });
 
 console.log(`\n058 Audit E2E: ${result.status}`);
-    Test scenarios:
 }
 
 main().catch(console.error);
