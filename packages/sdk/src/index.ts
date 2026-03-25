@@ -13,6 +13,8 @@ export type {
 } from "@relayauth/types";
 export { TokenVerifier } from "./verify.js";
 export type { VerifyOptions } from "./verify.js";
+export { relayAuth, requireScope } from "./middleware/hono.js";
+export type { RelayAuthMiddlewareOptions } from "./middleware/hono.js";
 export { ScopeChecker } from "./scopes.js";
 export {
   parseScope,
