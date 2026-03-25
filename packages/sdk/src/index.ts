@@ -18,6 +18,13 @@ export type { RelayAuthMiddlewareOptions } from "./middleware/hono.js";
 export { relayAuthExpress, requireScopeExpress } from "./middleware/express.js";
 export type { RelayAuthExpressOptions } from "./middleware/express.js";
 export { ScopeChecker } from "./scopes.js";
+export { generateScopes } from "./openapi-scopes.js";
+export type {
+  OpenAPIOperation,
+  OpenAPIPathItem,
+  OpenAPISpec,
+  ScopeDefinition,
+} from "./openapi-scopes.js";
 export {
   parseScope,
   parseScopes,
