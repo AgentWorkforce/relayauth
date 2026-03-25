@@ -1,0 +1,94 @@
+{
+  "id": "traj_1774424538596_395d7681",
+  "version": 1,
+  "task": {
+    "title": "057-dashboard-stats-api-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "a1f4e78847ffcabfc07c8aba"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-25T07:42:18.596Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-25T07:42:18.596Z"
+    },
+    {
+      "name": "test-writer",
+      "role": "specialist",
+      "joinedAt": "2026-03-25T07:42:28.440Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_aed91f1a",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T07:42:18.596Z",
+      "events": [
+        {
+          "ts": 1774424538596,
+          "type": "note",
+          "content": "Purpose: GET /v1/stats — aggregate stats (tokens issued, scopes checked, etc.)"
+        },
+        {
+          "ts": 1774424538596,
+          "type": "note",
+          "content": "Approach: 12-step dag workflow — Parsed 12 steps, 4 parallel tracks, 8 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-25T07:42:22.399Z"
+    },
+    {
+      "id": "ch_81005133",
+      "title": "Execution: read-audit-spec, read-audit-logger, read-audit-types, read-test-helpers",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T07:42:22.399Z",
+      "events": [],
+      "endedAt": "2026-03-25T07:42:28.437Z"
+    },
+    {
+      "id": "ch_90835dfa",
+      "title": "Convergence: read-audit-spec + read-audit-logger + read-audit-types + read-test-helpers",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-25T07:42:28.437Z",
+      "events": [
+        {
+          "ts": 1774424548438,
+          "type": "reflection",
+          "content": "read-audit-spec + read-audit-logger + read-audit-types + read-test-helpers resolved. 4/4 steps completed. All steps completed on first attempt. Unblocking: write-tests, implement.",
+          "significance": "high",
+          "raw": {
+            "confidence": 0.75,
+            "focalPoints": [
+              "read-audit-spec: completed",
+              "read-audit-logger: completed",
+              "read-audit-types: completed",
+              "read-test-helpers: completed"
+            ]
+          }
+        }
+      ],
+      "endedAt": "2026-03-25T07:42:28.440Z"
+    },
+    {
+      "id": "ch_ef653093",
+      "title": "Execution: write-tests",
+      "agentName": "test-writer",
+      "startedAt": "2026-03-25T07:42:28.440Z",
+      "events": [
+        {
+          "ts": 1774424548440,
+          "type": "note",
+          "content": "\"write-tests\": Write tests for the dashboard stats API",
+          "raw": {
+            "agent": "test-writer"
+          }
+        }
+      ]
+    }
+  ]
+}
