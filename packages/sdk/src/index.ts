@@ -15,6 +15,8 @@ export { TokenVerifier } from "./verify.js";
 export type { VerifyOptions } from "./verify.js";
 export { relayAuth, requireScope } from "./middleware/hono.js";
 export type { RelayAuthMiddlewareOptions } from "./middleware/hono.js";
+export { relayAuthExpress, requireScopeExpress } from "./middleware/express.js";
+export type { RelayAuthExpressOptions } from "./middleware/express.js";
 export { ScopeChecker } from "./scopes.js";
 export {
   parseScope,
