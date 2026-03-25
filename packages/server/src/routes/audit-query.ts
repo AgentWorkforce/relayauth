@@ -122,12 +122,12 @@ export function parseAuditQuery(
 
   const action = normalizeQueryValue(query.action);
   if (action && !AUDIT_ACTIONS.has(action as AuditAction)) {
-    return { ok: false, error: `invalid action: ${action}` };
+    return { ok: false, error: "invalid action" };
   }
 
   const result = normalizeQueryValue(query.result);
   if (result && result !== "allowed" && result !== "denied") {
-    return { ok: false, error: `invalid result: ${result}` };
+    return { ok: false, error: "invalid result" };
   }
 
   const from = normalizeQueryValue(query.from);

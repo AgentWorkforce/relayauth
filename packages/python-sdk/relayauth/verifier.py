@@ -236,16 +236,17 @@ class TokenVerifier:
             raise _invalid_token_error() from exc
 
         now = int(time.time())
+        leeway = 30
 
-        if claims.nbf is not None and claims.nbf > now:
+        if claims.nbf is not None and claims.nbf > now + leeway:
             raise _invalid_token_error()
-        if claims.exp <= now:
+        if claims.exp <= now - leeway:
             raise TokenExpiredError()
         if self.options.issuer and claims.iss != self.options.issuer:
             raise _invalid_token_error()
         if self.options.audience and not any(aud in claims.aud for aud in self.options.audience):
             raise _invalid_token_error()
-        if self.options.max_age is not None and claims.iat + self.options.max_age < now:
+        if self.options.max_age is not None and claims.iat + self.options.max_age < now - leeway:
             raise TokenExpiredError()
 
         return claims

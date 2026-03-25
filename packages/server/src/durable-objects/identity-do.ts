@@ -196,7 +196,7 @@ export class IdentityDO extends DurableObjectBase {
       return null;
     }
 
-    return this.hydrateIdentity(JSON.parse(row.data) as StoredIdentity);
+    return JSON.parse(row.data) as StoredIdentity;
   }
 
   private async requireIdentity(): Promise<StoredIdentity> {
@@ -219,10 +219,6 @@ export class IdentityDO extends DurableObjectBase {
     }
 
     await this.ctx.storage.delete("budgetUsage");
-  }
-
-  private hydrateIdentity(identity: StoredIdentity): StoredIdentity {
-    return identity;
   }
 
   private mergeIdentity(current: StoredIdentity, update: IdentityUpdate, timestamp: string): StoredIdentity {

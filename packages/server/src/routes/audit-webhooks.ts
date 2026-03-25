@@ -25,18 +25,12 @@ type CreateAuditWebhookRequest = {
 
 type AuditWebhookRow = {
   id: string;
-  org_id?: string;
-  orgId?: string;
-  url?: string;
-  webhook_url?: string;
-  secret?: string;
-  webhook_secret?: string;
-  events?: string[] | string | null;
-  events_json?: string | null;
-  created_at?: string;
-  createdAt?: string;
-  updated_at?: string;
-  updatedAt?: string;
+  org_id: string;
+  url: string;
+  secret: string;
+  events_json: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 type AuditWebhookRecord = {
@@ -177,7 +171,7 @@ auditWebhooks.post("/webhooks", async (c) => {
     )
     .run();
 
-  return c.json(record, 201);
+  return c.json(maskSecret(record), 201);
 });
 
 auditWebhooks.get("/webhooks", async (c) => {
@@ -221,28 +215,32 @@ auditWebhooks.delete("/webhooks/:id", async (c) => {
   return c.body(null, 204);
 });
 
+let tableInitialized = false;
+
 async function ensureAuditWebhookTable(db: D1Database): Promise<void> {
+  if (tableInitialized) return;
   await db.exec(CREATE_AUDIT_WEBHOOKS_TABLE_SQL);
   await db.exec(CREATE_AUDIT_WEBHOOKS_INDEX_SQL);
+  tableInitialized = true;
 }
 
 function toAuditWebhookRecord(row: AuditWebhookRow): AuditWebhookRecord {
-  const events = parseStoredEvents(row.events_json ?? row.events);
+  const events = parseStoredEvents(row.events_json);
 
   return {
     id: row.id,
-    orgId: row.org_id ?? row.orgId ?? "",
-    url: row.url ?? row.webhook_url ?? "",
-    secret: row.secret ?? row.webhook_secret ?? "",
+    orgId: row.org_id,
+    url: row.url,
+    secret: row.secret,
     ...(events && events.length > 0 ? { events } : {}),
-    ...(row.created_at ?? row.createdAt ? { createdAt: row.created_at ?? row.createdAt } : {}),
-    ...(row.updated_at ?? row.updatedAt ? { updatedAt: row.updated_at ?? row.updatedAt } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
 function maskSecret(record: AuditWebhookRecord): AuditWebhookRecord {
   const secret = record.secret;
-  const masked = secret.length > 4 ? "****" + secret.slice(-4) : "****";
+  const masked = secret.length > 8 ? "****" + secret.slice(-4) : "****";
   return { ...record, secret: masked };
 }
 
@@ -278,6 +276,10 @@ function isValidWebhookUrl(value: string): boolean {
       return false;
     }
 
+    if (isCloudMetadataHost(hostname)) {
+      return false;
+    }
+
     return true;
   } catch {
     return false;
@@ -288,14 +290,33 @@ function isPrivateIP(hostname: string): boolean {
   const ipv6Bracket = hostname.match(/^\[(.+)\]$/);
   const raw = ipv6Bracket ? ipv6Bracket[1] : hostname;
 
-  const parts = raw.split(".").map(Number);
-  if (parts.length === 4 && parts.every((p) => !isNaN(p) && p >= 0 && p <= 255)) {
-    if (parts[0] === 10) return true;
-    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-    if (parts[0] === 192 && parts[1] === 168) return true;
-    if (parts[0] === 127) return true;
-    if (parts[0] === 169 && parts[1] === 254) return true;
-    if (parts[0] === 0) return true;
+  // Block IPv4-mapped IPv6 addresses like ::ffff:127.0.0.1
+  const ipv4Mapped = raw.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+  if (ipv4Mapped) {
+    return isPrivateIPv4(ipv4Mapped[1].split(".").map(Number));
+  }
+
+  // Parse IPv4 — reject octal (leading zeros) and decimal encoded IPs
+  const parts = raw.split(".");
+  if (parts.length === 4) {
+    // Reject octal notation (e.g., 0177.0.0.1) and hex notation
+    if (parts.some((p) => /^0\d/.test(p) || /^0x/i.test(p))) {
+      return true;
+    }
+    const nums = parts.map(Number);
+    if (nums.every((p) => !isNaN(p) && p >= 0 && p <= 255)) {
+      return isPrivateIPv4(nums);
+    }
+  }
+
+  // Reject single decimal IP (e.g., 2130706433 = 127.0.0.1)
+  if (/^\d+$/.test(raw)) {
+    const decimal = Number(raw);
+    if (!isNaN(decimal) && decimal >= 0 && decimal <= 0xffffffff) {
+      const a = (decimal >>> 24) & 0xff;
+      const b = (decimal >>> 16) & 0xff;
+      return isPrivateIPv4([a, b, (decimal >>> 8) & 0xff, decimal & 0xff]);
+    }
   }
 
   if (raw.includes(":")) {
@@ -303,9 +324,29 @@ function isPrivateIP(hostname: string): boolean {
     if (expanded === "::1" || expanded === "::") return true;
     if (expanded.startsWith("fe80")) return true;
     if (expanded.startsWith("fc") || expanded.startsWith("fd")) return true;
+    if (expanded.startsWith("::ffff:")) return true;
   }
 
   return false;
+}
+
+function isPrivateIPv4(parts: number[]): boolean {
+  if (parts[0] === 10) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  if (parts[0] === 127) return true;
+  if (parts[0] === 169 && parts[1] === 254) return true;
+  if (parts[0] === 0) return true;
+  return false;
+}
+
+function isCloudMetadataHost(hostname: string): boolean {
+  const blocked = [
+    "metadata.google.internal",
+    "metadata.google.internal.",
+    "169.254.169.254",
+  ];
+  return blocked.includes(hostname);
 }
 
 function parseAuditWebhookEvents(value: unknown): string[] | undefined | null {

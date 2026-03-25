@@ -379,8 +379,9 @@ function comparePolicies(left: Policy, right: Policy): number {
     return right.priority - left.priority;
   }
 
+  // Deny-wins: sort deny before allow at equal priority
   if (left.effect !== right.effect) {
-    return left.effect === "allow" ? -1 : 1;
+    return left.effect === "deny" ? -1 : 1;
   }
 
   return left.id.localeCompare(right.id);
@@ -896,15 +897,30 @@ function padTime(value: number): string {
   return String(value).padStart(2, "0");
 }
 
-const MAX_REGEX_PATTERN_LENGTH = 256;
-const DANGEROUS_REGEX_PATTERN = /(\+\+|\*\+|\+\*|\*\*|\{\d+,\}\+|\{\d+,\}\*|(\.\*){3,}|(\(.*\)\+){2,}|(\(.*\)\*){2,})/;
+const MAX_REGEX_PATTERN_LENGTH = 128;
+const MAX_REGEX_INPUT_LENGTH = 1024;
+
+// Reject patterns with nested quantifiers (e.g. (a+)+, (a|a)*, (\w+){2,})
+// and other catastrophic backtracking constructs
+const DANGEROUS_REGEX_PATTERNS = [
+  /\+\+|\*\+|\+\*|\*\*/,                           // adjacent quantifiers
+  /\{\d+,\}\+|\{\d+,\}\*/,                         // {n,} followed by quantifier
+  /\([^)]*[+*][^)]*\)[+*{]/,                       // quantified group containing quantifier
+  /\([^)]*\|[^)]*\)[+*{]/,                         // quantified group containing alternation
+  /(\.\*){2,}/,                                     // repeated .* sequences
+  /\\[bBdDwWsS][+*]\)[+*{]/,                       // quantified group with quantified char class
+];
 
 function safeRegexTest(pattern: string, input: string): boolean {
   if (pattern.length > MAX_REGEX_PATTERN_LENGTH) {
     return false;
   }
 
-  if (DANGEROUS_REGEX_PATTERN.test(pattern)) {
+  if (input.length > MAX_REGEX_INPUT_LENGTH) {
+    return false;
+  }
+
+  if (DANGEROUS_REGEX_PATTERNS.some((dangerous) => dangerous.test(pattern))) {
     return false;
   }
 
@@ -973,4 +989,4 @@ function hextetsToBytes(parts: string[]): Uint8Array | null {
   return bytes;
 }
 
-export { applyPolicies, evaluateCondition, mergeScopes };
+export { applyPolicies, evaluateCondition, mergeScopes, scopeMatches, actionMatches, pathMatches, escapeRegExp };

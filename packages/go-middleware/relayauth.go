@@ -3,6 +3,7 @@ package relayauth
 import (
 	"context"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -62,7 +63,7 @@ type VerifyOptions struct {
 	CacheTTL time.Duration
 }
 
-type verifier struct {
+type jwtHeader struct {
 	Alg string `json:"alg"`
 	Typ string `json:"typ"`
 	Kid string `json:"kid"`
@@ -75,6 +76,8 @@ type jwk struct {
 	Kid string `json:"kid,omitempty"`
 	N   string `json:"n,omitempty"`
 	E   string `json:"e,omitempty"`
+	Crv string `json:"crv,omitempty"`
+	X   string `json:"x,omitempty"`
 }
 
 type jwksResponse struct {
@@ -117,6 +120,10 @@ func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
 	return claims, ok
 }
 
+func isSupportedAlgorithm(alg string) bool {
+	return alg == "RS256" || alg == "EdDSA"
+}
+
 // Verify validates the JWT signature and claims and returns the parsed claims.
 func (v *Verifier) Verify(tokenString string) (*Claims, error) {
 	parts := strings.Split(tokenString, ".")
@@ -128,7 +135,7 @@ func (v *Verifier) Verify(tokenString string) (*Claims, error) {
 	if err != nil {
 		return nil, ErrInvalidToken
 	}
-	if header.Typ != "JWT" || header.Alg != "RS256" {
+	if header.Typ != "JWT" || !isSupportedAlgorithm(header.Alg) {
 		return nil, ErrInvalidToken
 	}
 
@@ -147,8 +154,27 @@ func (v *Verifier) Verify(tokenString string) (*Claims, error) {
 		return nil, ErrInvalidToken
 	}
 
-	sum := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, sum[:], signature); err != nil {
+	message := []byte(parts[0] + "." + parts[1])
+
+	switch header.Alg {
+	case "RS256":
+		rsaKey, ok := key.(*rsa.PublicKey)
+		if !ok {
+			return nil, ErrInvalidToken
+		}
+		sum := sha256.Sum256(message)
+		if err := rsa.VerifyPKCS1v15(rsaKey, crypto.SHA256, sum[:], signature); err != nil {
+			return nil, ErrInvalidToken
+		}
+	case "EdDSA":
+		edKey, ok := key.(ed25519.PublicKey)
+		if !ok {
+			return nil, ErrInvalidToken
+		}
+		if !ed25519.Verify(edKey, message, signature) {
+			return nil, ErrInvalidToken
+		}
+	default:
 		return nil, ErrInvalidToken
 	}
 
@@ -285,7 +311,7 @@ func (v *Verifier) fetchJWKS(forceRefresh bool) ([]jwk, error) {
 	return append([]jwk(nil), keys...), nil
 }
 
-func (v *Verifier) findKey(kid, alg string) (*rsa.PublicKey, error) {
+func (v *Verifier) findKey(kid, alg string) (crypto.PublicKey, error) {
 	keys, err := v.fetchJWKS(false)
 	if err != nil {
 		return nil, err
@@ -303,15 +329,18 @@ func (v *Verifier) findKey(kid, alg string) (*rsa.PublicKey, error) {
 		return nil, ErrInvalidToken
 	}
 
-	key, err := match.rsaPublicKey()
-	if err != nil {
+	switch alg {
+	case "RS256":
+		return match.rsaPublicKey()
+	case "EdDSA":
+		return match.ed25519PublicKey()
+	default:
 		return nil, ErrInvalidToken
 	}
-	return key, nil
 }
 
-func decodeHeader(value string) (*verifier, error) {
-	var header verifier
+func decodeHeader(value string) (*jwtHeader, error) {
+	var header jwtHeader
 	if err := decodeBase64URLJSON(value, &header); err != nil {
 		return nil, err
 	}
@@ -396,7 +425,14 @@ func (j jwk) matches(kid, alg string) bool {
 	if j.Use != "" && j.Use != "sig" {
 		return false
 	}
-	return alg == "RS256" && j.Kty == "RSA"
+	switch alg {
+	case "RS256":
+		return j.Kty == "RSA"
+	case "EdDSA":
+		return j.Kty == "OKP" && j.Crv == "Ed25519"
+	default:
+		return false
+	}
 }
 
 func (j jwk) rsaPublicKey() (*rsa.PublicKey, error) {
@@ -422,6 +458,17 @@ func (j jwk) rsaPublicKey() (*rsa.PublicKey, error) {
 	}
 
 	return &rsa.PublicKey{N: n, E: e}, nil
+}
+
+func (j jwk) ed25519PublicKey() (ed25519.PublicKey, error) {
+	xBytes, err := decodeBase64URL(j.X)
+	if err != nil {
+		return nil, err
+	}
+	if len(xBytes) != ed25519.PublicKeySize {
+		return nil, ErrInvalidToken
+	}
+	return ed25519.PublicKey(xBytes), nil
 }
 
 func rsaPublicJWK(key *rsa.PrivateKey, kid string) (jwk, error) {

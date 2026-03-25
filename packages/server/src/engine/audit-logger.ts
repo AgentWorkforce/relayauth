@@ -67,13 +67,34 @@ const AUDIT_ACTIONS = new Set<ExtendedAuditAction>([
 const AUDIT_RESULTS = new Set<AuditEntry["result"]>(["allowed", "denied", "error"]);
 const BUDGET_ACTIONS = new Set<ExtendedAuditAction>(["budget.exceeded", "budget.alert"]);
 
+let auditWriteFailureCount = 0;
+
+export function getAuditWriteFailureCount(): number {
+  return auditWriteFailureCount;
+}
+
+const SENSITIVE_ACTIONS = new Set<string>([
+  "token.issued",
+  "token.revoked",
+  "identity.created",
+  "identity.suspended",
+  "identity.retired",
+  "policy.created",
+  "policy.deleted",
+  "key.rotated",
+]);
+
 export async function writeAuditEntry(db: D1Database, entry: AuditLoggerInput): Promise<void> {
   const normalized = normalizeAuditEntry(entry);
 
   try {
     await db.prepare(AUDIT_LOG_INSERT_SQL).bind(...toInsertParams(normalized)).run();
   } catch (error) {
+    auditWriteFailureCount++;
     console.error("Failed to write audit log entry to D1", error);
+    if (SENSITIVE_ACTIONS.has(normalized.action)) {
+      throw new Error("Audit write failed for sensitive operation");
+    }
   }
 }
 
@@ -93,7 +114,12 @@ export async function flushAuditBatch(
     );
     await db.batch(statements);
   } catch (error) {
+    auditWriteFailureCount += normalizedEntries.length;
     console.error("Failed to write audit log batch to D1", error);
+    const hasSensitive = normalizedEntries.some((e) => SENSITIVE_ACTIONS.has(e.action));
+    if (hasSensitive) {
+      throw new Error("Audit batch write failed for sensitive operations");
+    }
   }
 }
 

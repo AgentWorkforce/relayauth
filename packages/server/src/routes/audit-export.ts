@@ -110,11 +110,17 @@ function toCsvRow(entry: AuditEntryResponse): string {
 }
 
 function escapeCsvValue(value: string): string {
-  if (!/[",\n\r]/.test(value)) {
-    return value;
+  // Prevent CSV formula injection (CWE-1236)
+  let sanitized = value;
+  if (/^[=+\-@\t\r]/.test(sanitized)) {
+    sanitized = `'${sanitized}`;
   }
 
-  return `"${value.replace(/"/g, "\"\"")}"`;
+  if (!/[",\n\r]/.test(sanitized)) {
+    return sanitized;
+  }
+
+  return `"${sanitized.replace(/"/g, "\"\"")}"`;
 }
 
 export default auditExport;

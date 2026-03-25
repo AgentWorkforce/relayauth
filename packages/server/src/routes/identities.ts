@@ -7,7 +7,8 @@ import type {
 import { Hono } from "hono";
 import type { IdentityBudget, StoredIdentity } from "../durable-objects/identity-do.js";
 import type { AppEnv } from "../env.js";
-import { authenticate, decodeBase64UrlJson } from "../lib/auth.js";
+import { matchScope } from "@relayauth/sdk/src/scope-matcher.js";
+import { authenticateAndAuthorize, decodeBase64UrlJson } from "../lib/auth.js";
 
 type CreateIdentityRequest = CreateIdentityInput & {
   sponsorId?: string;
@@ -122,9 +123,14 @@ const INSERT_AUDIT_EVENT_SQL = `
 `;
 
 identities.get("/", async (c) => {
-  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  const auth = await authenticateAndAuthorize(
+    c.req.header("authorization"),
+    c.env.SIGNING_KEY,
+    "relayauth:identity:read:*",
+    matchScope,
+  );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, 401);
+    return c.json({ error: auth.error }, auth.status);
   }
 
   const status = normalizeIdentityStatus(c.req.query("status"));
@@ -132,21 +138,14 @@ identities.get("/", async (c) => {
   const limit = parseIdentityListLimit(c.req.query("limit"));
   const cursorId = decodeIdentityCursor(c.req.query("cursor"));
 
-  const query = buildListIdentitiesQuery(auth.claims.org, status, type);
+  const query = buildListIdentitiesQuery(auth.claims.org, status, type, limit, cursorId);
   const result = await c.env.DB.prepare(query.sql).bind(...query.params).all<ListIdentityRow>();
-  const identities = (result.results ?? [])
+  const rows = (result.results ?? [])
     .map(hydrateListIdentity)
-    .filter((identity): identity is AgentIdentity => identity !== null)
-    .sort(compareIdentitiesByCreatedAtDesc);
+    .filter((identity): identity is AgentIdentity => identity !== null);
 
-  const startIndex = cursorId
-    ? Math.max(
-        identities.findIndex((identity) => identity.id === cursorId) + 1,
-        0,
-      )
-    : 0;
-  const page = identities.slice(startIndex, startIndex + limit);
-  const hasMore = startIndex + limit < identities.length;
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
 
   return c.json(
     {
@@ -158,9 +157,14 @@ identities.get("/", async (c) => {
 });
 
 identities.get("/:id", async (c) => {
-  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  const auth = await authenticateAndAuthorize(
+    c.req.header("authorization"),
+    c.env.SIGNING_KEY,
+    "relayauth:identity:read:*",
+    matchScope,
+  );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, 401);
+    return c.json({ error: auth.error }, auth.status);
   }
 
   const id = c.req.param("id").trim();
@@ -190,9 +194,14 @@ identities.get("/:id", async (c) => {
 });
 
 identities.patch("/:id", async (c) => {
-  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  const auth = await authenticateAndAuthorize(
+    c.req.header("authorization"),
+    c.env.SIGNING_KEY,
+    "relayauth:identity:manage:*",
+    matchScope,
+  );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, 401);
+    return c.json({ error: auth.error }, auth.status);
   }
 
   const id = c.req.param("id").trim();
@@ -240,9 +249,14 @@ identities.patch("/:id", async (c) => {
 });
 
 identities.delete("/:id", async (c) => {
-  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  const auth = await authenticateAndAuthorize(
+    c.req.header("authorization"),
+    c.env.SIGNING_KEY,
+    "relayauth:identity:manage:*",
+    matchScope,
+  );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, 401);
+    return c.json({ error: auth.error }, auth.status);
   }
 
   if (c.req.header("x-confirm-delete") !== "true") {
@@ -269,9 +283,14 @@ identities.delete("/:id", async (c) => {
 });
 
 identities.post("/:id/suspend", async (c) => {
-  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  const auth = await authenticateAndAuthorize(
+    c.req.header("authorization"),
+    c.env.SIGNING_KEY,
+    "relayauth:identity:manage:*",
+    matchScope,
+  );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, 401);
+    return c.json({ error: auth.error }, auth.status);
   }
 
   const id = c.req.param("id").trim();
@@ -323,9 +342,14 @@ identities.post("/:id/suspend", async (c) => {
 });
 
 identities.post("/:id/retire", async (c) => {
-  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  const auth = await authenticateAndAuthorize(
+    c.req.header("authorization"),
+    c.env.SIGNING_KEY,
+    "relayauth:identity:manage:*",
+    matchScope,
+  );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, 401);
+    return c.json({ error: auth.error }, auth.status);
   }
 
   const id = c.req.param("id").trim();
@@ -355,9 +379,14 @@ identities.post("/:id/retire", async (c) => {
 });
 
 identities.post("/:id/reactivate", async (c) => {
-  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  const auth = await authenticateAndAuthorize(
+    c.req.header("authorization"),
+    c.env.SIGNING_KEY,
+    "relayauth:identity:manage:*",
+    matchScope,
+  );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, 401);
+    return c.json({ error: auth.error }, auth.status);
   }
 
   const id = c.req.param("id").trim();
@@ -378,9 +407,14 @@ identities.post("/:id/reactivate", async (c) => {
 });
 
 identities.post("/", async (c) => {
-  const auth = await authenticate(c.req.header("authorization"), c.env.SIGNING_KEY);
+  const auth = await authenticateAndAuthorize(
+    c.req.header("authorization"),
+    c.env.SIGNING_KEY,
+    "relayauth:identity:manage:*",
+    matchScope,
+  );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, 401);
+    return c.json({ error: auth.error }, auth.status);
   }
 
   const body = await c.req.json<CreateIdentityRequest>().catch(() => null);
@@ -400,7 +434,7 @@ identities.post("/", async (c) => {
 
   const duplicate = await findDuplicateIdentity(c.env.DB, auth.claims.org, name);
   if (duplicate) {
-    return c.json({ error: `Identity '${name}' already exists in this org` }, 409);
+    return c.json({ error: "identity_already_exists" }, 409);
   }
 
   const timestamp = new Date().toISOString();
@@ -469,9 +503,11 @@ function buildListIdentitiesQuery(
   orgId: string,
   status: IdentityStatus | undefined,
   type: IdentityType | undefined,
-): { sql: string; params: string[] } {
+  limit: number,
+  cursorId: string | undefined,
+): { sql: string; params: (string | number)[] } {
   const clauses = ["org_id = ?"];
-  const params = [orgId];
+  const params: (string | number)[] = [orgId];
 
   if (status) {
     clauses.push("status = ?");
@@ -483,12 +519,21 @@ function buildListIdentitiesQuery(
     params.push(type);
   }
 
+  if (cursorId) {
+    clauses.push("(created_at, id) < (SELECT created_at, id FROM identities WHERE id = ?)");
+    params.push(cursorId);
+  }
+
+  // Fetch limit + 1 to detect whether more pages exist
+  params.push(limit + 1);
+
   return {
     sql: `
       SELECT *
       FROM identities
       WHERE ${clauses.join(" AND ")}
       ORDER BY created_at DESC, id DESC
+      LIMIT ?
     `,
     params,
   };
@@ -530,9 +575,8 @@ function sanitizeIdentityUpdate(body: UpdateIdentityRequest): UpdateIdentityRequ
     update.type = body.type;
   }
 
-  if (body.status && normalizeIdentityStatus(body.status)) {
-    update.status = body.status;
-  }
+  // status, sponsorId, sponsorChain, workspaceId are not allowed via PATCH —
+  // use dedicated endpoints (suspend, retire, reactivate) for status changes.
 
   if ("scopes" in body) {
     update.scopes = normalizeStringList(body.scopes);
@@ -548,26 +592,6 @@ function sanitizeIdentityUpdate(body: UpdateIdentityRequest): UpdateIdentityRequ
 
   if (typeof body.lastActiveAt === "string") {
     update.lastActiveAt = body.lastActiveAt;
-  }
-
-  if (typeof body.suspendedAt === "string") {
-    update.suspendedAt = body.suspendedAt;
-  }
-
-  if (typeof body.suspendReason === "string") {
-    update.suspendReason = body.suspendReason;
-  }
-
-  if (typeof body.sponsorId === "string" && body.sponsorId.trim()) {
-    update.sponsorId = body.sponsorId.trim();
-  }
-
-  if (Array.isArray(body.sponsorChain)) {
-    update.sponsorChain = normalizeStringList(body.sponsorChain);
-  }
-
-  if (typeof body.workspaceId === "string" && body.workspaceId.trim()) {
-    update.workspaceId = body.workspaceId.trim();
   }
 
   if (isIdentityBudget(body.budget)) {
@@ -673,9 +697,6 @@ function parseMetadataColumn(value: unknown): Record<string, string> {
   }
 }
 
-function compareIdentitiesByCreatedAtDesc(left: AgentIdentity, right: AgentIdentity): number {
-  return right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
-}
 
 function createIdentityId(): string {
   return `agent_${crypto.randomUUID().replace(/-/g, "")}`;

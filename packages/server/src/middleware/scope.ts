@@ -100,12 +100,12 @@ function hasRequiredScopes(
 
 function insufficientScopeError(
   requiredScopes: string[],
-  grantedScopes: string[],
+  _grantedScopes: string[],
   mode: ScopeMode,
 ): RelayAuthError {
   const qualifier = mode === "any" ? "one of" : "all of";
   return new RelayAuthError(
-    `Insufficient scope: requires ${qualifier} [${requiredScopes.join(", ")}], has [${grantedScopes.join(", ")}]`,
+    `Insufficient scope: requires ${qualifier} [${requiredScopes.join(", ")}]`,
     "insufficient_scope",
     403,
   );

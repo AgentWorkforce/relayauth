@@ -4,9 +4,9 @@ from __future__ import annotations
 _MANAGE_IMPLIES = frozenset({"read", "write", "create", "delete"})
 
 
-def _parse_scope(raw: str) -> tuple[str, str, str, str]:
+def _parse_scope(raw: str) -> tuple[str, str, str, str] | None:
     if not isinstance(raw, str) or not raw or raw.strip() != raw or any(char.isspace() for char in raw):
-        raise ValueError("invalid scope")
+        return None
 
     parts = raw.split(":")
     if len(parts) == 3:
@@ -15,33 +15,36 @@ def _parse_scope(raw: str) -> tuple[str, str, str, str]:
     elif len(parts) == 4:
         plane, resource, action, path = parts
     else:
-        raise ValueError("invalid scope")
+        return None
 
     if not all(parts):
-        raise ValueError("invalid scope")
+        return None
 
     if path == "":
-        raise ValueError("invalid scope")
+        return None
 
     if plane == "relayfile" and resource == "fs":
-        path = _normalize_fs_path(path)
+        normalized = _normalize_fs_path(path)
+        if normalized is None:
+            return None
+        path = normalized
 
     return plane, resource, action, path
 
 
-def _normalize_fs_path(path: str) -> str:
+def _normalize_fs_path(path: str) -> str | None:
     if path == "*":
         return path
 
     if not path.startswith("/") or "\\" in path or "**" in path:
-        raise ValueError("invalid scope")
+        return None
 
     wildcard_index = path.find("*")
     if wildcard_index != -1 and not path.endswith("/*"):
-        raise ValueError("invalid scope")
+        return None
 
     if path.endswith("/*") and "*" in path[:-2]:
-        raise ValueError("invalid scope")
+        return None
 
     if path.endswith("/*"):
         base_path = path[:-2] or "/"
@@ -51,7 +54,7 @@ def _normalize_fs_path(path: str) -> str:
     normalized = "/".join(segment for segment in base_path.split("/") if segment)
     normalized = f"/{normalized}" if normalized else "/"
     if ".." in normalized.split("/"):
-        raise ValueError("invalid scope")
+        return None
 
     if path.endswith("/*"):
         if normalized == "/":
@@ -107,4 +110,10 @@ def match_scope(required: str, granted: list[str]) -> bool:
         return False
 
     requested = _parse_scope(required)
-    return any(_match_parsed_scope(requested, _parse_scope(candidate)) for candidate in granted)
+    if requested is None:
+        return False
+    for candidate in granted:
+        parsed = _parse_scope(candidate)
+        if parsed is not None and _match_parsed_scope(requested, parsed):
+            return True
+    return False

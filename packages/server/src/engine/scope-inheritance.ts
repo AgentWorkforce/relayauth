@@ -1,10 +1,8 @@
 import type { Policy, Role } from "@relayauth/types";
-import { parseScope } from "@relayauth/sdk/src/scope-parser.js";
-
 import type { StoredIdentity as BaseStoredIdentity } from "../durable-objects/identity-do.js";
 
 type StoredIdentity = Omit<BaseStoredIdentity, "workspaceId"> & { workspaceId?: string };
-import { applyPolicies, evaluateCondition } from "./policy-evaluation.js";
+import { applyPolicies, evaluateCondition, scopeMatches as policyEvalScopeMatches } from "./policy-evaluation.js";
 import { listPolicies } from "./policies.js";
 import { listIdentityRoles } from "./role-assignments.js";
 
@@ -116,7 +114,7 @@ const SELECT_IDENTITY_SQL = `
     sponsor_chain_json,
     workspace_id AS workspaceId
   FROM identities
-  WHERE id = ?
+  WHERE org_id = ? AND id = ?
   LIMIT 1
 `;
 
@@ -149,17 +147,19 @@ const SELECT_WORKSPACE_SQL = `
 
 export async function resolveInheritedScopes(
   db: D1Database,
+  orgId: string,
   identityId: string,
 ): Promise<string[]> {
-  const chain = await getInheritanceChain(db, identityId);
+  const chain = await getInheritanceChain(db, orgId, identityId);
   return chain.effective;
 }
 
 export async function getInheritanceChain(
   db: D1Database,
+  orgId: string,
   identityId: string,
 ): Promise<InheritanceChain> {
-  const identity = await getIdentity(db, identityId);
+  const identity = await getIdentity(db, orgId, identityId);
   if (!identity || identity.status !== "active") {
     return emptyInheritanceChain();
   }
@@ -241,8 +241,8 @@ async function getWorkspaceScopes(db: D1Database, workspaceId: string): Promise<
   return context.scopes;
 }
 
-async function getAgentScopes(db: D1Database, identityId: string): Promise<string[]> {
-  const identity = await getIdentity(db, identityId);
+async function getAgentScopes(db: D1Database, orgId: string, identityId: string): Promise<string[]> {
+  const identity = await getIdentity(db, orgId, identityId);
   if (!identity) {
     return [];
   }
@@ -392,9 +392,10 @@ async function loadRolesByIds(db: D1Database, roleIds: string[]): Promise<Role[]
 
 async function getIdentity(
   db: D1Database,
+  orgId: string,
   identityId: string,
 ): Promise<StoredIdentity | null> {
-  const row = await db.prepare(SELECT_IDENTITY_SQL).bind(identityId.trim()).first<IdentityRow>();
+  const row = await db.prepare(SELECT_IDENTITY_SQL).bind(orgId.trim(), identityId.trim()).first<IdentityRow>();
   return hydrateIdentity(row);
 }
 
@@ -533,72 +534,5 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function safeParseScope(scope: string) {
-  try {
-    return parseScope(scope);
-  } catch {
-    return null;
-  }
-}
-
-function scopeMatches(requested: string, granted: string): boolean {
-  const parsedRequested = safeParseScope(requested);
-  const parsedGranted = safeParseScope(granted);
-  if (!parsedRequested || !parsedGranted) {
-    return false;
-  }
-
-  if (parsedGranted.plane !== "*" && parsedGranted.plane !== parsedRequested.plane) {
-    return false;
-  }
-
-  if (parsedGranted.resource !== "*" && parsedGranted.resource !== parsedRequested.resource) {
-    return false;
-  }
-
-  if (!actionMatches(parsedRequested.action, parsedGranted.action)) {
-    return false;
-  }
-
-  return pathMatches(
-    parsedRequested.path,
-    parsedGranted.path,
-    parsedRequested.plane,
-    parsedRequested.resource,
-  );
-}
-
-function actionMatches(requested: string, granted: string): boolean {
-  if (granted === "*" || granted === requested) {
-    return true;
-  }
-
-  return granted === "manage" && ["read", "write", "create", "delete"].includes(requested);
-}
-
-function pathMatches(
-  requestedPath: string,
-  grantedPath: string,
-  plane: string,
-  resource: string,
-): boolean {
-  if (grantedPath === "*" || grantedPath === requestedPath) {
-    return true;
-  }
-
-  if (plane === "relayfile" && resource === "fs" && grantedPath.endsWith("/*")) {
-    const prefix = grantedPath.slice(0, -1);
-    return requestedPath.startsWith(prefix);
-  }
-
-  if (!grantedPath.includes("*")) {
-    return false;
-  }
-
-  const pattern = `^${escapeRegExp(grantedPath).replace(/\\\*/g, ".*")}$`;
-  return new RegExp(pattern).test(requestedPath);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+// Use the canonical implementation from policy-evaluation to avoid divergent copies
+const scopeMatches = policyEvalScopeMatches;
