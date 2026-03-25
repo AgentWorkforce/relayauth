@@ -438,7 +438,7 @@ test("CSV export includes all AuditEntry fields as columns", async () => {
     "denied",
     JSON.stringify(entry.metadata),
     "198.51.100.42",
-    "@relayauth/sdk/1.0.0",
+    "'@relayauth/sdk/1.0.0",
     "2026-03-24T12:00:01.000Z",
     "2026-03-24T12:05:01.000Z",
   ]);

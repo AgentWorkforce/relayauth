@@ -19,7 +19,7 @@ import {
 import { RelayAuthError } from "../../../../sdk/src/errors.js";
 import { matchesAny, validateSubset } from "../../../../sdk/src/scope-matcher.js";
 import { parseScope, validateScope } from "../../../../sdk/src/scope-parser.js";
-import { TokenVerifier } from "../../../../sdk/src/verify.js";
+import { authenticate } from "../../lib/auth.js";
 
 type StoredPolicy = Policy & { deletedAt?: string };
 
@@ -606,20 +606,14 @@ function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredId
 
 function createScopeIssuanceApp(): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
-  const verifier = new TokenVerifier();
 
   app.post("/subagents", async (c) => {
-    const authorization = c.req.header("Authorization");
-    if (!authorization) {
-      return c.json({ error: "Missing Authorization header", code: "missing_authorization" }, 401);
+    const auth = await authenticate(c.req.header("Authorization"), c.env.SIGNING_KEY);
+    if (!auth.ok) {
+      return c.json({ error: auth.error, code: "invalid_authorization" }, auth.status);
     }
 
-    const [scheme, token] = authorization.split(/\s+/, 2);
-    if (scheme !== "Bearer" || !token) {
-      return c.json({ error: "Invalid Authorization header", code: "invalid_authorization" }, 401);
-    }
-
-    const claims = await verifier.verify(token, c.env.SIGNING_KEY);
+    const claims = auth.claims;
     const body = await c.req.json<{ scopes?: string[] }>().catch(() => null);
     const requestedScopes = Array.isArray(body?.scopes) ? body.scopes : [];
 

@@ -469,7 +469,7 @@ test("POST /v1/audit/webhooks creates a webhook subscription with url, events, a
   assert.equal(webhook.orgId, "org_audit_webhooks");
   assert.equal(webhook.url, "https://audit.example.com/hooks/budget");
   assert.deepEqual(webhook.events, ["identity.suspended", "scope.denied"]);
-  assert.equal(webhook.secret, "whsec_budget_alert_123");
+  assert.equal(webhook.secret, "****_123");
   assert.equal(records.size, 1, "expected webhook subscription to persist in D1");
 });
 
