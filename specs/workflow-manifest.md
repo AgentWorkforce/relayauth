@@ -1,6 +1,6 @@
 # relayauth Workflow Manifest
 
-100 workflows to build relayauth from scratch, TDD, with full E2E testing.
+110 workflows to build relayauth from scratch, TDD, with full E2E testing.
 
 ## Domain 1: Foundation (001-010)
 
@@ -161,3 +161,18 @@
 | 098 | api-docs | Full API reference generated from OpenAPI spec | architect, docs-writer | 002 |
 | 099 | integration-guides | Guides: relaycast integration, relayfile integration, cloud integration | architect, docs-writer | 076-078 |
 | 100 | landing-page | relayauth.dev — landing page (Astro + Tailwind) | architect, frontend-dev, illustrator | all |
+
+## Domain 13: Discovery & Ecosystem (101-110)
+
+| # | Name | Description | Agents | Depends On |
+|---|------|-------------|--------|------------|
+| 101 | well-known-spec | Define /.well-known/agent-configuration response schema and discovery protocol | architect, spec-writer | 002, 012 |
+| 102 | well-known-endpoint | GET /.well-known/agent-configuration — server discovery endpoint | architect, server-dev, test-dev | 101, 012 |
+| 103 | openapi-to-scopes | Auto-generate relayauth scopes from OpenAPI specs | architect, sdk-dev, test-dev | 031, 004, 069 |
+| 104 | framework-adapter-types | @relayauth/ai package scaffold + shared adapter types and base class | architect, sdk-dev, test-dev | 033, 063, 101 |
+| 105 | adapter-vercel-ai | Vercel AI SDK adapter — relayauth tools as AI SDK tools | architect, sdk-dev, test-dev | 104 |
+| 106 | adapter-openai | OpenAI function-calling adapter for relayauth tools | architect, sdk-dev, test-dev | 104 |
+| 107 | adapter-anthropic | Anthropic tool-use adapter for relayauth tools | architect, sdk-dev, test-dev | 104 |
+| 108 | init-wizard | npx relayauth init — interactive setup wizard with framework detection | architect, cli-dev, test-dev | 069, 102, 103 |
+| 109 | a2a-discovery-bridge | Bridge A2A agent cards to/from agent-configuration discovery | architect, sdk-dev, server-dev, test-dev | 102, 076 |
+| 110 | discovery-ecosystem-e2e | E2E: discovery + framework adapters + OpenAPI scopes + A2A bridge | architect, test-dev | 101-109 |
