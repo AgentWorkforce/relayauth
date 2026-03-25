@@ -26,7 +26,7 @@ export type AuditWebhookPayload = {
   entry: DispatchAuditEntry;
 };
 
-const RETRY_DELAYS_MS = [10_000, 60_000, 300_000] as const;
+const RETRY_BASE_DELAYS_MS = [10_000, 60_000, 300_000] as const;
 const REQUEST_TIMEOUT_MS = 10_000;
 const textEncoder = new TextEncoder();
 
@@ -34,10 +34,6 @@ export async function dispatchWebhook(
   webhook: AuditWebhookSubscription,
   entry: DispatchAuditEntry,
 ): Promise<void> {
-  if (!shouldDispatch(webhook, entry.action)) {
-    return;
-  }
-
   const payload: AuditWebhookPayload = {
     type: "audit.event",
     deliveryId: generateDeliveryId(),
@@ -48,7 +44,7 @@ export async function dispatchWebhook(
   const signature = await signPayload(body, webhook.secret);
 
   let lastError: unknown;
-  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
+  for (let attempt = 0; attempt <= RETRY_BASE_DELAYS_MS.length; attempt += 1) {
     try {
       const response = await postWebhook(webhook.url, body, payload.deliveryId, signature);
       if (response.ok) {
@@ -64,8 +60,10 @@ export async function dispatchWebhook(
       lastError = error;
     }
 
-    if (attempt < RETRY_DELAYS_MS.length) {
-      await sleep(RETRY_DELAYS_MS[attempt]);
+    if (attempt < RETRY_BASE_DELAYS_MS.length) {
+      const base = RETRY_BASE_DELAYS_MS[attempt];
+      const jitter = Math.floor(Math.random() * base * 0.25);
+      await sleep(base + jitter);
     }
   }
 
@@ -77,6 +75,10 @@ export function dispatchWebhooksForEntry(
   entry: DispatchAuditEntry,
 ): void {
   for (const webhook of webhooks) {
+    if (!shouldDispatch(webhook, entry.action)) {
+      continue;
+    }
+
     void dispatchWebhook(webhook, entry).catch((error) => {
       console.error("Failed to deliver audit webhook", {
         webhookId: webhook.id,

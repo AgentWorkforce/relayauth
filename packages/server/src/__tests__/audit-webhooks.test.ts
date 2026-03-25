@@ -519,7 +519,7 @@ test("GET /v1/audit/webhooks lists webhook subscriptions for an org", async () =
     true,
     "expected GET to be org-scoped",
   );
-  assert.equal(webhooks[0]?.secret, "whsec_sponsor");
+  assert.match(webhooks[0]?.secret ?? "", /^\*{4}/, "expected secret to be masked on list");
 });
 
 test("DELETE /v1/audit/webhooks/:id removes a webhook subscription", async () => {
@@ -608,6 +608,38 @@ test("POST /v1/audit/webhooks returns 400 for invalid webhook URL", async () => 
 
   const body = await assertJsonResponse<{ error: string }>(response, 400);
   assert.match(body.error, /url/i);
+});
+
+test("POST /v1/audit/webhooks returns 400 for SSRF-prone URLs (private IPs, localhost, metadata)", async (t) => {
+  const ssrfUrls = [
+    "http://127.0.0.1/admin",
+    "http://localhost:8080/internal",
+    "http://10.0.0.1/secret",
+    "http://172.16.0.1/internal",
+    "http://192.168.1.1/admin",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://[::1]/admin",
+    "http://0.0.0.0/",
+  ];
+
+  for (const url of ssrfUrls) {
+    await t.test(`rejects ${url}`, async () => {
+      const response = await requestAuditWebhooks(
+        "POST",
+        "/v1/audit/webhooks",
+        {
+          body: {
+            orgId: "org_audit_webhooks",
+            url,
+            events: ["identity.suspended"],
+            secret: "whsec_ssrf_test",
+          },
+        },
+      );
+
+      assert.equal(response.status, 400, `expected 400 for SSRF URL: ${url}`);
+    });
+  }
 });
 
 test("dispatchWebhook() sends budget alert and auto-suspend audit payloads with sponsorId", async (t) => {

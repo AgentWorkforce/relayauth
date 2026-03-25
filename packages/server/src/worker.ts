@@ -11,9 +11,9 @@ import roles from "./routes/roles.js";
 const app = new Hono<AppEnv>();
 
 app.get("/health", (c) => c.json({ status: "ok" }));
+app.route("/v1/audit", auditWebhooks);
 app.route("/v1/audit", auditExport);
 app.route("/v1/audit", auditQuery);
-app.route("/v1/audit", auditWebhooks);
 app.route("/v1/identities", identities);
 app.route("/v1/identities", roleAssignments);
 app.route("/v1/roles", roles);

@@ -194,7 +194,7 @@ auditWebhooks.get("/webhooks", async (c) => {
   }
 
   const result = await c.env.DB.prepare(LIST_AUDIT_WEBHOOKS_SQL).bind(orgId).all<AuditWebhookRow>();
-  const records = (result.results ?? []).map(toAuditWebhookRecord);
+  const records = (result.results ?? []).map(toAuditWebhookRecord).map(maskSecret);
 
   return c.json(records, 200);
 });
@@ -240,6 +240,12 @@ function toAuditWebhookRecord(row: AuditWebhookRow): AuditWebhookRecord {
   };
 }
 
+function maskSecret(record: AuditWebhookRecord): AuditWebhookRecord {
+  const secret = record.secret;
+  const masked = secret.length > 4 ? "****" + secret.slice(-4) : "****";
+  return { ...record, secret: masked };
+}
+
 function normalizeRequiredString(value: unknown, _field: string): string | null {
   if (typeof value !== "string") {
     return null;
@@ -252,10 +258,54 @@ function normalizeRequiredString(value: unknown, _field: string): string | null 
 function isValidWebhookUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:";
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return false;
+    }
+
+    const hostname = url.hostname.toLowerCase();
+
+    if (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "[::1]" ||
+      hostname === "::1" ||
+      hostname === "0.0.0.0"
+    ) {
+      return false;
+    }
+
+    if (isPrivateIP(hostname)) {
+      return false;
+    }
+
+    return true;
   } catch {
     return false;
   }
+}
+
+function isPrivateIP(hostname: string): boolean {
+  const ipv6Bracket = hostname.match(/^\[(.+)\]$/);
+  const raw = ipv6Bracket ? ipv6Bracket[1] : hostname;
+
+  const parts = raw.split(".").map(Number);
+  if (parts.length === 4 && parts.every((p) => !isNaN(p) && p >= 0 && p <= 255)) {
+    if (parts[0] === 10) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    if (parts[0] === 127) return true;
+    if (parts[0] === 169 && parts[1] === 254) return true;
+    if (parts[0] === 0) return true;
+  }
+
+  if (raw.includes(":")) {
+    const expanded = raw.toLowerCase();
+    if (expanded === "::1" || expanded === "::") return true;
+    if (expanded.startsWith("fe80")) return true;
+    if (expanded.startsWith("fc") || expanded.startsWith("fd")) return true;
+  }
+
+  return false;
 }
 
 function parseAuditWebhookEvents(value: unknown): string[] | undefined | null {
