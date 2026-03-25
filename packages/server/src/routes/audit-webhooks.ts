@@ -131,8 +131,8 @@ auditWebhooks.post("/webhooks", async (c) => {
     return c.json({ error: "orgId is required" }, 400);
   }
 
-  if (claims?.org && claims.org !== orgId) {
-    return c.json({ error: "orgId does not match authenticated token" }, 400);
+  if (!claims?.org || claims.org !== orgId) {
+    return c.json({ error: "orgId does not match authenticated token" }, 403);
   }
 
   const url = normalizeRequiredString(body.url, "url");
@@ -189,8 +189,8 @@ auditWebhooks.get("/webhooks", async (c) => {
     return c.json({ error: "orgId query param is required" }, 400);
   }
 
-  if (claims?.org && claims.org !== orgId) {
-    return c.json({ error: "orgId does not match authenticated token" }, 400);
+  if (!claims?.org || claims.org !== orgId) {
+    return c.json({ error: "orgId does not match authenticated token" }, 403);
   }
 
   const result = await c.env.DB.prepare(LIST_AUDIT_WEBHOOKS_SQL).bind(orgId).all<AuditWebhookRow>();
@@ -208,8 +208,8 @@ auditWebhooks.delete("/webhooks/:id", async (c) => {
     return c.json({ error: "orgId query param is required" }, 400);
   }
 
-  if (claims?.org && claims.org !== orgId) {
-    return c.json({ error: "orgId does not match authenticated token" }, 400);
+  if (!claims?.org || claims.org !== orgId) {
+    return c.json({ error: "orgId does not match authenticated token" }, 403);
   }
 
   const id = normalizeRequiredString(c.req.param("id"), "id");

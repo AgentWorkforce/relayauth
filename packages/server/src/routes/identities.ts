@@ -3,11 +3,11 @@ import type {
   CreateIdentityInput,
   IdentityStatus,
   IdentityType,
-  RelayAuthTokenClaims,
 } from "@relayauth/types";
 import { Hono } from "hono";
 import type { IdentityBudget, StoredIdentity } from "../durable-objects/identity-do.js";
 import type { AppEnv } from "../env.js";
+import { authenticate, decodeBase64UrlJson } from "../lib/auth.js";
 
 type CreateIdentityRequest = CreateIdentityInput & {
   sponsorId?: string;
@@ -22,11 +22,6 @@ type SuspendIdentityRequest = {
 
 type RetireIdentityRequest = {
   reason?: string;
-};
-
-type JwtHeader = {
-  alg?: string;
-  typ?: string;
 };
 
 type DuplicateIdentityRow = {
@@ -187,6 +182,10 @@ identities.get("/:id", async (c) => {
   }
 
   const identity = await response.json<StoredIdentity>();
+  if (identity.orgId !== auth.claims.org) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
   return c.json(identity, 200);
 });
 
@@ -197,6 +196,14 @@ identities.patch("/:id", async (c) => {
   }
 
   const id = c.req.param("id").trim();
+  const existing = await getStoredIdentity(c.env.IDENTITY_DO, id);
+  if (!existing.ok) {
+    return c.json({ error: existing.error }, existing.status);
+  }
+  if (existing.identity.orgId !== auth.claims.org) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
   const body = await c.req.json<UpdateIdentityRequest>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return c.json({ error: "Invalid JSON body" }, 400);
@@ -247,6 +254,9 @@ identities.delete("/:id", async (c) => {
   if (!existing.ok) {
     return c.json({ error: existing.error }, existing.status);
   }
+  if (existing.identity.orgId !== auth.claims.org) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
 
   const activeTokenIds = await listActiveTokenIds(c.env.DB, existing.identity.id);
   const deleted = await deleteStoredIdentity(c.env.IDENTITY_DO, existing.identity.id);
@@ -265,6 +275,14 @@ identities.post("/:id/suspend", async (c) => {
   }
 
   const id = c.req.param("id").trim();
+  const preCheck = await getStoredIdentity(c.env.IDENTITY_DO, id);
+  if (!preCheck.ok) {
+    return c.json({ error: preCheck.error }, preCheck.status);
+  }
+  if (preCheck.identity.orgId !== auth.claims.org) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
   const body = await c.req.json<SuspendIdentityRequest>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return c.json({ error: "Invalid JSON body" }, 400);
@@ -311,6 +329,14 @@ identities.post("/:id/retire", async (c) => {
   }
 
   const id = c.req.param("id").trim();
+  const preCheck = await getStoredIdentity(c.env.IDENTITY_DO, id);
+  if (!preCheck.ok) {
+    return c.json({ error: preCheck.error }, preCheck.status);
+  }
+  if (preCheck.identity.orgId !== auth.claims.org) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
   const parsedBody = await parseOptionalJsonObjectBody<RetireIdentityRequest>(c.req.raw);
   if (!parsedBody.ok) {
     return c.json({ error: "Invalid JSON body" }, 400);
@@ -335,6 +361,14 @@ identities.post("/:id/reactivate", async (c) => {
   }
 
   const id = c.req.param("id").trim();
+  const preCheck = await getStoredIdentity(c.env.IDENTITY_DO, id);
+  if (!preCheck.ok) {
+    return c.json({ error: preCheck.error }, preCheck.status);
+  }
+  if (preCheck.identity.orgId !== auth.claims.org) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
   const reactivated = await reactivateIdentity(c.env.IDENTITY_DO, id);
   if (!reactivated.ok) {
     return c.json({ error: reactivated.error }, reactivated.status);
@@ -409,118 +443,6 @@ identities.post("/", async (c) => {
   const createdIdentity = await response.json<StoredIdentity>();
   return c.json(createdIdentity, 201);
 });
-
-async function authenticate(
-  authorization: string | undefined,
-  signingKey: string,
-): Promise<
-  | { ok: true; claims: RelayAuthTokenClaims }
-  | { ok: false; error: string }
-> {
-  if (!authorization) {
-    return { ok: false, error: "Missing Authorization header" };
-  }
-
-  const [scheme, token] = authorization.split(/\s+/, 2);
-  if (scheme !== "Bearer" || !token) {
-    return { ok: false, error: "Invalid Authorization header" };
-  }
-
-  const claims = await verifyToken(token, signingKey);
-  if (!claims) {
-    return { ok: false, error: "Invalid access token" };
-  }
-
-  return { ok: true, claims };
-}
-
-async function verifyToken(token: string, signingKey: string): Promise<RelayAuthTokenClaims | null> {
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    return null;
-  }
-
-  const [encodedHeader, encodedPayload, signature] = parts;
-  const header = decodeBase64UrlJson<JwtHeader>(encodedHeader);
-  const payload = decodeBase64UrlJson<RelayAuthTokenClaims>(encodedPayload);
-  if (!header || !payload || header.alg !== "HS256") {
-    return null;
-  }
-
-  const isValidSignature = await verifyHs256Signature(
-    `${encodedHeader}.${encodedPayload}`,
-    signature,
-    signingKey,
-  );
-  if (!isValidSignature) {
-    return null;
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp !== "number" || payload.exp <= now) {
-    return null;
-  }
-
-  if (
-    typeof payload.sub !== "string" ||
-    typeof payload.org !== "string" ||
-    typeof payload.wks !== "string" ||
-    typeof payload.sponsorId !== "string" ||
-    !Array.isArray(payload.sponsorChain)
-  ) {
-    return null;
-  }
-
-  return payload;
-}
-
-function decodeBase64UrlJson<T>(value: string): T | null {
-  try {
-    return JSON.parse(decodeBase64Url(value)) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function verifyHs256Signature(
-  value: string,
-  signature: string,
-  signingKey: string,
-): Promise<boolean> {
-  try {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(signingKey),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["verify"],
-    );
-
-    return crypto.subtle.verify(
-      "HMAC",
-      key,
-      decodeBase64UrlToBytes(signature),
-      new TextEncoder().encode(value),
-    );
-  } catch {
-    return false;
-  }
-}
-
-function decodeBase64Url(value: string): string {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-  return atob(padded);
-}
-
-function decodeBase64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
-  const decoded = decodeBase64Url(value);
-  const bytes = new Uint8Array(decoded.length);
-  for (let i = 0; i < decoded.length; i++) {
-    bytes[i] = decoded.charCodeAt(i);
-  }
-  return bytes;
-}
 
 function normalizeIdentityType(type: IdentityType | undefined): IdentityType {
   return type === "human" || type === "service" ? type : "agent";

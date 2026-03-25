@@ -493,7 +493,7 @@ function evaluateTimeCondition(condition: PolicyCondition, rawTimestamp: string 
       }
       return compareWeekdaySet(condition.operator, timestamp, value);
     case "matches":
-      return typeof value === "string" && new RegExp(value).test(rawTimestamp);
+      return typeof value === "string" && safeRegexTest(value, rawTimestamp);
     default:
       return false;
   }
@@ -547,7 +547,7 @@ function evaluateIpCondition(condition: PolicyCondition, ip: string | undefined)
     case "not_in":
       return Array.isArray(value) && value.every((entry) => !ipMatches(ip, entry));
     case "matches":
-      return typeof value === "string" && new RegExp(value).test(ip);
+      return typeof value === "string" && safeRegexTest(value, ip);
     default:
       return false;
   }
@@ -625,7 +625,7 @@ function evaluateStringCondition(
     case "not_in":
       return Array.isArray(value) && !value.includes(actual);
     case "matches":
-      return typeof value === "string" && new RegExp(value).test(actual);
+      return typeof value === "string" && safeRegexTest(value, actual);
     default:
       return false;
   }
@@ -894,6 +894,25 @@ function isTimeOfDay(value: string): boolean {
 
 function padTime(value: number): string {
   return String(value).padStart(2, "0");
+}
+
+const MAX_REGEX_PATTERN_LENGTH = 256;
+const DANGEROUS_REGEX_PATTERN = /(\+\+|\*\+|\+\*|\*\*|\{\d+,\}\+|\{\d+,\}\*|(\.\*){3,}|(\(.*\)\+){2,}|(\(.*\)\*){2,})/;
+
+function safeRegexTest(pattern: string, input: string): boolean {
+  if (pattern.length > MAX_REGEX_PATTERN_LENGTH) {
+    return false;
+  }
+
+  if (DANGEROUS_REGEX_PATTERN.test(pattern)) {
+    return false;
+  }
+
+  try {
+    return new RegExp(pattern).test(input);
+  } catch {
+    return false;
+  }
 }
 
 function escapeRegExp(value: string): string {

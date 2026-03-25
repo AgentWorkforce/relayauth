@@ -126,19 +126,33 @@ class TokenVerifier:
 
         try:
             pyjwk = jwt.PyJWK.from_dict(jwk, algorithm=algorithm)
+
+            decode_options: dict[str, Any] = {
+                "verify_signature": True,
+                "verify_exp": True,
+                "verify_nbf": True,
+                "verify_iat": True,
+                "verify_aud": bool(self.options.audience),
+                "verify_iss": bool(self.options.issuer),
+            }
+
+            decode_kwargs: dict[str, Any] = {
+                "algorithms": [algorithm],
+                "options": decode_options,
+                "leeway": 30,
+            }
+            if self.options.audience:
+                decode_kwargs["audience"] = self.options.audience
+            if self.options.issuer:
+                decode_kwargs["issuer"] = self.options.issuer
+
             payload = jwt.decode(
                 token,
                 key=pyjwk.key,
-                algorithms=[algorithm],
-                options={
-                    "verify_signature": True,
-                    "verify_exp": False,
-                    "verify_nbf": False,
-                    "verify_iat": False,
-                    "verify_aud": False,
-                    "verify_iss": False,
-                },
+                **decode_kwargs,
             )
+        except jwt.ExpiredSignatureError as exc:
+            raise TokenExpiredError() from exc
         except jwt.InvalidSignatureError as exc:
             raise _invalid_token_error() from exc
         except jwt.InvalidTokenError as exc:
