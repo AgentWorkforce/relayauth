@@ -31,6 +31,16 @@ export class InsufficientScopeError extends RelayAuthError {
   }
 }
 
+export class InvalidScopeError extends RelayAuthError {
+  constructor(scope: string, reason?: string) {
+    super(
+      reason ? `Invalid scope "${scope}": ${reason}` : `Invalid scope "${scope}"`,
+      "invalid_scope",
+      400,
+    );
+  }
+}
+
 export class IdentityNotFoundError extends RelayAuthError {
   constructor(id: string) {
     super(`Identity not found: ${id}`, "identity_not_found", 404);
