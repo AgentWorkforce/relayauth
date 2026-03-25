@@ -382,6 +382,90 @@ test("registerAgent creates an identity via the SDK client's identity endpoint",
   assert.equal(payload.name, "billing-bot");
 });
 
+test("requestScope uses the newly issued token after registerAgent rotates credentials", async (t) => {
+  const adapter = new RelayAuthAdapter(createConfig());
+  const fetchMock = mockFetch((input, init) => {
+    const url = toUrl(input);
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    if (init?.headers) {
+      for (const [name, value] of new Headers(init.headers).entries()) {
+        headers.set(name, value);
+      }
+    }
+
+    if (url.pathname === "/.well-known/agent-configuration") {
+      return jsonResponse(discoveryDocument);
+    }
+
+    if (url.pathname === "/v1/identities") {
+      assert.equal(headers.get("authorization"), `Bearer ${accessToken}`);
+      return jsonResponse(createdIdentity, 201);
+    }
+
+    if (url.pathname === "/v1/tokens") {
+      const body = init?.body ? JSON.parse(String(init.body)) as { identityId?: string; scopes?: string[] } : {};
+
+      if (body.identityId === createdIdentity.id && Array.isArray(body.scopes) && body.scopes[0] === "relayauth:identity:read:*") {
+        assert.equal(headers.get("authorization"), `Bearer ${accessToken}`);
+        return jsonResponse(
+          {
+            accessToken: "agent_access_token",
+            refreshToken: "refresh_token_1",
+            accessTokenExpiresAt: "2026-03-26T12:00:00.000Z",
+            refreshTokenExpiresAt: "2026-04-24T12:00:00.000Z",
+            tokenType: "Bearer",
+          },
+          201,
+        );
+      }
+
+      assert.equal(headers.get("authorization"), "Bearer agent_access_token");
+      return jsonResponse(
+        {
+          accessToken: "scoped_access_token",
+          refreshToken: "refresh_token_2",
+          accessTokenExpiresAt: "2026-03-26T13:00:00.000Z",
+          refreshTokenExpiresAt: "2026-04-24T13:00:00.000Z",
+          tokenType: "Bearer",
+        },
+        201,
+      );
+    }
+
+    assert.fail(`Unexpected fetch to ${url}`);
+  });
+  t.after(() => fetchMock.restore());
+
+  await adapter.registerAgent("billing-bot", ["relayauth:identity:read:*"], "user_123");
+  const result = await adapter.requestScope(["relayauth:identity:write:*"]);
+
+  assert.notEqual(result, undefined);
+});
+
+test("discover retries after a transient discovery failure", async (t) => {
+  const adapter = new RelayAuthAdapter(createConfig());
+  let attempts = 0;
+  const fetchMock = mockFetch((input) => {
+    const url = toUrl(input);
+    assert.equal(url.pathname, "/.well-known/agent-configuration");
+    attempts += 1;
+
+    if (attempts === 1) {
+      throw new Error("temporary network issue");
+    }
+
+    return jsonResponse(discoveryDocument);
+  });
+  t.after(() => fetchMock.restore());
+
+  const first = await adapter.discover();
+  assert.equal((first as { success?: boolean }).success, false);
+
+  const second = await adapter.discover();
+  assert.deepEqual(unwrapResultData(second), discoveryDocument);
+  assert.equal(attempts, 2);
+});
+
 test("executeWithAuth adds the bearer token to outgoing request headers", async (t) => {
   const adapter = new RelayAuthAdapter(createConfig());
   const fetchMock = mockFetch(() =>

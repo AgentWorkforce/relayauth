@@ -20,6 +20,7 @@ const SERVICE_NAME = "relayauth";
 const SERVER_VERSION = "0.0.0";
 const AGENT_CARD_FETCH_TIMEOUT_MS = 5_000;
 const MAX_AGENT_CARD_BYTES = 1_000_000;
+const MAX_AGENT_CARD_REDIRECTS = 5;
 const BUILT_IN_PLANES = ["relaycast", "relayfile", "cloud", "relayauth"] as const;
 const BUILT_IN_ACTIONS = [
   "read",
@@ -442,22 +443,7 @@ async function fetchAgentCard(baseUrl: URL): Promise<unknown> {
     const timeout = setTimeout(() => controller.abort(), AGENT_CARD_FETCH_TIMEOUT_MS);
 
     try {
-      const response = await fetch(candidateUrl, {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-        },
-        redirect: "follow",
-        signal: controller.signal,
-      });
-
-      // Guard against SSRF via redirect to a private IP
-      if (response.url) {
-        const finalUrl = new URL(response.url);
-        if (isPrivateHost(finalUrl.hostname)) {
-          throw new DiscoveryBridgeError(403, "Private or loopback hosts are not allowed");
-        }
-      }
+      const response = await fetchAgentCardWithRedirects(candidateUrl, controller.signal);
 
       if (response.status === 404) {
         lastNotFound = true;
@@ -507,6 +493,50 @@ async function fetchAgentCard(baseUrl: URL): Promise<unknown> {
   }
 
   throw new DiscoveryBridgeError(502, "Unable to locate an A2A agent card");
+}
+
+async function fetchAgentCardWithRedirects(
+  initialUrl: URL,
+  signal: AbortSignal,
+): Promise<Response> {
+  let currentUrl = new URL(initialUrl.toString());
+
+  for (let redirectCount = 0; redirectCount <= MAX_AGENT_CARD_REDIRECTS; redirectCount += 1) {
+    const response = await fetch(currentUrl, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+      },
+      redirect: "manual",
+      signal,
+    });
+
+    if (!isRedirectStatus(response.status)) {
+      return response;
+    }
+
+    const location = response.headers.get("location");
+    if (!location) {
+      throw new DiscoveryBridgeError(502, "Upstream redirect response was missing a Location header");
+    }
+
+    const nextUrl = new URL(location, currentUrl);
+    if (nextUrl.protocol !== "http:" && nextUrl.protocol !== "https:") {
+      throw new DiscoveryBridgeError(502, "Upstream redirect used an unsupported protocol");
+    }
+
+    if (isPrivateHost(nextUrl.hostname)) {
+      throw new DiscoveryBridgeError(403, "Private or loopback hosts are not allowed");
+    }
+
+    currentUrl = nextUrl;
+  }
+
+  throw new DiscoveryBridgeError(502, "Too many redirects while fetching agent card");
+}
+
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
 function buildAgentCardUrls(baseUrl: URL): URL[] {

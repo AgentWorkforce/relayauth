@@ -139,6 +139,7 @@ export class RelayAuthAdapter {
           expiresIn: this.#resolvedConfig.tokenExpiresIn,
         });
         this.#issuedToken = token;
+        this.#client = undefined;
       }
 
       return {
@@ -180,6 +181,7 @@ export class RelayAuthAdapter {
       });
 
       this.#issuedToken = token;
+      this.#client = undefined;
 
       return {
         success: true,
@@ -297,7 +299,10 @@ export class RelayAuthAdapter {
     const isDefaultUrl = normalizedUrl === normalizeBaseUrl(this.#resolvedConfig.serverUrl);
 
     if (isDefaultUrl) {
-      this.#discoveryPromise ??= fetchConfiguration(normalizedUrl);
+      this.#discoveryPromise ??= fetchConfiguration(normalizedUrl).catch((error) => {
+        this.#discoveryPromise = undefined;
+        throw error;
+      });
       return this.#discoveryPromise;
     }
 

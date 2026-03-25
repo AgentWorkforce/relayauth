@@ -95,6 +95,43 @@ test("POST /v1/discovery/bridge rejects private hosts", async () => {
   assert.deepEqual(await response.json(), { error: "Private or loopback hosts are not allowed" });
 });
 
+test("POST /v1/discovery/bridge blocks redirects to private hosts before following them", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls += 1;
+    const url = input instanceof URL ? input.toString() : input.toString();
+
+    if (calls === 1) {
+      assert.equal(url, "https://agent.example.com/.well-known/agent-card.json");
+      assert.equal(init?.redirect, "manual");
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: "http://127.0.0.1:8787/.well-known/agent-card.json",
+        },
+      });
+    }
+
+    assert.fail(`fetch should not follow private redirect to ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const app = createTestApp();
+    const response = await app.request(
+      createTestRequest("POST", BRIDGE_PATH, { url: "https://agent.example.com" }),
+      undefined,
+      app.bindings,
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "Private or loopback hosts are not allowed" });
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("POST /v1/discovery/bridge returns 422 for invalid agent cards", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () =>
