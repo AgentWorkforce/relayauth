@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, onTestFinished } from "vitest";
 import type { RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
 import { RelayAuthClient } from "../client.js";
 import { IdentityNotFoundError, TokenExpiredError, TokenRevokedError } from "../errors.js";
@@ -125,10 +125,10 @@ function assertBearer(headers: Headers): void {
   assert.equal(headers.get("authorization"), `Bearer ${token}`);
 }
 
-test("issueToken posts identityId and options to /v1/tokens", async (t) => {
+test("issueToken posts identityId and options to /v1/tokens", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() => jsonResponse(tokenPair, 201));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const result = await client.issueToken("agent_123", {
     scopes: ["relayauth:identity:read", "relayauth:token:refresh"],
@@ -152,10 +152,10 @@ test("issueToken posts identityId and options to /v1/tokens", async (t) => {
   });
 });
 
-test("refreshToken posts the refresh token to /v1/tokens/refresh", async (t) => {
+test("refreshToken posts the refresh token to /v1/tokens/refresh", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() => jsonResponse(tokenPair));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const result = await client.refreshToken(tokenPair.refreshToken);
 
@@ -172,10 +172,10 @@ test("refreshToken posts the refresh token to /v1/tokens/refresh", async (t) => 
   });
 });
 
-test("revokeToken posts tokenId to /v1/tokens/revoke and returns void", async (t) => {
+test("revokeToken posts tokenId to /v1/tokens/revoke and returns void", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const result = await client.revokeToken("tok_123");
 
@@ -192,10 +192,10 @@ test("revokeToken posts tokenId to /v1/tokens/revoke and returns void", async (t
   });
 });
 
-test("introspectToken sends token as a query param and returns claims", async (t) => {
+test("introspectToken sends token as a query param and returns claims", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() => jsonResponse(claims));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const result = await client.introspectToken(tokenPair.accessToken);
 
@@ -210,10 +210,10 @@ test("introspectToken sends token as a query param and returns claims", async (t
   assert.equal(request.body, "");
 });
 
-test("introspectToken returns null when the token is inactive", async (t) => {
+test("introspectToken returns null when the token is inactive", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() => jsonResponse(null));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const result = await client.introspectToken("inactive_token");
 
@@ -228,7 +228,7 @@ test("introspectToken returns null when the token is inactive", async (t) => {
   assert.equal(request.body, "");
 });
 
-test("refreshToken maps token_expired responses to TokenExpiredError", async (t) => {
+test("refreshToken maps token_expired responses to TokenExpiredError", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() =>
     jsonResponse(
@@ -238,7 +238,7 @@ test("refreshToken maps token_expired responses to TokenExpiredError", async (t)
       401,
     ),
   );
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   await assert.rejects(
     client.refreshToken("expired_refresh_token"),
@@ -252,7 +252,7 @@ test("refreshToken maps token_expired responses to TokenExpiredError", async (t)
   );
 });
 
-test("revokeToken maps token_revoked responses to TokenRevokedError", async (t) => {
+test("revokeToken maps token_revoked responses to TokenRevokedError", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() =>
     jsonResponse(
@@ -262,7 +262,7 @@ test("revokeToken maps token_revoked responses to TokenRevokedError", async (t) 
       401,
     ),
   );
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   await assert.rejects(
     client.revokeToken("tok_revoked"),
@@ -276,7 +276,7 @@ test("revokeToken maps token_revoked responses to TokenRevokedError", async (t) 
   );
 });
 
-test("issueToken maps invalid identities to IdentityNotFoundError", async (t) => {
+test("issueToken maps invalid identities to IdentityNotFoundError", async () => {
   const client = createClient();
   const missingIdentityId = "agent_missing";
   const fetchMock = mockFetch(() =>
@@ -287,7 +287,7 @@ test("issueToken maps invalid identities to IdentityNotFoundError", async (t) =>
       404,
     ),
   );
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   await assert.rejects(
     client.issueToken(missingIdentityId),

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import type { ParsedScope, RelayAuthTokenClaims } from "@relayauth/types";
 
 import * as errors from "../errors.js";
