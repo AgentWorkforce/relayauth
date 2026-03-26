@@ -63,9 +63,13 @@ function createScopeMiddleware(
 
       await next();
     } catch (error) {
-      const handled = await options?.onError?.(toError(error));
-      if (handled instanceof Response) {
-        return handled;
+      try {
+        const handled = await options?.onError?.(toError(error));
+        if (handled instanceof Response) {
+          return handled;
+        }
+      } catch {
+        // If onError itself throws, fall through to jsonErrorResponse
       }
 
       return jsonErrorResponse(error);
@@ -133,6 +137,20 @@ function jsonErrorResponse(error: unknown): Response {
         code: normalized.code,
       },
       { status: normalized.statusCode ?? 500 },
+    );
+  }
+
+  // Handle errors that carry a status code or code property (e.g. scope escalation
+  // errors that may not extend RelayAuthError directly).
+  const statusCode = (normalized as { statusCode?: number }).statusCode;
+  const code = (normalized as { code?: string }).code;
+  if (typeof statusCode === "number" && statusCode >= 400 && statusCode < 600) {
+    return Response.json(
+      {
+        error: normalized.message,
+        code: code ?? "auth_error",
+      },
+      { status: statusCode },
     );
   }
 
@@ -209,7 +227,7 @@ async function verifyHs256Signature(
     return crypto.subtle.verify(
       "HMAC",
       key,
-      new Uint8Array(decodeBase64UrlToBytes(signature)),
+      decodeBase64UrlToBytes(signature).buffer as ArrayBuffer,
       new TextEncoder().encode(value),
     );
   } catch {
