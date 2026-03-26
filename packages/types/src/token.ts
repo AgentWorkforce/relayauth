@@ -8,6 +8,8 @@ export interface RelayAuthTokenClaims {
   sub: string;
   org: string;
   wks: string;
+  workspace_id?: string;
+  agent_name?: string;
   scopes: string[];
   sponsorId: string;
   sponsorChain: string[];

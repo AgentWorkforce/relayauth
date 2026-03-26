@@ -11,10 +11,11 @@ workspace="${RELAYAUTH_WORKSPACE:-ws_dev}"
 sponsor="${RELAYAUTH_SPONSOR:-user_dev}"
 scopes_json="${RELAYAUTH_SCOPES_JSON:-[\"*:*:*:*\"]}"
 issuer="${RELAYAUTH_ISSUER:-relayauth:dev}"
-audience_json="${RELAYAUTH_AUDIENCE_JSON:-[\"relayauth\"]}"
+audience_json="${RELAYAUTH_AUDIENCE_JSON:-[\"relayauth\",\"relayfile\"]}"
 token_type="${RELAYAUTH_TOKEN_TYPE:-access}"
 secret="${SIGNING_KEY:-dev-secret}"
-payload="{\"sub\":\"${subject}\",\"org\":\"${org}\",\"wks\":\"${workspace}\",\"scopes\":${scopes_json},\"sponsorId\":\"${sponsor}\",\"sponsorChain\":[\"${sponsor}\"],\"token_type\":\"${token_type}\",\"iss\":\"${issuer}\",\"aud\":${audience_json},\"iat\":${now},\"exp\":${exp},\"jti\":\"${jti}\"}"
+agent_name="${RELAYAUTH_AGENT_NAME:-${subject}}"
+payload="{\"sub\":\"${subject}\",\"org\":\"${org}\",\"wks\":\"${workspace}\",\"workspace_id\":\"${workspace}\",\"agent_name\":\"${agent_name}\",\"scopes\":${scopes_json},\"sponsorId\":\"${sponsor}\",\"sponsorChain\":[\"${sponsor}\"],\"token_type\":\"${token_type}\",\"iss\":\"${issuer}\",\"aud\":${audience_json},\"iat\":${now},\"exp\":${exp},\"jti\":\"${jti}\"}"
 
 base64url() {
   openssl base64 -A | tr '+/' '-_' | tr -d '='

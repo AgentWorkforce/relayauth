@@ -1,0 +1,40 @@
+{
+  "id": "traj_1774368827698_d3dd76a8",
+  "version": 1,
+  "task": {
+    "title": "016-token-revocation-api-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "579217b4134fa112da7fac5c"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-24T16:13:47.698Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-24T16:13:47.698Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_d9f92297",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-24T16:13:47.698Z",
+      "events": [
+        {
+          "ts": 1774368827698,
+          "type": "note",
+          "content": "Purpose: POST /v1/tokens/revoke — revoke token, propagate to KV"
+        },
+        {
+          "ts": 1774368827698,
+          "type": "note",
+          "content": "Approach: 13-step dag workflow — Parsed 13 steps, 5 parallel tracks, 8 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    }
+  ]
+}

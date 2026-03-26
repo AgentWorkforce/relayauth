@@ -119,16 +119,19 @@ export function generateTestToken(
   const now = Math.floor(Date.now() / 1000);
   const sub = claims.sub ?? "agent_test";
   const sponsorId = claims.sponsorId ?? "user_test";
+  const workspaceId = claims.workspace_id ?? claims.wks ?? "ws_test";
   const payload: RelayAuthTokenClaims = {
     sub,
     org: claims.org ?? "org_test",
-    wks: claims.wks ?? "ws_test",
+    wks: claims.wks ?? workspaceId,
+    workspace_id: workspaceId,
+    agent_name: claims.agent_name ?? sub,
     scopes: claims.scopes ?? ["*"],
     sponsorId,
     sponsorChain: claims.sponsorChain ?? [sponsorId, sub],
     token_type: claims.token_type ?? "access",
     iss: claims.iss ?? "relayauth:test",
-    aud: claims.aud ?? ["relayauth"],
+    aud: claims.aud ?? ["relayauth", "relayfile"],
     exp: claims.exp ?? now + 3600,
     iat: claims.iat ?? now,
     jti: claims.jti ?? crypto.randomUUID(),

@@ -1,0 +1,40 @@
+{
+  "id": "traj_1774368825821_710c8ff6",
+  "version": 1,
+  "task": {
+    "title": "003-token-format-spec-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "4098ad00956a35aa11275d64"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-24T16:13:45.821Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-24T16:13:45.821Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_7311eb7c",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-24T16:13:45.821Z",
+      "events": [
+        {
+          "ts": 1774368825821,
+          "type": "note",
+          "content": "Purpose: Define JWT claims, signing algorithms, JWKS format — including sponsorId, sponsorChain, parentTokenId, budget, mandatory expiry"
+        },
+        {
+          "ts": 1774368825821,
+          "type": "note",
+          "content": "Approach: 7-step dag workflow — Parsed 7 steps, 2 parallel tracks, 5 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    }
+  ]
+}

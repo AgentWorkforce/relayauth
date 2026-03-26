@@ -15,10 +15,13 @@
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
+    "agent-trajectories": "^0.5.2",
+    "ignore": "^7.0.5",
     "tsx": "^4.20.6",
     "turbo": "^2",
     "typescript": "^5.7",
-    "wrangler": "^4"
+    "wrangler": "^4",
+    "yaml": "^2.8.3"
   },
   "workspaces": [
     "packages/*"
