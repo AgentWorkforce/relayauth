@@ -51,9 +51,7 @@ const SUB_AGENT_QUERY_SQL = `
   ORDER BY created_at DESC, id DESC
 `;
 
-identityActivity.use("*", requireScope("relayauth:audit:read"));
-
-identityActivity.get("/:id/activity", async (c) => {
+identityActivity.get("/:id/activity", requireScope("relayauth:audit:read"), async (c) => {
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
   const identityId = c.req.param("id").trim();
 

@@ -118,6 +118,11 @@ export function parseScope(raw: string): ParsedScope {
     invalidScope(raw, "scope must not contain whitespace");
   }
 
+  // Universal wildcard — matches everything
+  if (raw === "*") {
+    return { plane: "*", resource: "*", action: "*", path: "*", raw };
+  }
+
   if (raw.includes("**")) {
     invalidScope(raw, "scope must not contain **");
   }

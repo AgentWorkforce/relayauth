@@ -43,9 +43,7 @@ const CSV_HEADER = [
   "createdAt",
 ].join(",");
 
-auditExport.use("*", requireScope("relayauth:audit:read"));
-
-auditExport.post("/export", async (c) => {
+auditExport.post("/export", requireScope("relayauth:audit:read"), async (c) => {
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
   const body = await c.req.json<AuditExportRequest>().catch(() => null);
 

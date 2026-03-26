@@ -80,6 +80,18 @@ test('parseScope("cloud:workflow:run") defaults the omitted path to "*"', () => 
   });
 });
 
+test('parseScope("*") expands the superuser wildcard alias', () => {
+  const { parseScope } = getParserApi();
+
+  assert.deepEqual(parseScope("*"), {
+    plane: "*",
+    resource: "*",
+    action: "*",
+    path: "*",
+    raw: "*",
+  });
+});
+
 test('parseScope("invalid") throws InvalidScopeError', () => {
   const { parseScope } = getParserApi();
   const InvalidScopeError = getInvalidScopeError();

@@ -1,0 +1,73 @@
+---
+const installCommand = "npm install @relayauth/sdk";
+---
+
+<section class="relative overflow-hidden border-b border-white/10">
+  <div class="mx-auto grid max-w-7xl gap-14 px-6 py-20 lg:grid-cols-[minmax(0,1.15fr)_minmax(19rem,0.85fr)] lg:px-8 lg:py-28">
+    <div class="space-y-8">
+      <div class="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-1 text-sm text-cyan-200">
+        <span class="h-2 w-2 rounded-full bg-cyan-300"></span>
+        Agent-native identity and authorization
+      </div>
+
+      <div class="space-y-5">
+        <p class="text-sm font-medium uppercase tracking-[0.28em] text-emerald-300/80">Auth for the agent era</p>
+        <h1 class="max-w-4xl text-5xl font-bold tracking-tight text-white sm:text-6xl lg:text-7xl">
+          Your agents have keys to everything. Do you know what they&apos;re doing?
+        </h1>
+        <p class="max-w-2xl text-lg leading-8 text-slate-300 sm:text-xl">
+          One identity. Scoped tokens. Every action traced back to a human.
+        </p>
+      </div>
+
+      <div class="flex flex-col gap-4 sm:flex-row">
+        <a
+          href="#quick-start"
+          class="inline-flex items-center justify-center rounded-full bg-cyan-400 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300"
+        >
+          Start with the SDK
+        </a>
+        <a
+          href="#architecture"
+          class="inline-flex items-center justify-center rounded-full border border-white/15 px-6 py-3 text-sm font-semibold text-white transition hover:border-emerald-300 hover:text-emerald-200"
+        >
+          See the model
+        </a>
+        <a
+          href="https://github.com/anthropics/relayauth"
+          class="inline-flex items-center justify-center rounded-full border border-white/15 px-6 py-3 text-sm font-semibold text-white transition hover:border-cyan-300 hover:text-cyan-200"
+        >
+          View on GitHub
+        </a>
+      </div>
+
+      <div class="max-w-xl rounded-3xl border border-white/10 bg-white/5 p-4 shadow-[0_0_0_1px_rgba(34,211,238,0.18),0_30px_80px_rgba(8,145,178,0.18)] backdrop-blur">
+        <p class="mb-3 text-xs font-medium uppercase tracking-[0.24em] text-slate-400">Install</p>
+        <div class="flex items-center justify-between gap-4 overflow-x-auto rounded-2xl bg-slate-950/80 px-4 py-3 font-mono text-sm text-cyan-200">
+          <code>{installCommand}</code>
+          <span class="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-emerald-300">
+            npm
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid gap-4 self-end">
+      <div class="rounded-3xl border border-cyan-400/20 bg-cyan-400/10 p-6">
+        <p class="text-sm font-medium uppercase tracking-[0.22em] text-cyan-200">Scope</p>
+        <p class="mt-3 text-2xl font-semibold text-white">One identity. One token. Exact access.</p>
+        <p class="mt-2 text-sm leading-7 text-slate-300">Issue short-lived credentials with explicit scopes instead of handing agents a key to the kingdom.</p>
+      </div>
+      <div class="rounded-3xl border border-emerald-400/20 bg-emerald-400/10 p-6">
+        <p class="text-sm font-medium uppercase tracking-[0.22em] text-emerald-200">Trace</p>
+        <p class="mt-3 text-2xl font-semibold text-white">Every action resolves back to a human sponsor.</p>
+        <p class="mt-2 text-sm leading-7 text-slate-300"><code class="rounded bg-white/10 px-1.5 py-0.5 text-xs font-mono text-emerald-200">human → agent → sub-agent</code> stays intact in tokens, audits, and incident response.</p>
+      </div>
+      <div class="rounded-3xl border border-amber-300/20 bg-amber-300/10 p-6">
+        <p class="text-sm font-medium uppercase tracking-[0.22em] text-amber-100">Revoke</p>
+        <p class="mt-3 text-2xl font-semibold text-white">One call. Global. Instant.</p>
+        <p class="mt-2 text-sm leading-7 text-slate-300">Revoke once and every plane sees it, instead of waiting for long-lived secrets to age out.</p>
+      </div>
+    </div>
+  </div>
+</section>

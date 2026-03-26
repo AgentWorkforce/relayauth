@@ -423,11 +423,6 @@ test("GET /v1/identities supports cursor-based pagination", async () => {
 
 test("GET /v1/identities sorts results by createdAt descending", async () => {
   const identities = [
-    createIdentity(1, {
-      id: "agent_oldest",
-      createdAt: "2026-03-24T12:00:01.000Z",
-      updatedAt: "2026-03-24T12:00:01.000Z",
-    }),
     createIdentity(2, {
       id: "agent_newest",
       createdAt: "2026-03-24T12:00:03.000Z",
@@ -437,6 +432,11 @@ test("GET /v1/identities sorts results by createdAt descending", async () => {
       id: "agent_middle",
       createdAt: "2026-03-24T12:00:02.000Z",
       updatedAt: "2026-03-24T12:00:02.000Z",
+    }),
+    createIdentity(1, {
+      id: "agent_oldest",
+      createdAt: "2026-03-24T12:00:01.000Z",
+      updatedAt: "2026-03-24T12:00:01.000Z",
     }),
   ];
 

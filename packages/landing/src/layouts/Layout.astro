@@ -1,0 +1,66 @@
+---
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = "relayauth | Auth for the agent era",
+  description = "Scoped identity, sponsor-aware audit trails, and instant revocation for multi-agent systems."
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en" class="dark h-full scroll-smooth bg-slate-950 text-slate-100">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="theme-color" content="#020617" />
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://relayauth.dev/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="canonical" href="https://relayauth.dev/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <title>{title}</title>
+  </head>
+  <body class="min-h-full bg-slate-950 antialiased">
+    <a href="#quick-start" class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-full focus:bg-cyan-400 focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-slate-950">
+      Skip to content
+    </a>
+    <div class="relative isolate min-h-screen overflow-hidden">
+      <div class="pointer-events-none absolute inset-0 -z-20 bg-[#020617]"></div>
+      <div class="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[34rem] bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.22),transparent_58%)]"></div>
+      <div class="pointer-events-none absolute left-[-12rem] top-[28rem] -z-10 h-[26rem] w-[26rem] rounded-full bg-cyan-400/10 blur-3xl"></div>
+      <div class="pointer-events-none absolute right-[-10rem] top-[8rem] -z-10 h-[22rem] w-[22rem] rounded-full bg-emerald-400/10 blur-3xl"></div>
+      <div class="pointer-events-none absolute bottom-[-8rem] right-[12%] -z-10 h-[18rem] w-[18rem] rounded-full bg-amber-300/10 blur-3xl"></div>
+      <div class="pointer-events-none absolute inset-0 -z-10 opacity-40 [background-image:linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.08)_1px,transparent_1px)] [background-size:5rem_5rem] [mask-image:radial-gradient(circle_at_center,black,transparent_82%)]"></div>
+      <slot />
+    </div>
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    font-family: "Space Grotesk", sans-serif;
+  }
+
+  ::selection {
+    background: rgba(34, 211, 238, 0.3);
+    color: #f8fafc;
+  }
+</style>

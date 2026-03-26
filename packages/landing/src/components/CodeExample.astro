@@ -1,0 +1,66 @@
+---
+import { Code } from "astro:components";
+
+const quickStart = `import { RelayAuthClient, relayAuth, requireScope } from "@relayauth/sdk";
+import { Hono } from "hono";
+
+const auth = new RelayAuthClient({
+  baseUrl: "https://api.relayauth.dev",
+  apiKey: process.env.RELAYAUTH_API_KEY
+});
+
+// 1. Create an agent with scoped access and a sponsor chain
+const agent = await auth.createIdentity("org_acme", {
+  name: "billing-bot",
+  sponsor: "jane@acme.com",
+  scopes: ["stripe:orders:read", "slack:channel:write:#billing"],
+  budget: { maxActionsPerHour: 100 },
+  ttl: "1h"
+});
+
+// 2. Protect any route with JWKS verification + scope checks
+const app = new Hono();
+app.use("/api/orders", relayAuth({
+  jwksUrl: "https://api.relayauth.dev/.well-known/jwks.json",
+  issuer: "https://relayauth.dev",
+  audience: ["stripe"]
+}));
+app.use("/api/orders", requireScope("stripe:orders:read"));
+
+// 3. Revoke instantly — every plane sees it
+await auth.revokeToken("tok_123");`;
+---
+
+<section id="quick-start" class="mx-auto max-w-7xl px-6 py-20 lg:px-8">
+  <div class="grid gap-10 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:items-start">
+    <div class="space-y-5">
+      <p class="text-sm font-medium uppercase tracking-[0.28em] text-emerald-200/80">Quick start</p>
+      <h2 class="text-3xl font-bold tracking-tight text-white sm:text-4xl">Create, protect, revoke</h2>
+      <p class="text-lg leading-8 text-slate-300">
+        Start with the TypeScript SDK, enforce scopes at the edge, and keep the same token model for Go services, Python workers, and every Relay plane.
+      </p>
+      <div class="rounded-3xl border border-white/10 bg-white/5 p-6">
+        <p class="text-sm font-semibold text-white">Three-step flow</p>
+        <ol class="mt-4 list-decimal space-y-3 pl-5 text-sm leading-7 text-slate-300">
+          <li>Create an agent identity with the minimum scopes it needs.</li>
+          <li>Protect routes or handlers with JWKS-backed verification and exact scope checks.</li>
+          <li>Revoke instantly when the run should stop everywhere.</li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="overflow-hidden rounded-3xl border border-white/10 bg-slate-950/90 shadow-[0_0_0_1px_rgba(16,185,129,0.18),0_30px_80px_rgba(6,78,59,0.35)]">
+      <div class="flex items-center justify-between border-b border-white/10 px-5 py-4">
+        <div class="flex items-center gap-2">
+          <span class="h-3 w-3 rounded-full bg-rose-400"></span>
+          <span class="h-3 w-3 rounded-full bg-amber-300"></span>
+          <span class="h-3 w-3 rounded-full bg-emerald-400"></span>
+        </div>
+        <p class="text-xs font-medium uppercase tracking-[0.24em] text-slate-400">TypeScript SDK</p>
+      </div>
+      <div class="[&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-5 [&_pre]:text-sm [&_pre]:leading-7">
+        <Code code={quickStart} lang="ts" theme="github-dark" />
+      </div>
+    </div>
+  </div>
+</section>

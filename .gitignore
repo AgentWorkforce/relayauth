@@ -3,6 +3,7 @@ node_modules
 dist
 .wrangler
 .env
+.dev.vars
 *.log
 .turbo
 
@@ -13,3 +14,6 @@ __pycache__/
 *.egg-info/
 *.egg
 .eggs/
+
+# Build info
+tsconfig.tsbuildinfo
