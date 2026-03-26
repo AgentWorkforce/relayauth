@@ -7,6 +7,7 @@ import auditQuery from "./routes/audit-query.js";
 import auditWebhooks from "./routes/audit-webhooks.js";
 import dashboardStats from "./routes/dashboard-stats.js";
 import discovery, { apiDiscovery } from "./routes/discovery.js";
+import jwks from "./routes/jwks.js";
 import identityActivity from "./routes/identity-activity.js";
 import identities from "./routes/identities.js";
 import policies from "./routes/policies.js";
@@ -96,6 +97,7 @@ app.use("/v1/discovery/bridge", async (c, next) => {
 
 app.get("/health", (c) => c.json({ status: "ok" }));
 app.route("/.well-known", discovery);
+app.route("/.well-known", jwks);
 app.route("/v1/discovery", apiDiscovery);
 app.route("/v1/audit", auditWebhooks);
 app.route("/v1/audit", auditExport);
