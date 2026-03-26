@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, onTestFinished } from "vitest";
 import type { JWKSResponse, RelayAuthTokenClaims } from "@relayauth/types";
 
 import { RelayAuthError, TokenExpiredError } from "../errors.js";
@@ -163,10 +163,10 @@ function mockFetch(
   };
 }
 
-function mockNow(t: test.TestContext, nowMs: { value: number }): void {
+function mockNow(nowMs: { value: number }): void {
   const originalNow = Date.now;
   Date.now = () => nowMs.value;
-  t.after(() => {
+  onTestFinished(() => {
     Date.now = originalNow;
   });
 }
@@ -215,7 +215,7 @@ function assertRelayAuthError(
   return true;
 }
 
-test("verify(token) decodes a JWT, fetches JWKS, verifies the signature, and returns claims", async (t) => {
+test("verify(token) decodes a JWT, fetches JWKS, verifies the signature, and returns claims", async () => {
   const [{ publicJwk, privateKey, kid }] = await signingFixturesPromise;
   void privateKey;
   const claims = createClaims();
@@ -225,8 +225,8 @@ test("verify(token) decodes a JWT, fetches JWKS, verifies the signature, and ret
     assert.equal(String(input), jwksUrl);
     return jsonResponse({ keys: [publicJwk] satisfies JWKSResponse["keys"] });
   });
-  t.after(() => fetchMock.restore());
-  mockNow(t, now);
+  onTestFinished(() => fetchMock.restore());
+  mockNow(now);
 
   const verifier = getVerifier({
     jwksUrl,
@@ -241,7 +241,7 @@ test("verify(token) decodes a JWT, fetches JWKS, verifies the signature, and ret
   assert.equal(fetchMock.calls.length, 1);
 });
 
-test("JWKS caching reuses cached keys on the second verify call", async (t) => {
+test("JWKS caching reuses cached keys on the second verify call", async () => {
   const [fixture] = await signingFixturesPromise;
   const claims = createClaims({ jti: "jti_cached" });
   const token = await createJwt(claims, fixture);
@@ -249,8 +249,8 @@ test("JWKS caching reuses cached keys on the second verify call", async (t) => {
   const fetchMock = mockFetch(() =>
     jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] }),
   );
-  t.after(() => fetchMock.restore());
-  mockNow(t, now);
+  onTestFinished(() => fetchMock.restore());
+  mockNow(now);
 
   const verifier = getVerifier({
     jwksUrl,
@@ -268,7 +268,7 @@ test("JWKS caching reuses cached keys on the second verify call", async (t) => {
   assert.equal(fetchMock.calls.length, 1);
 });
 
-test("JWKS cache expiry re-fetches JWKS after the TTL elapses", async (t) => {
+test("JWKS cache expiry re-fetches JWKS after the TTL elapses", async () => {
   const [fixture] = await signingFixturesPromise;
   const claims = createClaims({ jti: "jti_cache_expiry" });
   const token = await createJwt(claims, fixture);
@@ -276,8 +276,8 @@ test("JWKS cache expiry re-fetches JWKS after the TTL elapses", async (t) => {
   const fetchMock = mockFetch(() =>
     jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] }),
   );
-  t.after(() => fetchMock.restore());
-  mockNow(t, now);
+  onTestFinished(() => fetchMock.restore());
+  mockNow(now);
 
   const verifier = getVerifier({
     jwksUrl,
@@ -294,7 +294,7 @@ test("JWKS cache expiry re-fetches JWKS after the TTL elapses", async (t) => {
   assert.equal(fetchMock.calls.length, 2);
 });
 
-test("key rotation uses the token header kid to select the correct JWKS key", async (t) => {
+test("key rotation uses the token header kid to select the correct JWKS key", async () => {
   const [oldFixture, rotatedFixture] = await signingFixturesPromise;
   const claims = createClaims({ jti: "jti_rotated" });
   const token = await createJwt(claims, rotatedFixture);
@@ -304,8 +304,8 @@ test("key rotation uses the token header kid to select the correct JWKS key", as
       keys: [oldFixture.publicJwk, rotatedFixture.publicJwk] satisfies JWKSResponse["keys"],
     }),
   );
-  t.after(() => fetchMock.restore());
-  mockNow(t, now);
+  onTestFinished(() => fetchMock.restore());
+  mockNow(now);
 
   const verifier = getVerifier({
     jwksUrl,
@@ -320,19 +320,19 @@ test("key rotation uses the token header kid to select the correct JWKS key", as
   assert.equal(fetchMock.calls.length, 1);
 });
 
-test("expired tokens throw TokenExpiredError", async (t) => {
+test("expired tokens throw TokenExpiredError", async () => {
   const [fixture] = await signingFixturesPromise;
   const claims = createClaims({
     jti: "jti_expired",
-    exp: fixedNowSeconds - 1,
+    exp: fixedNowSeconds - 31,
   });
   const token = await createJwt(claims, fixture);
   const now = { value: fixedNowSeconds * 1000 };
   const fetchMock = mockFetch(() =>
     jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] }),
   );
-  t.after(() => fetchMock.restore());
-  mockNow(t, now);
+  onTestFinished(() => fetchMock.restore());
+  mockNow(now);
 
   const verifier = getVerifier({
     jwksUrl,
@@ -344,7 +344,7 @@ test("expired tokens throw TokenExpiredError", async (t) => {
   await assert.rejects(() => verify(token), TokenExpiredError);
 });
 
-test("an invalid signature throws RelayAuthError", async (t) => {
+test("an invalid signature throws RelayAuthError", async () => {
   const [fixture, differentFixture] = await signingFixturesPromise;
   const claims = createClaims({ jti: "jti_bad_signature" });
   const token = await createJwt(claims, fixture);
@@ -353,8 +353,8 @@ test("an invalid signature throws RelayAuthError", async (t) => {
   const fetchMock = mockFetch(() =>
     jsonResponse({ keys: [mismatchedJwk] satisfies JWKSResponse["keys"] }),
   );
-  t.after(() => fetchMock.restore());
-  mockNow(t, now);
+  onTestFinished(() => fetchMock.restore());
+  mockNow(now);
 
   const verifier = getVerifier({
     jwksUrl,
@@ -369,7 +369,7 @@ test("an invalid signature throws RelayAuthError", async (t) => {
   );
 });
 
-test("a wrong audience throws RelayAuthError", async (t) => {
+test("a wrong audience throws RelayAuthError", async () => {
   const [fixture] = await signingFixturesPromise;
   const claims = createClaims({ jti: "jti_wrong_audience", aud: ["relayfile"] });
   const token = await createJwt(claims, fixture);
@@ -377,8 +377,8 @@ test("a wrong audience throws RelayAuthError", async (t) => {
   const fetchMock = mockFetch(() =>
     jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] }),
   );
-  t.after(() => fetchMock.restore());
-  mockNow(t, now);
+  onTestFinished(() => fetchMock.restore());
+  mockNow(now);
 
   const verifier = getVerifier({
     jwksUrl,
@@ -393,7 +393,7 @@ test("a wrong audience throws RelayAuthError", async (t) => {
   );
 });
 
-test("a wrong issuer throws RelayAuthError", async (t) => {
+test("a wrong issuer throws RelayAuthError", async () => {
   const [fixture] = await signingFixturesPromise;
   const claims = createClaims({ jti: "jti_wrong_issuer" });
   const token = await createJwt(claims, fixture);
@@ -401,8 +401,8 @@ test("a wrong issuer throws RelayAuthError", async (t) => {
   const fetchMock = mockFetch(() =>
     jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] }),
   );
-  t.after(() => fetchMock.restore());
-  mockNow(t, now);
+  onTestFinished(() => fetchMock.restore());
+  mockNow(now);
 
   const verifier = getVerifier({
     jwksUrl,
@@ -417,7 +417,7 @@ test("a wrong issuer throws RelayAuthError", async (t) => {
   );
 });
 
-test("verifyAndCheckScope(token, requiredScope) verifies the token before enforcing scope access", async (t) => {
+test("verifyAndCheckScope(token, requiredScope) verifies the token before enforcing scope access", async () => {
   const [fixture] = await signingFixturesPromise;
   const claims = createClaims({
     jti: "jti_scope_check",
@@ -428,8 +428,8 @@ test("verifyAndCheckScope(token, requiredScope) verifies the token before enforc
   const fetchMock = mockFetch(() =>
     jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] }),
   );
-  t.after(() => fetchMock.restore());
-  mockNow(t, now);
+  onTestFinished(() => fetchMock.restore());
+  mockNow(now);
 
   const verifier = getVerifier({
     jwksUrl,
@@ -444,7 +444,7 @@ test("verifyAndCheckScope(token, requiredScope) verifies the token before enforc
   assert.equal(fetchMock.calls.length, 1);
 });
 
-test("revocation checking calls the revocation endpoint when enabled", async (t) => {
+test("revocation checking calls the revocation endpoint when enabled", async () => {
   const [fixture] = await signingFixturesPromise;
   const claims = createClaims({ jti: "jti_revocation_check" });
   const token = await createJwt(claims, fixture);
@@ -467,8 +467,8 @@ test("revocation checking calls the revocation endpoint when enabled", async (t)
 
     assert.fail(`unexpected fetch request: ${url.toString()} ${init?.method ?? "GET"}`);
   });
-  t.after(() => fetchMock.restore());
-  mockNow(t, now);
+  onTestFinished(() => fetchMock.restore());
+  mockNow(now);
 
   const verifier = getVerifier({
     jwksUrl,

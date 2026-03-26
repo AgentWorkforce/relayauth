@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, onTestFinished } from "vitest";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 import { Hono, type MiddlewareHandler } from "hono";
 
@@ -61,14 +61,13 @@ function createClaims(overrides: Partial<RelayAuthTokenClaims> = {}): RelayAuthT
 }
 
 function mockVerifierVerify(
-  t: test.TestContext,
   implementation: (this: TokenVerifier, token: string) => Promise<RelayAuthTokenClaims>,
 ): void {
   const originalVerify = TokenVerifier.prototype.verify;
 
   TokenVerifier.prototype.verify = implementation;
 
-  t.after(() => {
+  onTestFinished(() => {
     TokenVerifier.prototype.verify = originalVerify;
   });
 }
@@ -85,8 +84,7 @@ async function assertJsonResponse<T>(
 
 test(
   "relayAuth() extracts Bearer tokens, calls TokenVerifier.verify(), and stores identity claims",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuth } = await loadHonoMiddleware();
     const claims = createClaims({
       sub: "agent_relay_auth_success",
@@ -96,7 +94,7 @@ test(
     let receivedToken: string | undefined;
     let receivedOptions: VerifyOptions | undefined;
 
-    mockVerifierVerify(t, async function (token) {
+    mockVerifierVerify(async function (token) {
       verifyCalls += 1;
       receivedToken = token;
       receivedOptions = this.options;
@@ -144,12 +142,11 @@ test(
 
 test(
   "relayAuth() returns a 401 JSON error when the Authorization header is missing",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuth } = await loadHonoMiddleware();
     let verifyCalls = 0;
 
-    mockVerifierVerify(t, async function () {
+    mockVerifierVerify(async function () {
       verifyCalls += 1;
       return createClaims();
     });
@@ -173,11 +170,10 @@ test(
 
 test(
   "relayAuth() returns a 401 JSON error when TokenVerifier.verify() rejects the token",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuth } = await loadHonoMiddleware();
 
-    mockVerifierVerify(t, async function () {
+    mockVerifierVerify(async function () {
       throw new RelayAuthError("Invalid access token", "invalid_token", 401);
     });
 
@@ -201,11 +197,10 @@ test(
 
 test(
   "relayAuth() returns a 401 JSON error when TokenVerifier.verify() throws TokenExpiredError",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuth } = await loadHonoMiddleware();
 
-    mockVerifierVerify(t, async function () {
+    mockVerifierVerify(async function () {
       throw new TokenExpiredError();
     });
 
@@ -229,12 +224,11 @@ test(
 
 test(
   "requireScope(scope) returns 403 without the required scope and calls next() when the scope is present",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuth, requireScope } = await loadHonoMiddleware();
     let routeHits = 0;
 
-    mockVerifierVerify(t, async function (token) {
+    mockVerifierVerify(async function (token) {
       if (token === "admin-token") {
         return createClaims({
           sub: "agent_admin_scope",
@@ -284,11 +278,10 @@ test(
 
 test(
   "relayAuth() and requireScope() compose correctly across nested Hono route groups",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuth, requireScope } = await loadHonoMiddleware();
 
-    mockVerifierVerify(t, async function (token) {
+    mockVerifierVerify(async function (token) {
       if (token === "admin-token") {
         return createClaims({
           sub: "agent_admin_composed",
@@ -334,13 +327,12 @@ test(
 
 test(
   "relayAuth(options) passes verification options to TokenVerifier and supports a custom onError handler",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuth } = await loadHonoMiddleware();
     let handledError: Error | undefined;
     let receivedOptions: VerifyOptions | undefined;
 
-    mockVerifierVerify(t, async function () {
+    mockVerifierVerify(async function () {
       receivedOptions = this.options;
       throw new RelayAuthError("Invalid access token", "invalid_token", 401);
     });
