@@ -199,7 +199,7 @@ export class TokenVerifier {
       throw invalidTokenError();
     }
 
-    if (claims.exp <= now) {
+    if (claims.exp <= now - notBeforeLeeway) {
       throw new TokenExpiredError();
     }
 

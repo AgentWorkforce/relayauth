@@ -619,11 +619,46 @@ function isPrivateHost(hostname: string): boolean {
 
   if (normalizedHost.includes(":")) {
     const compact = normalizedHost.replace(/^\[|\]$/g, "");
-    return compact.startsWith("fc") ||
+    if (
+      compact.startsWith("fc") ||
       compact.startsWith("fd") ||
       compact.startsWith("fe80:") ||
-      compact === "::1" ||
-      compact.startsWith("::ffff:127.");
+      compact === "::1"
+    ) {
+      return true;
+    }
+
+    // Handle IPv6-mapped IPv4 addresses (::ffff:...)
+    const mappedPrefix = "::ffff:";
+    if (compact.startsWith(mappedPrefix)) {
+      const mapped = compact.slice(mappedPrefix.length);
+
+      // Dotted notation: ::ffff:127.0.0.1
+      if (mapped.includes(".")) {
+        const parts = mapped.split(".");
+        if (parts.length === 4) {
+          const a = Number(parts[0]);
+          const b = Number(parts[1]);
+          if (Number.isInteger(a) && Number.isInteger(b)) {
+            return isPrivateIPv4(a, b);
+          }
+        }
+      }
+
+      // Hex notation: ::ffff:7f00:1 (Node.js URL API normalizes to this form)
+      const hexParts = mapped.split(":");
+      if (hexParts.length === 2) {
+        const high = parseInt(hexParts[0], 16);
+        const low = parseInt(hexParts[1], 16);
+        if (!isNaN(high) && !isNaN(low)) {
+          const a = (high >> 8) & 0xff;
+          const b = high & 0xff;
+          return isPrivateIPv4(a, b);
+        }
+      }
+    }
+
+    return false;
   }
 
   // Try parsing as a decimal IP (e.g. 2130706433 = 127.0.0.1)
