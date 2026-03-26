@@ -579,14 +579,22 @@ function parseBridgeTargetUrl(rawUrl: string): URL {
     throw new DiscoveryBridgeError(400, "url must use http or https");
   }
 
-  if (isPrivateHost(url.hostname)) {
+  // Use url.host (includes port) to extract hostname for private-IP checks,
+  // avoiding hostname/host confusion SSRF bypass (CVE-2018-12116).
+  const hostWithPort = url.host;
+  const hostnameFromHost = hostWithPort.includes("]")
+    ? hostWithPort.slice(0, hostWithPort.lastIndexOf("]") + 1) // IPv6 bracketed
+    : hostWithPort.split(":")[0]; // IPv4 or domain
+
+  if (isPrivateHost(hostnameFromHost) || isPrivateHost(url.hostname)) {
     throw new DiscoveryBridgeError(403, "Private or loopback hosts are not allowed");
   }
 
   return url;
 }
 
-function isPrivateHost(hostname: string): boolean {
+/** Shared SSRF validation: returns true if the hostname resolves to a private/loopback address. */
+export function isPrivateHost(hostname: string): boolean {
   const normalizedHost = hostname.trim().toLowerCase();
 
   // Block localhost and .localhost subdomains (RFC 6761)
@@ -596,6 +604,16 @@ function isPrivateHost(hostname: string): boolean {
     normalizedHost === "0.0.0.0" ||
     normalizedHost === "::1" ||
     normalizedHost === "[::1]"
+  ) {
+    return true;
+  }
+
+  // Block cloud metadata endpoints (AWS, GCP, Azure)
+  if (
+    normalizedHost === "metadata.google.internal" ||
+    normalizedHost.endsWith(".metadata.google.internal") ||
+    normalizedHost === "metadata.goog" ||
+    normalizedHost === "169.254.169.254"
   ) {
     return true;
   }
@@ -679,7 +697,7 @@ function isPrivateHost(hostname: string): boolean {
   return false;
 }
 
-function isPrivateIPv4(a: number, b: number): boolean {
+export function isPrivateIPv4(a: number, b: number): boolean {
   return a === 10 ||
     a === 127 ||
     a === 0 ||

@@ -7,6 +7,7 @@ export type AppEnv = {
     SIGNING_KEY_ID: string;
     INTERNAL_SECRET: string;
     BASE_URL?: string;
+    ALLOWED_ORIGINS?: string;
   };
   Variables: {
     requestId: string;

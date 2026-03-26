@@ -63,11 +63,27 @@ function isPrivateUrl(url: URL): boolean {
   // IPv6 addresses (may be bracketed)
   if (h.includes(":")) {
     const compact = h.replace(/^\[|\]$/g, "");
-    return compact.startsWith("fc") ||
-      compact.startsWith("fd") ||
-      compact.startsWith("fe80:") ||
+
+    // Unspecified (::), loopback (::1), ULA (fc00::/7), link-local (fe80::/10)
+    if (
+      compact === "::" ||
       compact === "::1" ||
-      compact.startsWith("::ffff:127.");
+      compact.startsWith("fc") ||
+      compact.startsWith("fd") ||
+      compact.startsWith("fe80:")
+    ) {
+      return true;
+    }
+
+    // IPv4-mapped (::ffff:x.x.x.x) and IPv4-compatible (::x.x.x.x) IPv6
+    const v4Mapped = compact.match(
+      /^::(?:ffff:)?(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/,
+    );
+    if (v4Mapped) {
+      return isPrivateIPv4(Number(v4Mapped[1]), Number(v4Mapped[2]));
+    }
+
+    return false;
   }
 
   // Decimal IP (e.g. 2130706433 = 127.0.0.1)

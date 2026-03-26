@@ -1,0 +1,47 @@
+{
+  "groups": [
+    {
+      "id": "group-1",
+      "label": "Worker.ts security hardening: CORS, auth middleware, rate limiting",
+      "domain": "security",
+      "findings": [
+        "packages/server/src/worker.ts-Wildcard CORS allows cross-origin attacks-security-review-critical",
+        "packages/server/src/worker.ts-No default-deny auth middleware-security-review-critical",
+        "packages/server/src/worker.ts-Missing rate limiting enables SSRF-as-a-service-security-cross-review-critical"
+      ],
+      "files": [
+        "packages/server/src/worker.ts"
+      ],
+      "rationale": "All three findings target the same file (worker.ts) and relate to request-level security controls"
+    },
+    {
+      "id": "group-2",
+      "label": "Server route security: unauthenticated endpoints and SSRF validation",
+      "domain": "security",
+      "findings": [
+        "packages/server/src/durable-objects/identity-do.ts-Unauthenticated IdentityDO endpoints-security-review-critical",
+        "packages/server/src/routes/discovery.ts-SSRF validation divergence across codebase-historian-review-critical",
+        "packages/server/src/routes/discovery.ts-Hostname/host confusion SSRF bypass-historian-review-critical"
+      ],
+      "files": [
+        "packages/server/src/durable-objects/identity-do.ts",
+        "packages/server/src/routes/discovery.ts"
+      ],
+      "rationale": "Both files are in the server package with no overlap with other groups; identity-do auth and discovery SSRF fixes are independent but share the server domain"
+    },
+    {
+      "id": "group-3",
+      "label": "AI adapter SSRF: incomplete IPv6 private URL validation",
+      "domain": "security",
+      "findings": [
+        "packages/ai/src/adapter.ts-Incomplete IPv6 SSRF in isPrivateUrl()-developer-review-critical"
+      ],
+      "files": [
+        "packages/ai/src/adapter.ts"
+      ],
+      "rationale": "Isolated to the ai package adapter; single-file fix for IPv6 SSRF bypass in isPrivateUrl()"
+    }
+  ],
+  "totalGroups": 3,
+  "conflictCheck": "no file appears in multiple groups"
+}

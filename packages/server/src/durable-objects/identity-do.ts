@@ -92,6 +92,14 @@ export class IdentityDO extends DurableObjectBase {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
+    // Verify INTERNAL_SECRET on all /internal/* endpoints (defense-in-depth)
+    if (url.pathname.startsWith("/internal/")) {
+      const secret = request.headers.get("x-internal-secret");
+      if (!secret || secret !== this.env.INTERNAL_SECRET) {
+        return jsonErrorResponse("Unauthorized", 401);
+      }
+    }
+
     try {
       if (request.method === "POST" && url.pathname === "/internal/create") {
         const body = await request.json<StoredIdentity>().catch(() => null);
