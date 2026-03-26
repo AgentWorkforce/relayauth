@@ -160,20 +160,23 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
+      - name: Update npm to latest (required for provenance)
+        run: npm install -g npm@latest
+
       - run: npm ci
       - run: npx turbo build
 
       - name: Publish @relayauth/${{ matrix.package }}
         if: ${{ github.event.inputs.dry_run != 'true' }}
         working-directory: packages/${{ matrix.package }}
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }}
+        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Dry run publish
         if: ${{ github.event.inputs.dry_run == 'true' }}
         working-directory: packages/${{ matrix.package }}
-        run: npm publish --access public --dry-run
+        run: npm publish --access public --dry-run --ignore-scripts
 
   release:
     name: Create GitHub Release
