@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-ln -sf "/Users/khaliqgant/Projects/AgentWorkforce/relayauth/scripts/relay/relay.sh" /usr/local/bin/relay
+ln -sf "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/relay.sh" /usr/local/bin/relay

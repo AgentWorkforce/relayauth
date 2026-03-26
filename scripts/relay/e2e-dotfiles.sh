@@ -172,10 +172,10 @@ run_parser_probe() {
         ignoresSecretsDir: Boolean(perms.ignored?.ignores?.("secrets/api-key.txt")),
         ignoresDotEnv: Boolean(perms.ignored?.ignores?.(".env")),
         readonlyReadme: typeof parserMod.isReadonly === "function"
-          ? Boolean(parserMod.isReadonly(perms, "README.md"))
+          ? Boolean(parserMod.isReadonly("README.md", perms))
           : Boolean(perms.readonly?.ignores?.("README.md")) && !Boolean(perms.ignored?.ignores?.("README.md")),
         readonlySrcApp: typeof parserMod.isReadonly === "function"
-          ? Boolean(parserMod.isReadonly(perms, "src/app.ts"))
+          ? Boolean(parserMod.isReadonly("src/app.ts", perms))
           : Boolean(perms.readonly?.ignores?.("src/app.ts")),
       },
     };
@@ -190,8 +190,9 @@ run_compile_probe() {
   local agent_name="$2"
 
   npx tsx --eval '
-    import path from "node:path";
-    import { pathToFileURL } from "node:url";
+    (async () => {
+    const path = require("node:path");
+    const { pathToFileURL } = require("node:url");
 
     const parserPath = path.resolve(process.argv[1]);
     const compilerPath = path.resolve(process.argv[2]);
@@ -208,22 +209,22 @@ run_compile_probe() {
       throw new Error("dotfile-compiler.ts does not export compileDotfiles()");
     }
 
-    const perms = parserMod.parseDotfiles(projectDir, agentName);
-    const args = [projectDir, agentName, perms];
+    const args = [projectDir, agentName, "e2e-test"];
     if (compilerMod.compileDotfiles.length >= 4) {
       args.push("local");
     }
 
     const compiled = compilerMod.compileDotfiles(...args);
-    const aclEntries = compiled.aclRules instanceof Map
-      ? Object.fromEntries([...compiled.aclRules.entries()].sort(([a], [b]) => a.localeCompare(b)))
-      : compiled.aclRules;
+    const aclEntries = compiled.acl instanceof Map
+      ? Object.fromEntries([...compiled.acl.entries()].sort(([a], [b]) => a.localeCompare(b)))
+      : compiled.acl;
 
     console.log(JSON.stringify({
       aclRules: aclEntries,
       scopes: compiled.scopes ?? [],
-      deniedPatterns: compiled.deniedPatterns ?? [],
+      deniedPatterns: compiled.ignoredPaths ?? [],
     }));
+    })();
   ' "$PARSER_TS" "$COMPILER_TS" "$project_dir" "$agent_name"
 }
 

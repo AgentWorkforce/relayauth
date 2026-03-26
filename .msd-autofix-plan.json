@@ -2,46 +2,34 @@
   "groups": [
     {
       "id": "group-1",
-      "label": "Worker.ts security hardening: CORS, auth middleware, rate limiting",
-      "domain": "security",
+      "label": "Fix shell script issues in scripts/relay/",
+      "domain": "reliability",
       "findings": [
-        "packages/server/src/worker.ts-Wildcard CORS allows cross-origin attacks-security-review-critical",
-        "packages/server/src/worker.ts-No default-deny auth middleware-security-review-critical",
-        "packages/server/src/worker.ts-Missing rate limiting enables SSRF-as-a-service-security-cross-review-critical"
+        "2998027667",
+        "2998027777",
+        "2998027855",
+        "2998027919",
+        "2998028098"
       ],
       "files": [
-        "packages/server/src/worker.ts"
+        "scripts/relay/e2e-dotfiles.sh",
+        "scripts/relay/install.sh"
       ],
-      "rationale": "All three findings target the same file (worker.ts) and relate to request-level security controls"
+      "rationale": "All 5 findings target shell scripts in scripts/relay/ — same directory, overlapping file (e2e-dotfiles.sh has 4 findings). Must be handled by one worker to avoid conflicts."
     },
     {
       "id": "group-2",
-      "label": "Server route security: unauthenticated endpoints and SSRF validation",
-      "domain": "security",
+      "label": "Fix CI workflow publish.yml issue",
+      "domain": "reliability",
       "findings": [
-        "packages/server/src/durable-objects/identity-do.ts-Unauthenticated IdentityDO endpoints-security-review-critical",
-        "packages/server/src/routes/discovery.ts-SSRF validation divergence across codebase-historian-review-critical",
-        "packages/server/src/routes/discovery.ts-Hostname/host confusion SSRF bypass-historian-review-critical"
+        "2998028003"
       ],
       "files": [
-        "packages/server/src/durable-objects/identity-do.ts",
-        "packages/server/src/routes/discovery.ts"
+        ".github/workflows/publish.yml"
       ],
-      "rationale": "Both files are in the server package with no overlap with other groups; identity-do auth and discovery SSRF fixes are independent but share the server domain"
-    },
-    {
-      "id": "group-3",
-      "label": "AI adapter SSRF: incomplete IPv6 private URL validation",
-      "domain": "security",
-      "findings": [
-        "packages/ai/src/adapter.ts-Incomplete IPv6 SSRF in isPrivateUrl()-developer-review-critical"
-      ],
-      "files": [
-        "packages/ai/src/adapter.ts"
-      ],
-      "rationale": "Isolated to the ai package adapter; single-file fix for IPv6 SSRF bypass in isPrivateUrl()"
+      "rationale": "Single finding in a separate CI workflow file, no overlap with group-1 files."
     }
   ],
-  "totalGroups": 3,
+  "totalGroups": 2,
   "conflictCheck": "no file appears in multiple groups"
 }

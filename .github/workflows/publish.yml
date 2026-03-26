@@ -69,6 +69,7 @@ jobs:
     outputs:
       new_version: ${{ steps.version.outputs.new_version }}
       packages: ${{ steps.packages.outputs.list }}
+      matrix: ${{ steps.packages.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,8 +91,10 @@ jobs:
           INPUT="${{ github.event.inputs.package }}"
           if [ "$INPUT" = "all" ]; then
             echo "list=types,core,sdk" >> "$GITHUB_OUTPUT"
+            echo 'matrix=["types","core","sdk"]' >> "$GITHUB_OUTPUT"
           else
             echo "list=$INPUT" >> "$GITHUB_OUTPUT"
+            echo "matrix=[\"$INPUT\"]" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Bump versions
@@ -148,7 +151,7 @@ jobs:
     strategy:
       max-parallel: 1
       matrix:
-        package: ${{ fromJson(format('["{0}"]', join(fromJson(format('["{0}"]', needs.build.outputs.packages)), '","'))) }}
+        package: ${{ fromJson(needs.build.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
