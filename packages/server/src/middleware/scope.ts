@@ -209,7 +209,7 @@ async function verifyHs256Signature(
     return crypto.subtle.verify(
       "HMAC",
       key,
-      decodeBase64UrlToBytes(signature) as Uint8Array<ArrayBuffer>,
+      new Uint8Array(decodeBase64UrlToBytes(signature)),
       new TextEncoder().encode(value),
     );
   } catch {

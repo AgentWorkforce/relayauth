@@ -1,5 +1,7 @@
 import { RelayAuthAdapter } from "../adapter.js";
+import { RELAYAUTH_TOOLS } from "../tools.js";
 import type { AdapterConfig, ToolResult } from "../types.js";
+import { errorResult } from "../utils.js";
 
 export interface ChatCompletionTool {
   type: "function";
@@ -15,20 +17,6 @@ type ToolHandler = {
   handleToolCall: (name: string, args: string) => Promise<string>;
 };
 
-function errorResult(error: unknown): ToolResult {
-  if (error instanceof Error) {
-    return {
-      success: false,
-      error: error.message,
-    };
-  }
-
-  return {
-    success: false,
-    error: "Unknown error",
-  };
-}
-
 function parseArguments(args: string): Record<string, unknown> {
   if (!args.trim()) {
     return {};
@@ -42,10 +30,8 @@ function parseArguments(args: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-export function createOpenAITools(config: AdapterConfig): ChatCompletionTool[] {
-  const adapter = new RelayAuthAdapter(config);
-
-  return adapter.getTools().map((tool) => ({
+export function createOpenAITools(_config?: AdapterConfig): ChatCompletionTool[] {
+  return RELAYAUTH_TOOLS.map((tool) => ({
     type: "function",
     function: {
       name: tool.name,

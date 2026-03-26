@@ -16,6 +16,7 @@ import roles from "./routes/roles.js";
 const app = new Hono<AppEnv>();
 
 // Global middleware: CORS, request ID
+// TODO: restrict CORS origins for production — wildcard allows any origin
 app.use("*", cors());
 app.use("*", async (c, next) => {
   const requestId =

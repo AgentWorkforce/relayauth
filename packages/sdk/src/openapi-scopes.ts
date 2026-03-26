@@ -18,13 +18,20 @@ export interface OpenAPISpec {
   openapi?: string;
 }
 
-export interface ScopeDefinition {
+/**
+ * Scope definition generated from an OpenAPI spec.
+ * Renamed to avoid collision with ScopeDefinition in @relayauth/types/discovery.
+ */
+export interface OpenAPIScopeDefinition {
   scope: string;
   description: string;
   method: string;
   path: string;
   approval: ApprovalMode;
 }
+
+/** @deprecated Use {@link OpenAPIScopeDefinition} instead. */
+export type ScopeDefinition = OpenAPIScopeDefinition;
 
 const METHOD_ORDER: readonly HttpMethod[] = [
   "get",

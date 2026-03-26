@@ -245,6 +245,12 @@ function formatStringArray(values: string[], indentLevel: number): string {
   return `[\n${values.map((value) => `${indent}${JSON.stringify(value)},`).join("\n")}\n${closingIndent}]`;
 }
 
+/**
+ * Minimal YAML parser sufficient for simple OpenAPI specs (flat key-value pairs,
+ * simple arrays, nested objects). Does NOT support multi-line strings, anchors/aliases,
+ * flow mappings, or other advanced YAML features. Consider replacing with js-yaml
+ * if broader YAML support is needed.
+ */
 function parseYamlOpenAPISpec(source: string): OpenAPISpec {
   const parsed = parseYamlObject(source);
 

@@ -17,6 +17,29 @@ import type { AdapterConfig, AdapterOptions, AdapterTool, ToolResult } from "./t
 
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
+const FETCH_TIMEOUT_MS = 5_000;
+const MAX_RESPONSE_BYTES = 1_048_576; // 1 MB
+
+/** Minimal private/reserved IP check to mitigate SSRF. */
+function isPrivateUrl(url: URL): boolean {
+  if (url.protocol !== "https:" && url.protocol !== "http:") return true;
+  const h = url.hostname;
+  if (h === "localhost" || h === "[::1]") return true;
+  // IPv4 private/reserved ranges
+  const ipv4 = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (ipv4) {
+    const [, a, b] = ipv4.map(Number);
+    if (a === 10) return true;                       // 10.0.0.0/8
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true;          // 192.168.0.0/16
+    if (a === 127) return true;                       // 127.0.0.0/8
+    if (a === 169 && b === 254) return true;          // link-local
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64.0.0/10
+    if (a === 0) return true;                         // 0.0.0.0/8
+  }
+  return false;
+}
+
 type ExecuteWithAuthResult = {
   status: number;
   headers: Record<string, string>;
@@ -70,27 +93,54 @@ export class RelayAuthAdapter {
   ): Promise<ToolResult> {
     switch (name) {
       case "discover_service":
+        if (params.url !== undefined && typeof params.url !== "string") {
+          return { success: false, error: "url must be a string" };
+        }
         return this.discover(params.url as string | undefined);
       case "register_agent":
+        if (typeof params.name !== "string") {
+          return { success: false, error: "name must be a string" };
+        }
+        if (params.scopes !== undefined && !Array.isArray(params.scopes)) {
+          return { success: false, error: "scopes must be an array" };
+        }
+        if (params.sponsor !== undefined && typeof params.sponsor !== "string") {
+          return { success: false, error: "sponsor must be a string" };
+        }
         return this.registerAgent(
-          params.name as string,
+          params.name,
           params.scopes as string[] | undefined,
           params.sponsor as string | undefined,
         );
       case "request_scope":
+        if (!Array.isArray(params.scopes)) {
+          return { success: false, error: "scopes must be an array" };
+        }
+        if (params.identityId !== undefined && typeof params.identityId !== "string") {
+          return { success: false, error: "identityId must be a string" };
+        }
         return this.requestScope(
           params.scopes as string[],
           params.identityId as string | undefined,
         );
       case "execute_with_auth":
+        if (typeof params.url !== "string") {
+          return { success: false, error: "url must be a string" };
+        }
+        if (params.method !== undefined && typeof params.method !== "string") {
+          return { success: false, error: "method must be a string" };
+        }
         return this.executeWithAuth(
-          params.url as string,
+          params.url,
           (params.method as HttpMethod) ?? "GET",
           params.body,
           params.headers as Record<string, string> | undefined,
         );
       case "check_scope":
-        return this.checkScope(params.scope as string);
+        if (typeof params.scope !== "string") {
+          return { success: false, error: "scope must be a string" };
+        }
+        return this.checkScope(params.scope);
       default:
         return { success: false, error: `Unknown tool: ${name}` };
     }
@@ -203,6 +253,21 @@ export class RelayAuthAdapter {
     headers?: HeadersInit,
   ): Promise<ToolResult<ExecuteWithAuthResult>> {
     try {
+      let targetUrl: URL;
+      try {
+        targetUrl = new URL(url);
+      } catch {
+        return { success: false, error: "Invalid URL" };
+      }
+
+      if (targetUrl.protocol !== "https:" && targetUrl.protocol !== "http:") {
+        return { success: false, error: "Only http and https URLs are allowed" };
+      }
+
+      if (isPrivateUrl(targetUrl)) {
+        return { success: false, error: "Requests to private/internal addresses are not allowed" };
+      }
+
       const token = this.#getAccessToken();
       if (!token) {
         return {
@@ -214,9 +279,14 @@ export class RelayAuthAdapter {
       const requestHeaders = new Headers(headers);
       requestHeaders.set("authorization", `Bearer ${token}`);
 
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), FETCH_TIMEOUT_MS);
+
       const init: RequestInit = {
         method,
         headers: requestHeaders,
+        redirect: "manual" as RequestRedirect,
+        signal: abort.signal,
       };
 
       if (body !== undefined && method !== "GET") {
@@ -225,6 +295,25 @@ export class RelayAuthAdapter {
       }
 
       const response = await fetch(url, init);
+      clearTimeout(timer);
+
+      // Block redirects to private addresses
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (location) {
+          try {
+            const redirectUrl = new URL(location, url);
+            if (isPrivateUrl(redirectUrl)) {
+              return { success: false, error: "Redirect to private/internal address blocked" };
+            }
+          } catch {
+            // invalid redirect URL — block it
+            return { success: false, error: "Invalid redirect location" };
+          }
+        }
+        return { success: false, error: `Redirect not followed (status ${response.status})` };
+      }
+
       const text = await response.text();
       const parsed = parseResponseBody(text);
 
@@ -275,12 +364,19 @@ export class RelayAuthAdapter {
     }
   }
 
+  #clientToken?: string;
+
   protected get client(): RelayAuthClient {
+    const currentToken = this.#issuedToken?.accessToken ?? this.#resolvedConfig.token;
+    if (this.#client && this.#clientToken !== currentToken) {
+      this.#client = undefined;
+    }
     this.#client ??= new RelayAuthClient({
       baseUrl: this.#resolvedConfig.serverUrl,
       apiKey: this.#resolvedConfig.apiKey,
-      token: this.#issuedToken?.accessToken ?? this.#resolvedConfig.token,
+      token: currentToken,
     });
+    this.#clientToken = currentToken;
     return this.#client;
   }
 
@@ -399,7 +495,18 @@ function normalizeBaseUrl(url: string): string {
 }
 
 async function fetchConfiguration(baseUrl: string): Promise<AgentConfiguration> {
-  const response = await fetch(new URL(".well-known/agent-configuration", baseUrl));
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), FETCH_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(new URL(".well-known/agent-configuration", baseUrl), {
+      signal: abort.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+
   if (!response.ok) {
     throw new RelayAuthError(
       "Failed to discover RelayAuth service",
@@ -408,7 +515,16 @@ async function fetchConfiguration(baseUrl: string): Promise<AgentConfiguration> 
     );
   }
 
-  return (await response.json()) as AgentConfiguration;
+  const text = await response.text();
+  if (text.length > MAX_RESPONSE_BYTES) {
+    throw new RelayAuthError(
+      "Discovery response exceeds size limit",
+      "discovery_failed",
+      413,
+    );
+  }
+
+  return JSON.parse(text) as AgentConfiguration;
 }
 
 function cloneSchema<T>(value: T): T {
@@ -462,6 +578,14 @@ function formatError(error: unknown): string {
   return "Unknown error";
 }
 
+function arraysEqual(a: unknown[] | undefined, b: unknown[] | undefined): boolean {
+  if (a === b) return true;
+  const left = a ?? [];
+  const right = b ?? [];
+  if (left.length !== right.length) return false;
+  return left.every((v, i) => v === right[i]);
+}
+
 function areVerifyOptionsEqual(
   previous: ResolvedAdapterConfig,
   next: ResolvedAdapterConfig,
@@ -473,6 +597,6 @@ function areVerifyOptionsEqual(
     && previous.cacheTtlMs === next.cacheTtlMs
     && previous.checkRevocation === next.checkRevocation
     && previous.maxAge === next.maxAge
-    && JSON.stringify(previous.audience ?? []) === JSON.stringify(next.audience ?? [])
+    && arraysEqual(previous.audience, next.audience)
   );
 }

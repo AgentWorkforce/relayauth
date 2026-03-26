@@ -3,38 +3,16 @@ import { z } from "zod";
 
 import { RelayAuthAdapter } from "../adapter.js";
 import type { AdapterConfig, ToolResult } from "../types.js";
+import { errorResult } from "../utils.js";
 
 const httpMethodSchema = z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]);
-type SchemaLike<TInput = unknown> = {
-  parse: (input: unknown) => TInput;
-  safeParse: (
-    input: unknown,
-  ) => {
-    success: boolean;
-    data?: TInput;
-    error?: unknown;
-  };
-};
+
 type CoreTool = {
   description: string;
-  parameters: SchemaLike;
+  parameters: z.ZodType;
   execute: (input: Record<string, unknown>) => Promise<ToolResult>;
   inputSchema: Tool["inputSchema"];
 };
-
-function errorResult(error: unknown): ToolResult {
-  if (error instanceof Error) {
-    return {
-      success: false,
-      error: error.message,
-    };
-  }
-
-  return {
-    success: false,
-    error: "Unknown error",
-  };
-}
 
 function wrapExecute<TParams>(
   execute: (params: TParams) => Promise<ToolResult>,

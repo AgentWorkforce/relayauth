@@ -3,6 +3,7 @@ import type {
   DiscoveryEndpoint,
   ScopeDefinition,
 } from "@relayauth/types";
+// TODO: Replace deep import with @relayauth/sdk once SDK is rebuilt with a2a-bridge exports
 import {
   agentCardToConfiguration,
   assertValidA2aAgentCard,
@@ -14,6 +15,7 @@ import type { AppEnv } from "../env.js";
 const discovery = new Hono<AppEnv>();
 export const apiDiscovery = new Hono<AppEnv>();
 
+const MAX_SSRF_REDIRECTS = 5;
 const CACHE_CONTROL_HEADER = "public, max-age=3600";
 const SCHEMA_VERSION = "1.0";
 const SERVICE_NAME = "relayauth";
@@ -109,7 +111,7 @@ const SCOPE_DEFINITIONS: ScopeDefinition[] = [
 ];
 
 discovery.get("/agent-configuration", (c) => {
-  const origin = new URL(c.req.url).origin;
+  const origin = resolveOrigin(c);
   const configuration = buildAgentConfiguration(origin);
 
   c.header("Cache-Control", CACHE_CONTROL_HEADER);
@@ -117,7 +119,7 @@ discovery.get("/agent-configuration", (c) => {
 });
 
 apiDiscovery.get("/agent-card", (c) => {
-  const origin = new URL(c.req.url).origin;
+  const origin = resolveOrigin(c);
   const configuration = buildAgentConfiguration(origin);
   const card = configurationToAgentCard(configuration, SERVICE_NAME);
 
@@ -126,6 +128,15 @@ apiDiscovery.get("/agent-card", (c) => {
 });
 
 apiDiscovery.post("/bridge", async (c) => {
+  const authorization = c.req.header("authorization");
+  if (!authorization) {
+    return c.json({ error: "Missing Authorization header" }, 401);
+  }
+  const [scheme, token] = authorization.split(/\s+/, 2);
+  if (scheme !== "Bearer" || !token) {
+    return c.json({ error: "Invalid Authorization header" }, 401);
+  }
+
   const body = await c.req.json<{ url?: string }>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return c.json({ error: "Invalid JSON body" }, 400);
@@ -430,6 +441,14 @@ function endpoint(
   };
 }
 
+function resolveOrigin(c: Context<AppEnv>): string {
+  const baseUrl = c.env?.BASE_URL;
+  if (baseUrl) {
+    return new URL(baseUrl).origin;
+  }
+  return new URL(c.req.url).origin;
+}
+
 function absoluteUrl(origin: string, path: string): string {
   return new URL(path, origin).toString();
 }
@@ -447,7 +466,7 @@ async function fetchAgentCard(baseUrl: URL): Promise<unknown> {
 
       if (response.status === 404) {
         lastNotFound = true;
-        continue;
+        break;
       }
 
       if (!response.ok) {
@@ -639,7 +658,8 @@ function isPrivateIPv4(a: number, b: number): boolean {
     a === 0 ||
     (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168);
+    (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127); // CGNAT (RFC 6598)
 }
 
 function handleBridgeError(c: Context<AppEnv>, error: unknown): Response {

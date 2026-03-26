@@ -1,6 +1,7 @@
 import { RelayAuthAdapter } from "../adapter.js";
 import { RELAYAUTH_TOOLS } from "../tools.js";
 import type { AdapterConfig, JSONSchema, ToolResult } from "../types.js";
+import { errorResult } from "../utils.js";
 
 type AnthropicInputSchema = JSONSchema & {
   type: "object";
@@ -32,20 +33,6 @@ type ToolHandler = {
   ) => Promise<AnthropicToolUseResult>;
 };
 
-function errorResult(error: unknown): ToolResult {
-  if (error instanceof Error) {
-    return {
-      success: false,
-      error: error.message,
-    };
-  }
-
-  return {
-    success: false,
-    error: "Unknown error",
-  };
-}
-
 function toToolUseResult(result: ToolResult): AnthropicToolUseResult {
   return {
     content: [
@@ -58,7 +45,7 @@ function toToolUseResult(result: ToolResult): AnthropicToolUseResult {
   };
 }
 
-export function createAnthropicTools(_config: AdapterConfig): AnthropicTool[] {
+export function createAnthropicTools(_config?: AdapterConfig): AnthropicTool[] {
   return RELAYAUTH_TOOLS.map((tool) => ({
     name: tool.name,
     description: tool.description,
@@ -68,7 +55,7 @@ export function createAnthropicTools(_config: AdapterConfig): AnthropicTool[] {
 
 export function createToolHandler(config: AdapterConfig): ToolHandler {
   const adapter = new RelayAuthAdapter(config);
-  const tools = createAnthropicTools(config);
+  const tools = createAnthropicTools();
 
   return {
     tools,
