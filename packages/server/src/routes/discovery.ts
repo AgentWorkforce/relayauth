@@ -11,6 +11,7 @@ import {
 } from "@relayauth/sdk/src/a2a-bridge.js";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
+import { requireScope } from "../middleware/scope.js";
 
 const discovery = new Hono<AppEnv>();
 export const apiDiscovery = new Hono<AppEnv>();
@@ -127,16 +128,7 @@ apiDiscovery.get("/agent-card", (c) => {
   return c.json(card, 200);
 });
 
-apiDiscovery.post("/bridge", async (c) => {
-  const authorization = c.req.header("authorization");
-  if (!authorization) {
-    return c.json({ error: "Missing Authorization header" }, 401);
-  }
-  const [scheme, token] = authorization.split(/\s+/, 2);
-  if (scheme !== "Bearer" || !token) {
-    return c.json({ error: "Invalid Authorization header" }, 401);
-  }
-
+apiDiscovery.post("/bridge", requireScope("relayauth:identity:read"), async (c) => {
   const body = await c.req.json<{ url?: string }>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return c.json({ error: "Invalid JSON body" }, 400);
@@ -466,7 +458,7 @@ async function fetchAgentCard(baseUrl: URL): Promise<unknown> {
 
       if (response.status === 404) {
         lastNotFound = true;
-        break;
+        continue;
       }
 
       if (!response.ok) {

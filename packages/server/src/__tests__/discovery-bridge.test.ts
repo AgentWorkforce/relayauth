@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentConfiguration } from "@relayauth/types";
-import { createTestApp, createTestRequest } from "./test-helpers.js";
+import { createTestApp, createTestRequest, generateTestToken } from "./test-helpers.js";
 
 const AGENT_CARD_PATH = "/v1/discovery/agent-card";
 const BRIDGE_PATH = "/v1/discovery/bridge";
+
+function bridgeHeaders(): HeadersInit {
+  return { Authorization: `Bearer ${generateTestToken({ scopes: ["relayauth:identity:read:*"] })}` };
+}
 
 function assertBridgeConfiguration(body: unknown): asserts body is AgentConfiguration {
   assert.equal(typeof body, "object");
@@ -55,7 +59,7 @@ test("POST /v1/discovery/bridge fetches an external agent card and returns Agent
   try {
     const app = createTestApp();
     const response = await app.request(
-      createTestRequest("POST", BRIDGE_PATH, { url: "https://agent.example.com" }),
+      createTestRequest("POST", BRIDGE_PATH, { url: "https://agent.example.com" }, bridgeHeaders()),
       undefined,
       app.bindings,
     );
@@ -74,7 +78,7 @@ test("POST /v1/discovery/bridge fetches an external agent card and returns Agent
 test("POST /v1/discovery/bridge returns 400 for an invalid request body", async () => {
   const app = createTestApp();
   const response = await app.request(
-    createTestRequest("POST", BRIDGE_PATH, { nope: true }),
+    createTestRequest("POST", BRIDGE_PATH, { nope: true }, bridgeHeaders()),
     undefined,
     app.bindings,
   );
@@ -86,7 +90,7 @@ test("POST /v1/discovery/bridge returns 400 for an invalid request body", async 
 test("POST /v1/discovery/bridge rejects private hosts", async () => {
   const app = createTestApp();
   const response = await app.request(
-    createTestRequest("POST", BRIDGE_PATH, { url: "http://127.0.0.1:8787" }),
+    createTestRequest("POST", BRIDGE_PATH, { url: "http://127.0.0.1:8787" }, bridgeHeaders()),
     undefined,
     app.bindings,
   );
@@ -119,7 +123,7 @@ test("POST /v1/discovery/bridge blocks redirects to private hosts before followi
   try {
     const app = createTestApp();
     const response = await app.request(
-      createTestRequest("POST", BRIDGE_PATH, { url: "https://agent.example.com" }),
+      createTestRequest("POST", BRIDGE_PATH, { url: "https://agent.example.com" }, bridgeHeaders()),
       undefined,
       app.bindings,
     );
@@ -143,7 +147,7 @@ test("POST /v1/discovery/bridge returns 422 for invalid agent cards", async () =
   try {
     const app = createTestApp();
     const response = await app.request(
-      createTestRequest("POST", BRIDGE_PATH, { url: "https://agent.example.com" }),
+      createTestRequest("POST", BRIDGE_PATH, { url: "https://agent.example.com" }, bridgeHeaders()),
       undefined,
       app.bindings,
     );
@@ -164,7 +168,7 @@ test("POST /v1/discovery/bridge returns 502 when the upstream agent card cannot 
   try {
     const app = createTestApp();
     const response = await app.request(
-      createTestRequest("POST", BRIDGE_PATH, { url: "https://agent.example.com" }),
+      createTestRequest("POST", BRIDGE_PATH, { url: "https://agent.example.com" }, bridgeHeaders()),
       undefined,
       app.bindings,
     );
