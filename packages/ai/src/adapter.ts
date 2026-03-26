@@ -20,23 +20,79 @@ type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 const FETCH_TIMEOUT_MS = 5_000;
 const MAX_RESPONSE_BYTES = 1_048_576; // 1 MB
 
-/** Minimal private/reserved IP check to mitigate SSRF. */
+/** Check whether an IPv4 first two octets fall in private/reserved ranges. */
+function isPrivateIPv4(a: number, b: number): boolean {
+  return a === 10 ||
+    a === 127 ||
+    a === 0 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127); // CGNAT (RFC 6598)
+}
+
+/**
+ * Comprehensive private/reserved host check to mitigate SSRF.
+ * Handles decimal IPs, octal/hex octets, IPv6, DNS rebinding services,
+ * and .localhost subdomains (RFC 6761).
+ */
 function isPrivateUrl(url: URL): boolean {
   if (url.protocol !== "https:" && url.protocol !== "http:") return true;
-  const h = url.hostname;
-  if (h === "localhost" || h === "[::1]") return true;
-  // IPv4 private/reserved ranges
-  const ipv4 = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (ipv4) {
-    const [, a, b] = ipv4.map(Number);
-    if (a === 10) return true;                       // 10.0.0.0/8
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-    if (a === 192 && b === 168) return true;          // 192.168.0.0/16
-    if (a === 127) return true;                       // 127.0.0.0/8
-    if (a === 169 && b === 254) return true;          // link-local
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64.0.0/10
-    if (a === 0) return true;                         // 0.0.0.0/8
+  const h = url.hostname.trim().toLowerCase();
+
+  // Block localhost and .localhost subdomains (RFC 6761)
+  if (
+    h === "localhost" ||
+    h.endsWith(".localhost") ||
+    h === "0.0.0.0" ||
+    h === "::1" ||
+    h === "[::1]"
+  ) {
+    return true;
   }
+
+  // Block known DNS-rebinding services
+  if (
+    h.endsWith(".nip.io") ||
+    h.endsWith(".sslip.io") ||
+    h.endsWith(".xip.io")
+  ) {
+    return true;
+  }
+
+  // IPv6 addresses (may be bracketed)
+  if (h.includes(":")) {
+    const compact = h.replace(/^\[|\]$/g, "");
+    return compact.startsWith("fc") ||
+      compact.startsWith("fd") ||
+      compact.startsWith("fe80:") ||
+      compact === "::1" ||
+      compact.startsWith("::ffff:127.");
+  }
+
+  // Decimal IP (e.g. 2130706433 = 127.0.0.1)
+  if (/^\d+$/.test(h)) {
+    const decimal = Number(h);
+    if (decimal >= 0 && decimal <= 0xFFFFFFFF) {
+      const a = (decimal >>> 24) & 0xFF;
+      const b = (decimal >>> 16) & 0xFF;
+      return isPrivateIPv4(a, b);
+    }
+  }
+
+  // Dotted notation — handle octal (0177) and hex (0x7f) segments
+  const segments = h.split(".");
+  if (segments.length === 4) {
+    const octets = segments.map((s) => {
+      if (s.startsWith("0x") || s.startsWith("0X")) return parseInt(s, 16);
+      if (s.startsWith("0") && s.length > 1) return parseInt(s, 8);
+      return Number(s);
+    });
+    if (octets.every((o) => Number.isInteger(o) && o >= 0 && o <= 255)) {
+      return isPrivateIPv4(octets[0], octets[1]);
+    }
+  }
+
   return false;
 }
 
