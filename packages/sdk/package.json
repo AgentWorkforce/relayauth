@@ -6,7 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc --build --force",
-    "test": "node --test --import tsx $(find src/__tests__ -maxdepth 1 -name '*.test.ts' ! -name 'verify.test.ts' -print | sort) && vitest run --config vitest.config.ts",
+    "test": "vitest run",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },

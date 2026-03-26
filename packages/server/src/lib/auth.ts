@@ -10,20 +10,20 @@ export async function authenticate(
   signingKey: string,
 ): Promise<
   | { ok: true; claims: RelayAuthTokenClaims }
-  | { ok: false; error: string; status: 401 }
+  | { ok: false; error: string; code: string; status: 401 }
 > {
   if (!authorization) {
-    return { ok: false, error: "Missing Authorization header", status: 401 };
+    return { ok: false, error: "Missing Authorization header", code: "missing_authorization", status: 401 };
   }
 
   const [scheme, token] = authorization.split(/\s+/, 2);
   if (scheme !== "Bearer" || !token) {
-    return { ok: false, error: "Invalid Authorization header", status: 401 };
+    return { ok: false, error: "Invalid Authorization header", code: "invalid_authorization", status: 401 };
   }
 
   const claims = await verifyToken(token, signingKey);
   if (!claims) {
-    return { ok: false, error: "Invalid access token", status: 401 };
+    return { ok: false, error: "Invalid access token", code: "invalid_token", status: 401 };
   }
 
   return { ok: true, claims };
@@ -36,15 +36,19 @@ export async function authenticateAndAuthorize(
   matchScopeFn: (required: string, granted: string[]) => boolean,
 ): Promise<
   | { ok: true; claims: RelayAuthTokenClaims }
-  | { ok: false; error: string; status: 401 | 403 }
+  | { ok: false; error: string; code: string; status: 401 | 403 }
 > {
   const auth = await authenticate(authorization, signingKey);
   if (!auth.ok) {
     return auth;
   }
 
-  if (!matchScopeFn(requiredScope, auth.claims.scopes)) {
-    return { ok: false, error: "insufficient_scope", status: 403 };
+  try {
+    if (!matchScopeFn(requiredScope, auth.claims.scopes)) {
+      return { ok: false, error: "insufficient_scope", code: "insufficient_scope", status: 403 };
+    }
+  } catch {
+    return { ok: false, error: "insufficient_scope", code: "insufficient_scope", status: 403 };
   }
 
   return auth;
@@ -122,7 +126,7 @@ async function verifyHs256Signature(
     return crypto.subtle.verify(
       "HMAC",
       key,
-      decodeBase64UrlToBytes(signature),
+      decodeBase64UrlToBytes(signature).buffer as ArrayBuffer,
       new TextEncoder().encode(value),
     );
   } catch {

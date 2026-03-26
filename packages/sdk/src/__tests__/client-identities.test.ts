@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, onTestFinished } from "vitest";
 import type { AgentIdentity, CreateIdentityInput, IdentityStatus } from "@relayauth/types";
 import { RelayAuthClient } from "../client.js";
 import { IdentityNotFoundError, IdentitySuspendedError } from "../errors.js";
@@ -105,10 +105,10 @@ function assertBearer(headers: Headers): void {
   assert.equal(headers.get("authorization"), `Bearer ${token}`);
 }
 
-test("createIdentity posts to /v1/identities with orgId in the JSON body", async (t) => {
+test("createIdentity posts to /v1/identities with orgId in the JSON body", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() => jsonResponse(identity, 201));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const input: CreateIdentityInput = {
     name: "billing-bot",
@@ -135,10 +135,10 @@ test("createIdentity posts to /v1/identities with orgId in the JSON body", async
   });
 });
 
-test("getIdentity fetches /v1/identities/:id with bearer auth", async (t) => {
+test("getIdentity fetches /v1/identities/:id with bearer auth", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() => jsonResponse(identity));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const result = await client.getIdentity(identity.id);
 
@@ -152,7 +152,7 @@ test("getIdentity fetches /v1/identities/:id with bearer auth", async (t) => {
   assert.equal(request.body, "");
 });
 
-test("listIdentities sends orgId and filters as query params and maps data to identities", async (t) => {
+test("listIdentities sends orgId and filters as query params and maps data to identities", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() =>
     jsonResponse({
@@ -160,7 +160,7 @@ test("listIdentities sends orgId and filters as query params and maps data to id
       cursor: "cursor_next",
     }),
   );
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const result = await client.listIdentities("org_123", {
     limit: 25,
@@ -185,7 +185,7 @@ test("listIdentities sends orgId and filters as query params and maps data to id
   assert.equal(request.body, "");
 });
 
-test("updateIdentity patches /v1/identities/:id with JSON updates", async (t) => {
+test("updateIdentity patches /v1/identities/:id with JSON updates", async () => {
   const client = createClient();
   const updatedIdentity: AgentIdentity = {
     ...identity,
@@ -195,7 +195,7 @@ test("updateIdentity patches /v1/identities/:id with JSON updates", async (t) =>
     updatedAt: "2026-03-25T11:00:00.000Z",
   };
   const fetchMock = mockFetch(() => jsonResponse(updatedIdentity));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const updates: Partial<CreateIdentityInput> = {
     name: "billing-bot-v2",
@@ -216,7 +216,7 @@ test("updateIdentity patches /v1/identities/:id with JSON updates", async (t) =>
   assert.deepEqual(JSON.parse(request.body), updates);
 });
 
-test("suspendIdentity posts reason to /v1/identities/:id/suspend", async (t) => {
+test("suspendIdentity posts reason to /v1/identities/:id/suspend", async () => {
   const client = createClient();
   const suspendedIdentity: AgentIdentity = {
     ...identity,
@@ -226,7 +226,7 @@ test("suspendIdentity posts reason to /v1/identities/:id/suspend", async (t) => 
     updatedAt: "2026-03-25T12:00:00.000Z",
   };
   const fetchMock = mockFetch(() => jsonResponse(suspendedIdentity));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const result = await client.suspendIdentity(identity.id, "policy_violation");
 
@@ -241,7 +241,7 @@ test("suspendIdentity posts reason to /v1/identities/:id/suspend", async (t) => 
   assert.deepEqual(JSON.parse(request.body), { reason: "policy_violation" });
 });
 
-test("reactivateIdentity posts to /v1/identities/:id/reactivate", async (t) => {
+test("reactivateIdentity posts to /v1/identities/:id/reactivate", async () => {
   const client = createClient();
   const reactivatedIdentity: AgentIdentity = {
     ...identity,
@@ -249,7 +249,7 @@ test("reactivateIdentity posts to /v1/identities/:id/reactivate", async (t) => {
     updatedAt: "2026-03-25T13:00:00.000Z",
   };
   const fetchMock = mockFetch(() => jsonResponse(reactivatedIdentity));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const result = await client.reactivateIdentity(identity.id);
 
@@ -263,7 +263,7 @@ test("reactivateIdentity posts to /v1/identities/:id/reactivate", async (t) => {
   assert.equal(request.body, "");
 });
 
-test("retireIdentity posts to /v1/identities/:id/retire", async (t) => {
+test("retireIdentity posts to /v1/identities/:id/retire", async () => {
   const client = createClient();
   const retiredIdentity: AgentIdentity = {
     ...identity,
@@ -271,7 +271,7 @@ test("retireIdentity posts to /v1/identities/:id/retire", async (t) => {
     updatedAt: "2026-03-25T14:00:00.000Z",
   };
   const fetchMock = mockFetch(() => jsonResponse(retiredIdentity));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   const result = await client.retireIdentity(identity.id);
 
@@ -285,10 +285,10 @@ test("retireIdentity posts to /v1/identities/:id/retire", async (t) => {
   assert.equal(request.body, "");
 });
 
-test("deleteIdentity sends DELETE with confirmation header", async (t) => {
+test("deleteIdentity sends DELETE with confirmation header", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   await client.deleteIdentity(identity.id);
 
@@ -302,7 +302,7 @@ test("deleteIdentity sends DELETE with confirmation header", async (t) => {
   assert.equal(request.body, "");
 });
 
-test("maps 404 responses to IdentityNotFoundError", async (t) => {
+test("maps 404 responses to IdentityNotFoundError", async () => {
   const client = createClient();
   const missingIdentityId = "agent_missing";
   const fetchMock = mockFetch(() =>
@@ -313,7 +313,7 @@ test("maps 404 responses to IdentityNotFoundError", async (t) => {
       404,
     ),
   );
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   await assert.rejects(
     client.getIdentity(missingIdentityId),
@@ -327,7 +327,7 @@ test("maps 404 responses to IdentityNotFoundError", async (t) => {
   );
 });
 
-test("maps 403 responses to IdentitySuspendedError", async (t) => {
+test("maps 403 responses to IdentitySuspendedError", async () => {
   const client = createClient();
   const fetchMock = mockFetch(() =>
     jsonResponse(
@@ -337,7 +337,7 @@ test("maps 403 responses to IdentitySuspendedError", async (t) => {
       403,
     ),
   );
-  t.after(() => fetchMock.restore());
+  onTestFinished(() => fetchMock.restore());
 
   await assert.rejects(
     client.updateIdentity(identity.id, { metadata: { team: "security" } }),

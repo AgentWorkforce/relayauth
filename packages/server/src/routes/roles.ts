@@ -31,7 +31,7 @@ roles.post("/", async (c) => {
     matchScope,
   );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, auth.status);
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
   }
 
   const body = await parseJsonObjectBody<CreateRoleRequest>(c.req.raw);
@@ -62,7 +62,7 @@ roles.get("/", async (c) => {
     matchScope,
   );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, auth.status);
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
   }
 
   const workspaceId = normalizeOptionalString(c.req.query("workspaceId"));
@@ -89,7 +89,7 @@ roles.get("/:id", async (c) => {
     matchScope,
   );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, auth.status);
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
   }
 
   const id = c.req.param("id").trim();
@@ -114,7 +114,7 @@ roles.patch("/:id", async (c) => {
     matchScope,
   );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, auth.status);
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
   }
 
   const id = c.req.param("id").trim();
@@ -149,7 +149,7 @@ roles.delete("/:id", async (c) => {
     matchScope,
   );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, auth.status);
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
   }
 
   const id = c.req.param("id").trim();

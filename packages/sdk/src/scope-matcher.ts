@@ -54,6 +54,11 @@ export function matchScope(requested: string, granted: string[]): boolean {
     return false;
   }
 
+  // Bare wildcard "*" grants access to all scopes
+  if (granted.includes("*")) {
+    return true;
+  }
+
   const parsedRequested = parseScope(requested);
   const parsedGranted = parseScopes(granted);
 
