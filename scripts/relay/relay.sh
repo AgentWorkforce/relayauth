@@ -368,7 +368,7 @@ generate_admin_token() {
   RELAYAUTH_SUB="relay-admin" \
   RELAYAUTH_WORKSPACE="${workspace}" \
   RELAYAUTH_AUDIENCE_JSON='["relayauth","relayfile"]' \
-  RELAYAUTH_SCOPES_JSON='["relayauth:*:manage:*","relayauth:*:read:*","relayfile:*:*:*"]' \
+  RELAYAUTH_SCOPES_JSON='["relayauth:*:manage:*","relayauth:*:read:*","relayfile:*:*:*","fs:read","fs:write","sync:trigger","ops:read","admin:read"]' \
   bash "${DEV_TOKEN_SH}"
 }
 
@@ -611,13 +611,25 @@ cmd_provision() {
 
     # Mint token locally using generate-dev-token.sh (no API call needed —
     # signs JWT directly with the shared secret, same key relayfile validates against)
+    # Include both relayauth-format scopes AND relayfile short scopes (fs:read, fs:write)
+    # so the token works with both systems.
+    local merged_scopes
+    merged_scopes="$(SCOPES="${scopes_json}" node -e '
+      const scopes = JSON.parse(process.env.SCOPES);
+      const short = new Set(["fs:read", "fs:write"]);
+      for (const s of scopes) {
+        if (s.startsWith("relayfile:fs:read")) short.add("fs:read");
+        if (s.startsWith("relayfile:fs:write")) short.add("fs:write");
+      }
+      console.log(JSON.stringify([...scopes, ...short]));
+    ')"
     token="$(
       SIGNING_KEY="${secret}" \
       RELAYAUTH_SUB="agent_${agent_name}" \
       RELAYAUTH_AGENT_NAME="${agent_name}" \
       RELAYAUTH_ORG="org_relay" \
       RELAYAUTH_WORKSPACE="${workspace}" \
-      RELAYAUTH_SCOPES_JSON="${scopes_json}" \
+      RELAYAUTH_SCOPES_JSON="${merged_scopes}" \
       RELAYAUTH_AUDIENCE_JSON='["relayauth","relayfile"]' \
       bash "${DEV_TOKEN_SH}"
     )" || error "failed to generate token for ${agent_name}"
