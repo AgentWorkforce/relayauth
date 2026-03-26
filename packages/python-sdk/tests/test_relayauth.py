@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover - implementation detail
 BASE_URL = "https://relay.example.test"
 JWKS_URL = f"{BASE_URL}/.well-known/jwks.json"
 AUTH_TOKEN = "sdk_test_token"
-NOW = 1_774_432_800
+NOW = int(time.time())
 
 
 def _to_mapping(value: Any) -> dict[str, Any]:
@@ -285,7 +285,7 @@ async def test_verify_valid_token(rsa_material: tuple[Any, dict[str, Any]]) -> N
 @respx.mock
 async def test_verify_expired_token(rsa_material: tuple[Any, dict[str, Any]]) -> None:
     private_key, jwk = rsa_material
-    expired = _issue_token(private_key, _claims(exp=NOW - 1))
+    expired = _issue_token(private_key, _claims(exp=NOW - 60))
     respx.get(JWKS_URL).mock(return_value=httpx_response(200, {"keys": [jwk]}))
     verifier = _create_verifier(
         jwks_url=JWKS_URL,
