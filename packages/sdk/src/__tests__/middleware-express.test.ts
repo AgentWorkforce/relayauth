@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, onTestFinished } from "vitest";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 
 import { RelayAuthError, TokenExpiredError } from "../errors.js";
@@ -128,14 +128,13 @@ function createNextSpy(): NextSpy {
 }
 
 function mockVerifierVerify(
-  t: test.TestContext,
   implementation: (this: TokenVerifier, token: string) => Promise<RelayAuthTokenClaims>,
 ): void {
   const originalVerify = TokenVerifier.prototype.verify;
 
   TokenVerifier.prototype.verify = implementation;
 
-  t.after(() => {
+  onTestFinished(() => {
     TokenVerifier.prototype.verify = originalVerify;
   });
 }
@@ -149,8 +148,7 @@ function assertErrorJson(response: MockResponse, status: number, body: ErrorBody
 
 test(
   "relayAuthExpress() extracts Bearer tokens, calls TokenVerifier.verify(), and stores identity claims",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuthExpress } = await loadExpressMiddleware();
     const claims = createClaims({
       sub: "agent_express_success",
@@ -160,7 +158,7 @@ test(
     let receivedToken: string | undefined;
     let receivedOptions: VerifyOptions | undefined;
 
-    mockVerifierVerify(t, async function (token) {
+    mockVerifierVerify(async function (token) {
       verifyCalls += 1;
       receivedToken = token;
       receivedOptions = this.options;
@@ -186,12 +184,11 @@ test(
 
 test(
   "relayAuthExpress() returns a 401 JSON error when the Authorization header is missing",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuthExpress } = await loadExpressMiddleware();
     let verifyCalls = 0;
 
-    mockVerifierVerify(t, async function () {
+    mockVerifierVerify(async function () {
       verifyCalls += 1;
       return createClaims();
     });
@@ -215,12 +212,11 @@ test(
 
 test(
   "relayAuthExpress() returns a 401 JSON error when the Authorization header is invalid",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuthExpress } = await loadExpressMiddleware();
     let verifyCalls = 0;
 
-    mockVerifierVerify(t, async function () {
+    mockVerifierVerify(async function () {
       verifyCalls += 1;
       return createClaims();
     });
@@ -244,11 +240,10 @@ test(
 
 test(
   "relayAuthExpress() returns a 401 JSON error when TokenVerifier.verify() throws TokenExpiredError",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuthExpress } = await loadExpressMiddleware();
 
-    mockVerifierVerify(t, async function () {
+    mockVerifierVerify(async function () {
       throw new TokenExpiredError();
     });
 
@@ -270,7 +265,6 @@ test(
 
 test(
   "requireScopeExpress(scope) returns 403 when the required scope is missing and calls next() when it is present",
-  { concurrency: false },
   async () => {
     const { requireScopeExpress } = await loadExpressMiddleware();
     const middleware = requireScopeExpress("relayauth:admin:*");
@@ -316,15 +310,14 @@ test(
 
 test(
   "relayAuthExpress(options) passes verification options to TokenVerifier and calls onError(error, req, res)",
-  { concurrency: false },
-  async (t) => {
+  async () => {
     const { relayAuthExpress } = await loadExpressMiddleware();
     let handledError: Error | undefined;
     let handledReq: MockRequest | undefined;
     let handledRes: MockResponse | undefined;
     let receivedOptions: VerifyOptions | undefined;
 
-    mockVerifierVerify(t, async function () {
+    mockVerifierVerify(async function () {
       receivedOptions = this.options;
       throw new RelayAuthError("Invalid access token", "invalid_token", 401);
     });
