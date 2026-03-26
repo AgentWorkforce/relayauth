@@ -1,4 +1,4 @@
-export type Plane = "relaycast" | "relayfile" | "cloud" | "relayauth";
+export type Plane = "relaycast" | "relayfile" | "cloud" | "relayauth" | "*";
 
 export type Action =
   | "read"
@@ -12,7 +12,7 @@ export type Action =
   | "*";
 
 export interface ParsedScope {
-  plane: Plane | "*";
+  plane: Plane;
   resource: string;
   action: Action;
   path: string;

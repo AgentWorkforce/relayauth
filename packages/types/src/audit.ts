@@ -14,7 +14,10 @@ export type AuditAction =
   | "policy.created"
   | "policy.updated"
   | "policy.deleted"
-  | "key.rotated";
+  | "key.rotated"
+  | "budget.exceeded"
+  | "budget.alert"
+  | "scope.escalation_denied";
 
 export interface AuditEntry {
   id: string;
