@@ -1,0 +1,7 @@
+1. [CRITICAL] packages/server/src/worker.ts — packages/server/src/worker.ts
+2. [CRITICAL] packages/server/src/worker.ts — packages/server/src/worker.ts
+3. [CRITICAL] packages/server/src/worker.ts — packages/server/src/worker.ts
+4. [CRITICAL] packages/server/src/durable-objects/identity-do.ts — packages/server/src/durable-objects/identity-do.ts
+5. [CRITICAL] packages/ai/src/adapter.ts — packages/ai/src/adapter.ts
+6. [CRITICAL] packages/server/src/routes/discovery.ts — packages/server/src/routes/discovery.ts
+7. [CRITICAL] packages/server/src/routes/discovery.ts — packages/server/src/routes/discovery.ts

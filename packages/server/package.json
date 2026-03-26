@@ -14,7 +14,7 @@
     "wrangler": "^4"
   },
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --config ../../wrangler.toml --local --persist-to ../../.wrangler/state --ip 127.0.0.1 --port 8787",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx src/__tests__/*.test.ts src/__tests__/e2e/*.test.ts"

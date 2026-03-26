@@ -1,0 +1,156 @@
+---
+import CodeExample from "../components/CodeExample.astro";
+import Features from "../components/Features.astro";
+import Footer from "../components/Footer.astro";
+import Hero from "../components/Hero.astro";
+import Layout from "../layouts/Layout.astro";
+
+const sdkCards = [
+  {
+    name: "TypeScript",
+    copy: "SDK, scope helpers, and middleware for Hono and Express.",
+    accent: "border-cyan-400/20 bg-cyan-400/10 text-cyan-200"
+  },
+  {
+    name: "Go",
+    copy: "Verifier and middleware for services that need fast, explicit scope checks.",
+    accent: "border-emerald-400/20 bg-emerald-400/10 text-emerald-200"
+  },
+  {
+    name: "Python",
+    copy: "Client and token verifier for workflow runners, agents, and internal tooling.",
+    accent: "border-amber-300/20 bg-amber-300/10 text-amber-100"
+  }
+];
+
+const ecosystem = ["Relaycast", "Relayfile", "LangChain", "CrewAI", "AutoGen", "FastAPI", "Express", "Hono"];
+---
+
+<Layout
+  title="relayauth | Auth for the agent era"
+  description="Scoped agent identity, sponsor-aware audit trails, and instant revocation for Relay ecosystem services."
+>
+  <Hero />
+
+  <main>
+    <section class="mx-auto max-w-7xl px-6 py-20 lg:px-8">
+      <div class="grid gap-12 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:items-start">
+        <div>
+          <p class="text-sm font-medium uppercase tracking-[0.28em] text-amber-100/80">Why relayauth</p>
+          <h2 class="mt-4 text-3xl font-bold tracking-tight text-white sm:text-4xl">Human auth breaks when agents start delegating</h2>
+        </div>
+        <div class="space-y-5 text-lg leading-8 text-slate-300">
+          <p>API keys spread, scopes blur, and incident review collapses once agents start spawning other agents and calling across tools.</p>
+          <p>relayauth gives the Relay ecosystem a shared identity plane with short-lived JWTs, sponsor chains, RBAC, policy checks, behavioral budgets, and instant revocation.</p>
+        </div>
+      </div>
+    </section>
+
+    <Features />
+
+    <section id="architecture" class="mx-auto max-w-7xl px-6 py-20 lg:px-8">
+      <div class="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p class="text-sm font-medium uppercase tracking-[0.28em] text-sky-200/80">Architecture</p>
+          <h2 class="mt-4 text-3xl font-bold tracking-tight text-white sm:text-4xl">One identity plane across every Relay surface</h2>
+        </div>
+        <p class="max-w-2xl text-lg leading-8 text-slate-300">
+          Use relayauth once, then validate the same token format in Relaycast, Relayfile, workflow runners, and any service that trusts your JWKS.
+        </p>
+      </div>
+
+      <div class="mt-12 rounded-[2rem] border border-white/10 bg-white/5 p-6 backdrop-blur sm:p-8">
+        <div class="grid gap-6 lg:grid-cols-[1fr_auto_1fr_auto_1fr] lg:items-center">
+          <div class="rounded-3xl border border-cyan-400/20 bg-cyan-400/10 p-6">
+            <p class="text-sm uppercase tracking-[0.22em] text-cyan-200">Human sponsor</p>
+            <p class="mt-3 text-2xl font-semibold text-white">Approves identity</p>
+          </div>
+          <div class="text-center text-2xl text-cyan-200 lg:text-4xl">
+            <span class="inline lg:hidden">↓</span>
+            <span class="hidden lg:inline">→</span>
+          </div>
+          <div class="rounded-3xl border border-emerald-400/20 bg-emerald-400/10 p-6">
+            <p class="text-sm uppercase tracking-[0.22em] text-emerald-200">relayauth</p>
+            <p class="mt-3 text-2xl font-semibold text-white">Issues scoped JWTs</p>
+          </div>
+          <div class="text-center text-2xl text-emerald-200 lg:text-4xl">
+            <span class="inline lg:hidden">↓</span>
+            <span class="hidden lg:inline">→</span>
+          </div>
+          <div class="rounded-3xl border border-amber-300/20 bg-amber-300/10 p-6">
+            <p class="text-sm uppercase tracking-[0.22em] text-amber-100">Relay planes</p>
+            <p class="mt-3 text-2xl font-semibold text-white">Verify, enforce, audit</p>
+          </div>
+        </div>
+
+        <div class="mt-8 grid gap-4 md:grid-cols-4">
+          <div class="rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 text-slate-300">Cloudflare Workers for API and edge validation</div>
+          <div class="rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 text-slate-300">KV for revocation state with global propagation</div>
+          <div class="rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 text-slate-300">Durable Objects for per-identity state and budget enforcement</div>
+          <div class="rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 text-slate-300">D1 for audit logs, policies, and workspace metadata</div>
+        </div>
+      </div>
+
+      <div class="mt-8 rounded-[2rem] border border-white/10 bg-slate-950/60 p-6">
+        <p class="text-sm font-medium uppercase tracking-[0.28em] text-slate-400">Works with any framework. Any language. Any cloud.</p>
+        <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {
+            ecosystem.map((name) => (
+              <div class="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm font-medium text-slate-200">
+                {name}
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    </section>
+
+    <CodeExample />
+
+    <section class="mx-auto max-w-7xl px-6 py-20 lg:px-8">
+      <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <div class="rounded-[2rem] border border-white/10 bg-white/5 p-8 backdrop-blur">
+          <p class="text-sm font-medium uppercase tracking-[0.28em] text-cyan-200/80">SDK support</p>
+          <h2 class="mt-4 text-3xl font-bold tracking-tight text-white">TypeScript, Go, and Python</h2>
+          <p class="mt-4 text-lg leading-8 text-slate-300">
+            Verify the same token format across frameworks and languages instead of rebuilding auth separately for each surface area.
+          </p>
+          <div class="mt-8 grid gap-4">
+            {
+              sdkCards.map((sdk) => (
+                <div class="rounded-3xl border border-white/10 bg-slate-950/70 p-5">
+                  <div class={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] ${sdk.accent}`}>
+                    {sdk.name}
+                  </div>
+                  <p class="mt-4 text-base leading-7 text-slate-300">{sdk.copy}</p>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+
+        <div class="rounded-[2rem] border border-white/10 bg-white/5 p-8 backdrop-blur">
+          <p class="text-sm font-medium uppercase tracking-[0.28em] text-emerald-200/80">Deployment</p>
+          <h2 class="mt-4 text-3xl font-bold tracking-tight text-white">Self-host or use relayauth.dev</h2>
+          <p class="mt-4 text-lg leading-8 text-slate-300">
+            Run the Cloudflare Worker yourself with Wrangler, or use the hosted control plane and focus on agent behavior instead of auth plumbing.
+          </p>
+          <div class="mt-8 grid gap-4 md:grid-cols-2">
+            <div class="rounded-3xl border border-emerald-400/20 bg-emerald-400/10 p-6">
+              <p class="text-sm uppercase tracking-[0.22em] text-emerald-200">Hosted</p>
+              <p class="mt-3 text-xl font-semibold text-white">Use relayauth.dev</p>
+              <p class="mt-3 text-sm leading-7 text-slate-300">Managed identity plane, JWKS, revocation, audit APIs, and shared infrastructure for Relay services.</p>
+            </div>
+            <div class="rounded-3xl border border-cyan-400/20 bg-cyan-400/10 p-6">
+              <p class="text-sm uppercase tracking-[0.22em] text-cyan-200">Self-hosted</p>
+              <p class="mt-3 text-xl font-semibold text-white"><code class="rounded bg-white/10 px-1.5 py-0.5 text-base font-mono text-cyan-200">wrangler deploy</code></p>
+              <p class="mt-3 text-sm leading-7 text-slate-300">Deploy Workers, KV, D1, and Durable Objects in your own Cloudflare account with the same core model.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <Footer />
+</Layout>

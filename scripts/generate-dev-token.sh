@@ -3,10 +3,18 @@ set -euo pipefail
 
 header='{"alg":"HS256","typ":"JWT"}'
 now="$(date +%s)"
-exp="$((now + 3600))"
-jti="dev-$(date +%s)-${RANDOM}"
-payload="{\"sub\":\"agent_test\",\"org\":\"org_test\",\"wks\":\"ws_test\",\"scopes\":[\"*\"],\"iss\":\"relayauth:dev\",\"aud\":[\"relayauth\"],\"iat\":${now},\"exp\":${exp},\"jti\":\"${jti}\"}"
-secret='dev-secret'
+exp="$((now + ${RELAYAUTH_TTL_SECONDS:-3600}))"
+jti="dev-${now}-${RANDOM}"
+subject="${RELAYAUTH_SUB:-agent_dev_admin}"
+org="${RELAYAUTH_ORG:-org_dev}"
+workspace="${RELAYAUTH_WORKSPACE:-ws_dev}"
+sponsor="${RELAYAUTH_SPONSOR:-user_dev}"
+scopes_json="${RELAYAUTH_SCOPES_JSON:-[\"*:*:*:*\"]}"
+issuer="${RELAYAUTH_ISSUER:-relayauth:dev}"
+audience_json="${RELAYAUTH_AUDIENCE_JSON:-[\"relayauth\"]}"
+token_type="${RELAYAUTH_TOKEN_TYPE:-access}"
+secret="${SIGNING_KEY:-dev-secret}"
+payload="{\"sub\":\"${subject}\",\"org\":\"${org}\",\"wks\":\"${workspace}\",\"scopes\":${scopes_json},\"sponsorId\":\"${sponsor}\",\"sponsorChain\":[\"${sponsor}\"],\"token_type\":\"${token_type}\",\"iss\":\"${issuer}\",\"aud\":${audience_json},\"iat\":${now},\"exp\":${exp},\"jti\":\"${jti}\"}"
 
 base64url() {
   openssl base64 -A | tr '+/' '-_' | tr -d '='

@@ -7,6 +7,10 @@
     "test": "turbo test",
     "typecheck": "turbo typecheck",
     "dev": "turbo dev",
+    "dev:server": "wrangler dev --config wrangler.toml --local --persist-to .wrangler/state --ip 127.0.0.1 --port 8787",
+    "db:migrate:local": "wrangler d1 migrations apply relayauth --local --config wrangler.toml --persist-to .wrangler/state",
+    "smoke:local": "bash scripts/smoke-local.sh",
+    "token:dev": "bash scripts/generate-dev-token.sh",
     "e2e": "npx tsx scripts/e2e.ts"
   },
   "devDependencies": {

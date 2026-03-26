@@ -109,9 +109,7 @@ const DELETE_AUDIT_WEBHOOK_SQL = `
   WHERE org_id = ? AND id = ?
 `;
 
-auditWebhooks.use("*", requireScope("relayauth:audit:manage"));
-
-auditWebhooks.post("/webhooks", async (c) => {
+auditWebhooks.post("/webhooks", requireScope("relayauth:audit:manage"), async (c) => {
   await ensureAuditWebhookTable(c.env.DB);
 
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
@@ -174,7 +172,7 @@ auditWebhooks.post("/webhooks", async (c) => {
   return c.json(maskSecret(record), 201);
 });
 
-auditWebhooks.get("/webhooks", async (c) => {
+auditWebhooks.get("/webhooks", requireScope("relayauth:audit:manage"), async (c) => {
   await ensureAuditWebhookTable(c.env.DB);
 
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
@@ -193,7 +191,7 @@ auditWebhooks.get("/webhooks", async (c) => {
   return c.json(records, 200);
 });
 
-auditWebhooks.delete("/webhooks/:id", async (c) => {
+auditWebhooks.delete("/webhooks/:id", requireScope("relayauth:audit:manage"), async (c) => {
   await ensureAuditWebhookTable(c.env.DB);
 
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
