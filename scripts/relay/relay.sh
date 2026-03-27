@@ -1015,6 +1015,7 @@ If you get \"permission denied\", the file is read-only.
 Changes to read-only files will be automatically reverted.
 Do not attempt to chmod files — permissions will be restored."
 
+  chmod 644 "${mount_dir}/_PERMISSIONS.md" 2>/dev/null || true
   printf '%s\n' "${perms_doc}" > "${mount_dir}/_PERMISSIONS.md"
 
   mount_pid=""
