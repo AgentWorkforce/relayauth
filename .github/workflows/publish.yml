@@ -92,8 +92,8 @@ jobs:
         run: |
           INPUT="${{ github.event.inputs.package }}"
           if [ "$INPUT" = "all" ]; then
-            echo "list=types,core,sdk,server" >> "$GITHUB_OUTPUT"
-            echo 'matrix=["types","core","sdk","server"]' >> "$GITHUB_OUTPUT"
+            echo "list=types,core,sdk,server,relayauth" >> "$GITHUB_OUTPUT"
+            echo 'matrix=["types","core","sdk","server","relayauth"]' >> "$GITHUB_OUTPUT"
           else
             echo "list=$INPUT" >> "$GITHUB_OUTPUT"
             echo "matrix=[\"$INPUT\"]" >> "$GITHUB_OUTPUT"

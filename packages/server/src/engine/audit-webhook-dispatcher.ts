@@ -58,7 +58,7 @@ export async function dispatchWebhook(
 
       lastError = new Error(`Webhook delivery failed with status ${response.status}`);
     } catch (error) {
-      if (error instanceof Error && error.message.includes("status 4")) {
+      if (error instanceof Error && /status 4\d{2}/.test(error.message)) {
         throw error;
       }
       lastError = error;

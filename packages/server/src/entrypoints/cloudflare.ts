@@ -4,14 +4,18 @@ import { createApp } from "../worker.js";
 
 export { IdentityDO } from "../durable-objects/index.js";
 
-export default {
-  async fetch(request: Request, env: CloudflareStorageBindings, ctx: ExecutionContext) {
-    const storage = createCloudflareStorage(env);
-    const app = createApp({
-      defaultBindings: env,
-      storage,
-    });
+let _app: ReturnType<typeof createApp> | null = null;
 
-    return app.fetch(request, env, ctx);
+export default {
+  fetch(request: Request, env: CloudflareStorageBindings, ctx: ExecutionContext) {
+    if (!_app) {
+      const storage = createCloudflareStorage(env);
+      _app = createApp({
+        defaultBindings: env,
+        storage,
+      });
+    }
+
+    return _app.fetch(request, env, ctx);
   },
 };

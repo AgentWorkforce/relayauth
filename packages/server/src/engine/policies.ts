@@ -460,7 +460,38 @@ function isValidIpOrCidr(value: string): boolean {
 }
 
 function isValidIpAddress(value: string): boolean {
-  return IPV4_PATTERN.test(value) || IPV6_PATTERN.test(value);
+  if (IPV4_PATTERN.test(value)) {
+    return true;
+  }
+
+  if (!value.includes(":") || !IPV6_PATTERN.test(value)) {
+    return false;
+  }
+
+  const doubleColonCount = value.split("::").length - 1;
+  if (doubleColonCount > 1) {
+    return false;
+  }
+
+  const parts = value.split(":");
+  if (parts.length < 3 || parts.length > 8) {
+    return false;
+  }
+
+  if (doubleColonCount === 0 && parts.length !== 8) {
+    return false;
+  }
+
+  for (const part of parts) {
+    if (part.length === 0) {
+      continue;
+    }
+    if (part.length > 4 || !/^[0-9a-f]{1,4}$/i.test(part)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function normalizeRequiredString(value: unknown, message: string, code: string): string {
