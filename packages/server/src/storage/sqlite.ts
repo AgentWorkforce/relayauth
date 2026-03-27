@@ -884,7 +884,7 @@ class D1IdentityLookup {
     }
 
     const row = await d1First<StoredIdentityRow>(this.db, SELECT_STORED_IDENTITY_SQL, [identityId]);
-    return hydrateStoredIdentityRow(row);
+    return hydrateStoredIdentityRow(row ?? undefined);
   }
 }
 
@@ -2487,7 +2487,7 @@ function hydrateStoredIdentityRow(row: StoredIdentityRow | undefined): StoredIde
   return normalizeStoredIdentity({
     id,
     name,
-    type: normalizeOptionalString(row.type) ?? "agent",
+    type: (normalizeOptionalString(row.type) ?? "agent") as IdentityType,
     orgId,
     workspaceId,
     sponsorId,
