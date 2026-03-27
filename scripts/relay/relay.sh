@@ -1046,6 +1046,9 @@ cmd_run() {
     echo "  Sandbox: relay-enforced (${sandbox_flags[*]})"
   fi
   echo ""
+
+  # Run agent in foreground (needs TTY for interactive agents like codex/claude)
+  local agent_status=0
   (
     cd "${mount_dir}" || exit 1
     export RELAYFILE_TOKEN="${token}"
@@ -1053,12 +1056,8 @@ cmd_run() {
     export RELAYFILE_WORKSPACE="${workspace}"
     export RELAY_WORKSPACE="${mount_dir}"
     export RELAY_AGENT_NAME="${agent_name}"
-    "${agent_cli}" "${sandbox_flags[@]}" "${extra_args[@]}"
-  ) &
-  agent_pid=$!
-  wait "${agent_pid}"
-  local agent_status=$?
-  agent_pid=""
+    exec "${agent_cli}" "${sandbox_flags[@]}" "${extra_args[@]}"
+  ) || agent_status=$?
 
   cleanup_run
   trap - EXIT INT TERM
