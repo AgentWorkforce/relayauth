@@ -6,6 +6,7 @@ dist
 .dev.vars
 *.log
 .turbo
+.msd
 
 # Python build artifacts
 __pycache__/

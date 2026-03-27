@@ -1,0 +1,114 @@
+{
+  "id": "traj_1774612574920_f3fdc1c5",
+  "version": 1,
+  "task": {
+    "title": "review-pr-8-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "da6851a4e4b7b8331f6cd5c6"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-27T11:56:14.920Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-27T11:56:14.920Z"
+    },
+    {
+      "name": "security",
+      "role": "specialist",
+      "joinedAt": "2026-03-27T11:56:18.974Z"
+    },
+    {
+      "name": "developer",
+      "role": "specialist",
+      "joinedAt": "2026-03-27T11:56:18.974Z"
+    },
+    {
+      "name": "historian",
+      "role": "specialist",
+      "joinedAt": "2026-03-27T11:56:18.974Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_6e9491fd",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-27T11:56:14.920Z",
+      "events": [
+        {
+          "ts": 1774612574921,
+          "type": "note",
+          "content": "Purpose: Multi-agent local review of Agentworkforce/relayauth PR #8"
+        },
+        {
+          "ts": 1774612574921,
+          "type": "note",
+          "content": "Approach: 7-step dag workflow — Parsed 7 steps, 3 parallel tracks, 4 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-27T11:56:18.971Z"
+    },
+    {
+      "id": "ch_e1ab34b7",
+      "title": "Execution: security-review, developer-review, historian-review",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-27T11:56:18.971Z",
+      "events": [],
+      "endedAt": "2026-03-27T11:56:18.975Z"
+    },
+    {
+      "id": "ch_19e59662",
+      "title": "Execution: developer-review",
+      "agentName": "developer",
+      "startedAt": "2026-03-27T11:56:18.975Z",
+      "events": [
+        {
+          "ts": 1774612578975,
+          "type": "note",
+          "content": "\"developer-review\": You are a Senior developer reviewer",
+          "raw": {
+            "agent": "developer"
+          }
+        }
+      ],
+      "endedAt": "2026-03-27T11:56:18.975Z"
+    },
+    {
+      "id": "ch_f857cd6f",
+      "title": "Execution: historian-review",
+      "agentName": "historian",
+      "startedAt": "2026-03-27T11:56:18.975Z",
+      "events": [
+        {
+          "ts": 1774612578975,
+          "type": "note",
+          "content": "\"historian-review\": You are a Technical historian",
+          "raw": {
+            "agent": "historian"
+          }
+        }
+      ],
+      "endedAt": "2026-03-27T11:56:18.975Z"
+    },
+    {
+      "id": "ch_c812f4a3",
+      "title": "Execution: security-review",
+      "agentName": "security",
+      "startedAt": "2026-03-27T11:56:18.975Z",
+      "events": [
+        {
+          "ts": 1774612578975,
+          "type": "note",
+          "content": "\"security-review\": You are a Security auditor",
+          "raw": {
+            "agent": "security"
+          }
+        }
+      ]
+    }
+  ]
+}
