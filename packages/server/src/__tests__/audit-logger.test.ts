@@ -4,11 +4,10 @@ import type { AuditAction, AuditEntry, RelayAuthTokenClaims } from "@relayauth/t
 import { Hono, type MiddlewareHandler } from "hono";
 
 import type { AppEnv } from "../env.js";
+import { createDatabaseStorage } from "../storage/index.js";
 import {
   createTestRequest,
   generateTestToken,
-  mockDO,
-  mockKV,
 } from "./test-helpers.js";
 
 type ExtendedAuditAction =
@@ -52,9 +51,6 @@ function normalizeSql(query: string): string {
 
 function createBindings(overrides: Partial<AppEnv["Bindings"]> = {}): AppEnv["Bindings"] {
   return {
-    IDENTITY_DO: mockDO(),
-    DB: createRecordingD1().db,
-    REVOCATION_KV: mockKV(),
     SIGNING_KEY: "dev-secret",
     SIGNING_KEY_ID: "dev-key",
     INTERNAL_SECRET: "internal-test-secret",
@@ -439,6 +435,10 @@ test("createAuditMiddleware() logs token validation events automatically", async
   const { db, runs } = createRecordingD1();
   const app = new Hono<AppEnv>();
 
+  app.use("*", async (c, next) => {
+    c.set("storage", createDatabaseStorage(db));
+    await next();
+  });
   app.use("*", createAuditMiddleware());
   app.get("/session", (c) => c.json({ ok: true }));
 
@@ -462,7 +462,7 @@ test("createAuditMiddleware() logs token validation events automatically", async
       },
     ),
     undefined,
-    createBindings({ DB: db }),
+    createBindings(),
   );
 
   assert.equal(response.status, 200);

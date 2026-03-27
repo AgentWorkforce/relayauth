@@ -25,7 +25,9 @@ export interface StoredIdentity extends AgentIdentity {
 }
 
 type IdentityUpdate = Partial<StoredIdentity>;
-type Bindings = AppEnv["Bindings"];
+type Bindings = AppEnv["Bindings"] & {
+  DB: D1Database;
+};
 
 interface SqlRow {
   data: string;

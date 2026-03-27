@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import type { StoredIdentity } from "../durable-objects/identity-do.js";
 import type { AppEnv } from "../env.js";
 import { requireScope } from "../middleware/scope.js";
+import type { AuthStorage } from "../storage/index.js";
 import {
   buildAuditQuery,
   parseAuditQuery,
@@ -54,8 +55,9 @@ const SUB_AGENT_QUERY_SQL = `
 identityActivity.get("/:id/activity", requireScope("relayauth:audit:read"), async (c) => {
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
   const identityId = c.req.param("id").trim();
+  const storage = c.get("storage");
 
-  const storedIdentity = await getStoredIdentity(c.env.IDENTITY_DO, identityId);
+  const storedIdentity = await getStoredIdentity(storage, identityId);
   if (!storedIdentity.ok) {
     return c.json({ error: storedIdentity.error }, storedIdentity.status);
   }
@@ -77,74 +79,64 @@ identityActivity.get("/:id/activity", requireScope("relayauth:audit:read"), asyn
     return c.json({ error: parsed.error }, 400);
   }
 
-  const query = buildAuditQuery(parsed.value);
-  const result = await c.env.DB.prepare(query.sql)
-    .bind(...query.params)
-    .all<AuditLogRow>();
-  const rows = result.results ?? [];
-  const hasMore = rows.length > parsed.value.limit;
-  const page = hasMore ? rows.slice(0, parsed.value.limit) : rows;
+  const entries = await storage.audit.query(parsed.value);
+  const hasMore = entries.length > parsed.value.limit;
+  const page = hasMore ? entries.slice(0, parsed.value.limit) : entries;
 
   return c.json(
     {
-      entries: page.map(toAuditEntry),
+      entries: page,
       nextCursor: hasMore ? encodeCursor(page[page.length - 1]) : null,
       hasMore,
       sponsorChain: storedIdentity.identity.sponsorChain,
       budgetUsage: summarizeBudgetUsage(storedIdentity.identity),
-      subAgents: await listSubAgentTree(c.env.DB, storedIdentity.identity.orgId, storedIdentity.identity.id),
+      subAgents: await listSubAgentTree(storage, storedIdentity.identity.orgId, storedIdentity.identity.id),
     },
     200,
   );
 });
 
 async function getStoredIdentity(
-  identityNamespace: DurableObjectNamespace,
+  storage: AuthStorage,
   identityId: string,
 ): Promise<
   | { ok: true; identity: StoredIdentity }
   | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 500 }
 > {
-  const durableObjectId = identityNamespace.idFromName(identityId);
-  const durableObject = identityNamespace.get(durableObjectId);
-  const response = await durableObject.fetch(
-    new Request("http://identity-do/internal/get", {
-      method: "GET",
-    }),
-  );
+  try {
+    const identity = await storage.identities.get(identityId);
+    if (!identity) {
+      return {
+        ok: false,
+        error: "identity_not_found",
+        status: 404,
+      };
+    }
 
-  if (response.ok) {
     return {
       ok: true,
-      identity: await response.json<StoredIdentity>(),
+      identity,
     };
-  }
-
-  if (response.status === 404) {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to fetch identity";
     return {
       ok: false,
-      error: "identity_not_found",
-      status: 404,
+      error: message,
+      status: 500,
     };
   }
-
-  return {
-    ok: false,
-    error: (await response.text().catch(() => "")) || "Failed to fetch identity",
-    status: response.status as 400 | 401 | 403 | 404 | 500,
-  };
 }
 
 async function listSubAgentTree(
-  db: D1Database,
+  storage: AuthStorage,
   orgId: string,
   sponsorId: string,
   visited = new Set<string>(),
 ): Promise<IdentityActivitySubAgent[]> {
-  const result = await db.prepare(SUB_AGENT_QUERY_SQL).bind(orgId, sponsorId).all<IdentityTreeRow>();
-  const children = (result.results ?? [])
-    .map(hydrateSubAgent)
-    .filter((entry): entry is HydratedSubAgent => entry !== null)
+  const children = (await storage.identities.listChildren(orgId, sponsorId))
+    .map((entry) => ({
+      ...entry,
+    }))
     .sort(compareSubAgents);
 
   const tree: IdentityActivitySubAgent[] = [];
@@ -159,7 +151,7 @@ async function listSubAgentTree(
       id: child.id,
       name: child.name,
       status: child.status,
-      children: await listSubAgentTree(db, orgId, child.id, visited),
+      children: await listSubAgentTree(storage, orgId, child.id, visited),
     });
   }
 
@@ -224,7 +216,7 @@ function summarizeBudgetUsage(identity: StoredIdentity): IdentityActivityBudgetU
   };
 }
 
-function encodeCursor(row: AuditLogRow | undefined): string | null {
+function encodeCursor(row: { timestamp?: string; id?: string } | undefined): string | null {
   if (!row?.timestamp || !row.id) {
     return null;
   }

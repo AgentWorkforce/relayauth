@@ -2,11 +2,25 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import type { AgentIdentity, RelayAuthTokenClaims } from "@relayauth/types";
 import type { Hono } from "hono";
-import app from "../worker.js";
 import type { AppEnv } from "../env.js";
+import { createCloudflareStorage, type AuthStorage } from "../storage/index.js";
+import { createSqliteStorage } from "../storage/sqlite.js";
+import { createApp } from "../worker.js";
 
-type TestBindings = AppEnv["Bindings"];
-type TestApp = Hono<AppEnv> & { bindings: TestBindings };
+type TestBindings = AppEnv["Bindings"] & {
+  IDENTITY_DO: DurableObjectNamespace;
+  DB: D1Database;
+  REVOCATION_KV: KVNamespace;
+};
+
+type TestStorage = AuthStorage & Partial<ReturnType<typeof createSqliteStorage>>;
+
+type TestApp = Hono<AppEnv> & {
+  app: Hono<AppEnv>;
+  bindings: TestBindings;
+  storage: TestStorage;
+  close(): Promise<void> | void;
+};
 
 function base64UrlEncode(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
@@ -69,7 +83,6 @@ export function mockD1(): D1Database {
       duration: 0,
     }),
     dump: async () => new ArrayBuffer(0),
-    // Test-only escape hatch for seeding query results.
     __seed(query: string, result: unknown[]) {
       rows.set(query.trim(), result);
     },
@@ -96,7 +109,9 @@ export function mockKV(): KVNamespace {
   } as KVNamespace;
 }
 
-export function mockDO(response?: Response | ((request: Request) => Response | Promise<Response>)): DurableObjectNamespace {
+export function mockDO(
+  response?: Response | ((request: Request) => Response | Promise<Response>),
+): DurableObjectNamespace {
   const stub = {
     fetch: async (request: Request) => {
       if (typeof response === "function") {
@@ -203,17 +218,47 @@ export function createTestRequest(
 }
 
 export function createTestApp(bindingsOverrides: Partial<TestBindings> = {}): TestApp {
+  const sqliteStorage = createSqliteStorage(":memory:");
   const bindings: TestBindings = {
-    IDENTITY_DO: mockDO(),
-    DB: mockD1(),
-    REVOCATION_KV: mockKV(),
+    IDENTITY_DO: sqliteStorage.IDENTITY_DO,
+    DB: sqliteStorage.DB,
+    REVOCATION_KV: sqliteStorage.REVOCATION_KV,
     SIGNING_KEY: "dev-secret",
     SIGNING_KEY_ID: "dev-key",
-    INTERNAL_SECRET: "internal-test-secret",
+    INTERNAL_SECRET: sqliteStorage.INTERNAL_SECRET,
     ...bindingsOverrides,
   };
 
+  const hasCustomCloudflareBindings =
+    bindingsOverrides.DB !== undefined
+    || bindingsOverrides.IDENTITY_DO !== undefined
+    || bindingsOverrides.REVOCATION_KV !== undefined;
+
+  let storage: TestStorage;
+
+  if (hasCustomCloudflareBindings) {
+    storage = createCloudflareStorage({
+      DB: bindings.DB,
+      IDENTITY_DO: bindings.IDENTITY_DO,
+      REVOCATION_KV: bindings.REVOCATION_KV,
+      INTERNAL_SECRET: bindings.INTERNAL_SECRET,
+    });
+  } else {
+    sqliteStorage.SIGNING_KEY = bindings.SIGNING_KEY;
+    sqliteStorage.SIGNING_KEY_ID = bindings.SIGNING_KEY_ID;
+    sqliteStorage.INTERNAL_SECRET = bindings.INTERNAL_SECRET;
+    storage = sqliteStorage;
+  }
+
+  const app = createApp({
+    defaultBindings: bindings,
+    storage,
+  });
+
   const testApp = app as TestApp;
+  testApp.app = app;
   testApp.bindings = bindings;
+  testApp.storage = storage;
+  testApp.close = () => sqliteStorage.close();
   return testApp;
 }

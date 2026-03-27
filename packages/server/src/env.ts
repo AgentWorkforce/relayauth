@@ -1,8 +1,7 @@
+import type { AuthStorage } from "./storage/index.js";
+
 export type AppEnv = {
   Bindings: {
-    IDENTITY_DO: DurableObjectNamespace;
-    DB: D1Database;
-    REVOCATION_KV: KVNamespace;
     SIGNING_KEY: string;
     SIGNING_KEY_ID: string;
     INTERNAL_SECRET: string;
@@ -11,5 +10,6 @@ export type AppEnv = {
   };
   Variables: {
     requestId: string;
+    storage: AuthStorage;
   };
 };

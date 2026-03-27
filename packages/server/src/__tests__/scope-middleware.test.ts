@@ -8,9 +8,6 @@ import {
   assertJsonResponse,
   createTestRequest,
   generateTestToken,
-  mockD1,
-  mockDO,
-  mockKV,
 } from "./test-helpers.js";
 
 type ScopeMiddlewareOptions = {
@@ -30,9 +27,6 @@ type ScopeContextVars = {
 
 function createBindings(overrides: Partial<AppEnv["Bindings"]> = {}): AppEnv["Bindings"] {
   return {
-    IDENTITY_DO: mockDO(),
-    DB: mockD1(),
-    REVOCATION_KV: mockKV(),
     SIGNING_KEY: "dev-secret",
     SIGNING_KEY_ID: "dev-key",
     INTERNAL_SECRET: "internal-test-secret",

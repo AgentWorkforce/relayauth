@@ -8,6 +8,26 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "import": "./dist/storage/index.js"
+    },
+    "./storage/interface": {
+      "types": "./dist/storage/interface.d.ts",
+      "import": "./dist/storage/interface.js"
+    },
+    "./storage/sqlite": {
+      "types": "./dist/storage/sqlite.d.ts",
+      "import": "./dist/storage/sqlite.js"
+    },
+    "./node": {
+      "types": "./dist/entrypoints/node.d.ts",
+      "import": "./dist/entrypoints/node.js"
+    },
+    "./cloudflare": {
+      "types": "./dist/entrypoints/cloudflare.d.ts",
+      "import": "./dist/entrypoints/cloudflare.js"
     }
   },
   "scripts": {
@@ -17,12 +37,19 @@
     "test": "node --test --import tsx src/__tests__/*.test.ts"
   },
   "dependencies": {
-    "hono": "^4",
     "@relayauth/sdk": "workspace:*",
-    "@relayauth/types": "workspace:*"
+    "@relayauth/types": "workspace:*",
+    "@hono/node-server": "^1.19.11",
+    "hono": "^4"
   },
   "peerDependencies": {
-    "@cloudflare/workers-types": "^4"
+    "@cloudflare/workers-types": "^4",
+    "better-sqlite3": "^11.10.0"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4",

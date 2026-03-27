@@ -87,19 +87,14 @@ auditQuery.get("/", requireScope("relayauth:audit:read"), async (c) => {
     return c.json({ error: parsed.error }, 400);
   }
 
-  const query = buildAuditQuery(parsed.value);
-  const result = await c.env.DB.prepare(query.sql)
-    .bind(...query.params)
-    .all<AuditLogRow>();
-  const rows = result.results ?? [];
-  const hasMore = rows.length > parsed.value.limit;
-  const page = hasMore ? rows.slice(0, parsed.value.limit) : rows;
-  const entries = page.map(toAuditEntry);
+  const entries = await c.get("storage").audit.query(parsed.value);
+  const hasMore = entries.length > parsed.value.limit;
+  const page = hasMore ? entries.slice(0, parsed.value.limit) : entries;
   const nextCursor = hasMore ? encodeCursor(page[page.length - 1]?.timestamp, page[page.length - 1]?.id) : null;
 
   return c.json(
     {
-      entries,
+      entries: page,
       nextCursor,
       hasMore,
     },

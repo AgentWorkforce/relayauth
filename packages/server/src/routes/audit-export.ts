@@ -64,11 +64,7 @@ auditExport.post("/export", requireScope("relayauth:audit:read"), async (c) => {
     return c.json({ error: parsed.error }, 400);
   }
 
-  const query = buildAuditQuery(parsed.value, { includeOverflowRow: false });
-  const result = await c.env.DB.prepare(query.sql)
-    .bind(...query.params)
-    .all<AuditLogRow>();
-  const entries = (result.results ?? []).map(toAuditEntry);
+  const entries = await c.get("storage").audit.query(parsed.value, { includeOverflowRow: false });
 
   if (body.format === "json") {
     return c.json(entries, 200);

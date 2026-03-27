@@ -13,6 +13,8 @@ import identities from "./routes/identities.js";
 import policies from "./routes/policies.js";
 import roleAssignments from "./routes/role-assignments.js";
 import roles from "./routes/roles.js";
+import type { AuthStorage } from "./storage/index.js";
+import { createCloudflareStorage, type CloudflareStorageBindings } from "./storage/index.js";
 
 // Routes that do not require authentication
 const PUBLIC_PATHS = new Set([
@@ -29,9 +31,27 @@ function isPublicPath(path: string): boolean {
 const BRIDGE_RATE_LIMIT = 30; // requests per window
 const BRIDGE_RATE_WINDOW_MS = 60_000; // 1 minute
 
-export function createApp(): Hono<AppEnv> {
+type CreateAppOptions = {
+  defaultBindings?: Partial<AppEnv["Bindings"]>;
+  storage?: AuthStorage;
+};
+
+export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const bridgeRateMap = new Map<string, { count: number; resetAt: number }>();
+  const defaultBindings = options.defaultBindings ?? {};
+
+  if (Object.keys(defaultBindings).length > 0) {
+    app.use("*", async (c, next) => {
+      Object.assign(c.env as Record<string, unknown>, defaultBindings);
+      await next();
+    });
+  }
+
+  app.use("*", async (c, next) => {
+    c.set("storage", options.storage ?? createCloudflareStorage(c.env as unknown as CloudflareStorageBindings));
+    await next();
+  });
 
   // Global middleware: CORS with origin restriction
   app.use("*", async (c, next) => {
