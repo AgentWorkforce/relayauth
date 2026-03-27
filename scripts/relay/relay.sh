@@ -88,6 +88,7 @@ ensure_runtime_files() {
 
 ensure_state_dirs() {
   mkdir -p ".relay" ".relay/tokens" ".relay/logs" ".relay/generated" ".relay/mounts"
+  chmod 700 ".relay/tokens"
 }
 
 check_prereqs() {
@@ -148,13 +149,13 @@ check_prereqs() {
 json_eval() {
   local json_input="$1"
   local expression="$2"
-  JSON_INPUT="${json_input}" node -e "const data = JSON.parse(process.env.JSON_INPUT); ${expression}"
+  JSON_INPUT="${json_input}" RELAY_EXPR="${expression}" node -e "const data = JSON.parse(process.env.JSON_INPUT); eval(process.env.RELAY_EXPR)"
 }
 
 config_value() {
   local json_input="$1"
   local path_expr="$2"
-  json_eval "${json_input}" "const value = ${path_expr}; if (value === undefined) process.exit(2); if (typeof value === 'object') console.log(JSON.stringify(value)); else console.log(String(value));"
+  JSON_INPUT="${json_input}" RELAY_PATH_EXPR="${path_expr}" node -e "const data = JSON.parse(process.env.JSON_INPUT); const value = eval(process.env.RELAY_PATH_EXPR); if (value === undefined) process.exit(2); if (typeof value === 'object') console.log(JSON.stringify(value)); else console.log(String(value));"
 }
 
 config_agent_json() {
@@ -303,7 +304,10 @@ create_generated_config() {
   ensure_state_dirs
   local workspace secret generated_config
   workspace="$(basename "$(pwd)")"
-  secret="${DEFAULT_ZERO_CONFIG_SECRET}"
+  secret="${SIGNING_KEY:-${DEFAULT_ZERO_CONFIG_SECRET}}"
+  if [[ "${secret}" == "${DEFAULT_ZERO_CONFIG_SECRET}" ]] && [[ "${_RELAY_DEV_MODE}" != "1" ]]; then
+    error "Refusing to use default dev secret for zero-config. Set SIGNING_KEY env var, or set RELAY_DEV_MODE=1 to allow dev secrets."
+  fi
   generated_config=".relay/generated/relay-zero-config.json"
 
   local agent_names=()
@@ -414,6 +418,7 @@ curl_json() {
   local body="${4:-}"
   local response_file http_code
   response_file="$(mktemp)"
+  chmod 600 "${response_file}"
   if [[ -n "${body}" ]]; then
     http_code="$(curl -sS -o "${response_file}" -w '%{http_code}' -X "${method}" "${url}" \
       -H "Authorization: Bearer ${token}" \
@@ -540,8 +545,11 @@ cmd_up() {
   write_config_cache "${config_json}"
   ensure_state_dirs
   secret="$(config_value "${config_json}" 'data.signing_secret')"
-  if [[ "${secret}" == "dev-secret" || "${secret}" == "${DEFAULT_ZERO_CONFIG_SECRET}" ]] && [[ "${_RELAY_DEV_MODE}" != "1" ]]; then
-    echo "⚠ WARNING: Using default development secret. Set SIGNING_KEY env var for non-dev deployments, or set RELAY_DEV_MODE=1 to suppress this warning." >&2
+  if [[ "${secret}" == "dev-secret" || "${secret}" == "${DEFAULT_ZERO_CONFIG_SECRET}" ]]; then
+    if [[ "${_RELAY_DEV_MODE}" != "1" ]]; then
+      error "Refusing to start with default development secret. Set a real SIGNING_KEY env var, or set RELAY_DEV_MODE=1 to allow dev secrets."
+    fi
+    echo "⚠ DEV MODE: Using default development secret. Do not use in production." >&2
   fi
   project_dir="$(pwd)"
   relayauth_log="${project_dir}/.relay/logs/relayauth.log"
@@ -668,6 +676,7 @@ cmd_provision() {
     )" || error "failed to generate token for ${agent_name}"
 
     printf '%s\n' "${token}" > ".relay/tokens/${agent_name}.jwt"
+    chmod 600 ".relay/tokens/${agent_name}.jwt"
     provisioned=$((provisioned + 1))
   done < <(config_agent_lines "${config_json}")
 

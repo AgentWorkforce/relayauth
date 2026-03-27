@@ -13,6 +13,12 @@ scopes_json="${RELAYAUTH_SCOPES_JSON:-[\"*:*:*:*\"]}"
 issuer="${RELAYAUTH_ISSUER:-relayauth:dev}"
 audience_json="${RELAYAUTH_AUDIENCE_JSON:-[\"relayauth\",\"relayfile\"]}"
 token_type="${RELAYAUTH_TOKEN_TYPE:-access}"
+if [[ -z "${SIGNING_KEY:-}" ]]; then
+  if [[ "${RELAY_DEV_MODE:-}" != "1" ]]; then
+    echo "Error: SIGNING_KEY not set. Set SIGNING_KEY or RELAY_DEV_MODE=1 for dev usage." >&2
+    exit 1
+  fi
+fi
 secret="${SIGNING_KEY:-dev-secret}"
 payload="{\"sub\":\"${subject}\",\"org\":\"${org}\",\"wks\":\"${workspace}\",\"scopes\":${scopes_json},\"sponsorId\":\"${sponsor}\",\"sponsorChain\":[\"${sponsor}\"],\"token_type\":\"${token_type}\",\"iss\":\"${issuer}\",\"aud\":${audience_json},\"iat\":${now},\"exp\":${exp},\"jti\":\"${jti}\"}"
 
