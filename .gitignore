@@ -19,3 +19,4 @@ __pycache__/
 # Build info
 tsconfig.tsbuildinfo
 *.tsbuildinfo
+packages/sdk/tsconfig.tsbuildinfo

@@ -12,7 +12,7 @@ on:
           - core
           - sdk
           - types
-          - cli
+          - relayauth
         default: "all"
       version:
         description: "Version bump type"
@@ -91,8 +91,8 @@ jobs:
         run: |
           INPUT="${{ github.event.inputs.package }}"
           if [ "$INPUT" = "all" ]; then
-            echo "list=types,core,sdk,cli" >> "$GITHUB_OUTPUT"
-            echo 'matrix=["types","core","sdk","cli"]' >> "$GITHUB_OUTPUT"
+            echo "list=types,core,sdk,relayauth" >> "$GITHUB_OUTPUT"
+            echo 'matrix=["types","core","sdk","relayauth"]' >> "$GITHUB_OUTPUT"
           else
             echo "list=$INPUT" >> "$GITHUB_OUTPUT"
             echo "matrix=[\"$INPUT\"]" >> "$GITHUB_OUTPUT"
@@ -121,9 +121,15 @@ jobs:
 
           # Sync version across all packages being published
           IFS=',' read -ra PKGS <<< "$PACKAGES"
+
           for pkg in "${PKGS[@]}"; do
             if [ "$pkg" != "core" ]; then
-              cd "packages/$pkg"
+              package_dir="$pkg"
+              if [ "$package_dir" = "relayauth" ]; then
+                package_dir="cli"
+              fi
+
+              cd "packages/$package_dir"
               npm version "$NEW_VERSION" --no-git-tag-version
               cd ../..
             fi
@@ -170,16 +176,25 @@ jobs:
       - run: npm ci
       - run: npx turbo build
 
-      - name: Publish ${{ matrix.package == 'cli' && 'relayauth' || format('@relayauth/{0}', matrix.package) }}
+      - name: Resolve package directory
+        id: package-dir
+        run: |
+          if [ "${{ matrix.package }}" = "relayauth" ]; then
+            echo "dir=cli" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=${{ matrix.package }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish ${{ matrix.package == 'relayauth' && 'relayauth' || format('@relayauth/{0}', matrix.package) }}
         if: ${{ github.event.inputs.dry_run != 'true' }}
-        working-directory: packages/${{ matrix.package }}
+        working-directory: packages/${{ steps.package-dir.outputs.dir }}
         run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Dry run publish
         if: ${{ github.event.inputs.dry_run == 'true' }}
-        working-directory: packages/${{ matrix.package }}
+        working-directory: packages/${{ steps.package-dir.outputs.dir }}
         run: npm publish --access public --dry-run --ignore-scripts
 
   release:
