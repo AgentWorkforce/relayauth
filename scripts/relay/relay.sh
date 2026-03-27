@@ -128,6 +128,16 @@ check_prereqs() {
     echo "  ⚠ local D1 not yet initialized (will be created on first wrangler dev run)"
   fi
 
+  # Build relayauth packages if dist is missing (needed for config parser)
+  if [[ ! -f "${RELAYAUTH_ROOT}/packages/sdk/dist/index.js" ]]; then
+    echo "  Building relayauth packages…"
+    (cd "${RELAYAUTH_ROOT}" && npx turbo build 2>/dev/null) || {
+      echo "  ✗ failed to build relayauth packages" >&2
+      missing=$((missing + 1))
+    }
+    echo "  ✓ relayauth packages built"
+  fi
+
   if [[ ${missing} -gt 0 ]]; then
     error "${missing} prerequisite(s) missing — see above"
   fi
