@@ -12,6 +12,7 @@ on:
           - core
           - sdk
           - types
+          - cli
         default: "all"
       version:
         description: "Version bump type"
@@ -90,8 +91,8 @@ jobs:
         run: |
           INPUT="${{ github.event.inputs.package }}"
           if [ "$INPUT" = "all" ]; then
-            echo "list=types,core,sdk" >> "$GITHUB_OUTPUT"
-            echo 'matrix=["types","core","sdk"]' >> "$GITHUB_OUTPUT"
+            echo "list=types,core,sdk,cli" >> "$GITHUB_OUTPUT"
+            echo 'matrix=["types","core","sdk","cli"]' >> "$GITHUB_OUTPUT"
           else
             echo "list=$INPUT" >> "$GITHUB_OUTPUT"
             echo "matrix=[\"$INPUT\"]" >> "$GITHUB_OUTPUT"
@@ -169,7 +170,7 @@ jobs:
       - run: npm ci
       - run: npx turbo build
 
-      - name: Publish @relayauth/${{ matrix.package }}
+      - name: Publish ${{ matrix.package == 'cli' && 'relayauth' || format('@relayauth/{0}', matrix.package) }}
         if: ${{ github.event.inputs.dry_run != 'true' }}
         working-directory: packages/${{ matrix.package }}
         run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts

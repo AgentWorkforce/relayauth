@@ -541,7 +541,7 @@ Write ALL files to disk.`,
 Create ${ROOT}/packages/cli/:
 
 1. package.json:
-   name: "relayauth-cli", bin: { relayauth: "./dist/index.js" }
+   name: "relayauth", bin: { relayauth: "./dist/index.js" }
    dependencies: { "@relayauth/sdk": "workspace:*", "@relayauth/types": "workspace:*" }
    scripts: { build: "tsc", dev: "tsx src/index.ts" }
 
