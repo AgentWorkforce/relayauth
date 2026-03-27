@@ -611,11 +611,15 @@ cmd_down() {
     stop_pid "${RELAYAUTH_PID:-}" "relayauth"
     stop_pid "${RELAYFILE_PID:-}" "relayfile"
     rm -f ".relay/pids"
-    echo "Stopped relay services"
-    return 0
   fi
 
-  echo "No relay service PID file found"
+  # Also kill any processes on our ports (handles orphaned processes
+  # from subshells that exited while the service kept running)
+  local port_pid
+  port_pid="$(lsof -ti:8787 2>/dev/null)" && kill -9 "${port_pid}" 2>/dev/null && echo "  killed orphan on :8787"
+  port_pid="$(lsof -ti:8080 2>/dev/null)" && kill -9 "${port_pid}" 2>/dev/null && echo "  killed orphan on :8080"
+
+  echo "Stopped relay services"
 }
 
 cmd_provision() {
