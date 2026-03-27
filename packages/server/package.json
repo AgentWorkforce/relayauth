@@ -18,8 +18,8 @@
   },
   "dependencies": {
     "hono": "^4",
-    "@relayauth/sdk": "*",
-    "@relayauth/types": "*"
+    "@relayauth/sdk": "workspace:*",
+    "@relayauth/types": "workspace:*"
   },
   "peerDependencies": {
     "@cloudflare/workers-types": "^4"
