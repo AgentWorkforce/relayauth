@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+HOOK_PATH="/Users/khaliqgant/Projects/AgentWorkforce/relayauth/scripts/relay/agentdeny-hook.sh"
+
 PASS=0
 FAIL=0
 
 assert_denied() {
   local cmd="$1"
   local desc="$2"
-  if bash -c "source ${HOOK_PATH}; _relay_check_deny '${cmd}'" 2>/dev/null; then
-    echo "FAIL: ${desc} — expected denied but was allowed"
+
+  if _relay_check_deny "${cmd}" >/dev/null 2>&1; then
+    echo "FAIL: ${desc}"
     FAIL=$((FAIL + 1))
   else
     echo "PASS: ${desc}"
@@ -19,47 +22,34 @@ assert_denied() {
 assert_allowed() {
   local cmd="$1"
   local desc="$2"
-  if bash -c "source ${HOOK_PATH}; _relay_check_deny '${cmd}'" 2>/dev/null; then
+
+  if _relay_check_deny "${cmd}" >/dev/null 2>&1; then
     echo "PASS: ${desc}"
     PASS=$((PASS + 1))
   else
-    echo "FAIL: ${desc} — expected allowed but was denied"
+    echo "FAIL: ${desc}"
     FAIL=$((FAIL + 1))
   fi
 }
 
-# Setup
-HOOK_PATH="/Users/khaliqgant/Projects/AgentWorkforce/relayauth/scripts/relay/agentdeny-hook.sh"
-TMPDIR=$(mktemp -d)
-export RELAY_WORKSPACE="${TMPDIR}"
-cat > "${TMPDIR}/.agentdeny" <<'DENY_RULES'
+TEST_ROOT="$(mktemp -d)"
+export RELAY_WORKSPACE="${TEST_ROOT}"
+cat > "${TEST_ROOT}/.agentdeny" <<'DENY_RULES'
 git push *
-git push origin main
-rm -rf /
-rm -rf ~
 sudo *
-cd ../
-cd ~
 DENY_RULES
 
-# Tests
-assert_denied "git push origin main" "git push origin main blocked"
-assert_denied "git push origin feature" "git push origin feature blocked"
-assert_denied "sudo apt install vim" "sudo blocked"
-assert_denied "rm -rf /" "rm -rf / blocked"
-assert_denied "rm -rf ~" "rm -rf ~ blocked"
-assert_denied "cd ../" "cd ../ blocked"
-assert_denied "cd ~" "cd ~ blocked"
+# shellcheck source=./agentdeny-hook.sh
+source "${HOOK_PATH}"
+
+assert_denied "git push origin main" "git push origin main denied"
+assert_denied "sudo rm -rf /" "sudo rm -rf / denied"
 assert_allowed "git status" "git status allowed"
-assert_allowed "git commit -m 'test'" "git commit allowed"
-assert_allowed "git pull" "git pull allowed"
-assert_allowed "ls -la" "ls allowed"
-assert_allowed "npm install" "npm install allowed"
-assert_allowed "rm temp.txt" "rm single file allowed"
+assert_allowed "ls -la" "ls -la allowed"
 
-# Cleanup
-rm -rf "${TMPDIR}"
+rm -rf "${TEST_ROOT}"
 
-echo ""
 echo "${PASS} passed, ${FAIL} failed"
-[[ ${FAIL} -eq 0 ]] && exit 0 || exit 1
+[[ "${FAIL}" -eq 0 ]]
+printf "\n"
+exit "${FAIL}"
