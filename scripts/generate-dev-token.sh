@@ -14,8 +14,7 @@ issuer="${RELAYAUTH_ISSUER:-relayauth:dev}"
 audience_json="${RELAYAUTH_AUDIENCE_JSON:-[\"relayauth\",\"relayfile\"]}"
 token_type="${RELAYAUTH_TOKEN_TYPE:-access}"
 secret="${SIGNING_KEY:-dev-secret}"
-agent_name="${RELAYAUTH_AGENT_NAME:-${subject}}"
-payload="{\"sub\":\"${subject}\",\"org\":\"${org}\",\"wks\":\"${workspace}\",\"workspace_id\":\"${workspace}\",\"agent_name\":\"${agent_name}\",\"scopes\":${scopes_json},\"sponsorId\":\"${sponsor}\",\"sponsorChain\":[\"${sponsor}\"],\"token_type\":\"${token_type}\",\"iss\":\"${issuer}\",\"aud\":${audience_json},\"iat\":${now},\"exp\":${exp},\"jti\":\"${jti}\"}"
+payload="{\"sub\":\"${subject}\",\"org\":\"${org}\",\"wks\":\"${workspace}\",\"scopes\":${scopes_json},\"sponsorId\":\"${sponsor}\",\"sponsorChain\":[\"${sponsor}\"],\"token_type\":\"${token_type}\",\"iss\":\"${issuer}\",\"aud\":${audience_json},\"iat\":${now},\"exp\":${exp},\"jti\":\"${jti}\"}"
 
 base64url() {
   openssl base64 -A | tr '+/' '-_' | tr -d '='

@@ -42,6 +42,8 @@ RELAYFILE_MOUNT_BIN="${RELAYFILE_ROOT}/bin/relayfile-mount"
 DEFAULT_RELAYAUTH_URL="http://127.0.0.1:8787"
 DEFAULT_RELAYFILE_URL="http://127.0.0.1:8080"
 DEFAULT_ZERO_CONFIG_SECRET="dev-relay-secret"
+# Guard: warn if default secrets are used outside explicit dev mode
+_RELAY_DEV_MODE="${RELAY_DEV_MODE:-}"
 
 EFFECTIVE_CONFIG_PATH=""
 
@@ -158,7 +160,8 @@ config_value() {
 config_agent_json() {
   local json_input="$1"
   local agent_name="$2"
-  json_eval "${json_input}" "const agent = data.agents.find((entry) => entry.name === ${agent_name@Q}); if (!agent) process.exit(3); console.log(JSON.stringify(agent));"
+  # Pass agent_name via env var to avoid shell injection through interpolation
+  JSON_INPUT="${json_input}" AGENT_NAME="${agent_name}" node -e "const data = JSON.parse(process.env.JSON_INPUT); const agent = data.agents.find((entry) => entry.name === process.env.AGENT_NAME); if (!agent) process.exit(3); console.log(JSON.stringify(agent));"
 }
 
 config_agent_lines() {
@@ -537,6 +540,9 @@ cmd_up() {
   write_config_cache "${config_json}"
   ensure_state_dirs
   secret="$(config_value "${config_json}" 'data.signing_secret')"
+  if [[ "${secret}" == "dev-secret" || "${secret}" == "${DEFAULT_ZERO_CONFIG_SECRET}" ]] && [[ "${_RELAY_DEV_MODE}" != "1" ]]; then
+    echo "⚠ WARNING: Using default development secret. Set SIGNING_KEY env var for non-dev deployments, or set RELAY_DEV_MODE=1 to suppress this warning." >&2
+  fi
   project_dir="$(pwd)"
   relayauth_log="${project_dir}/.relay/logs/relayauth.log"
   relayfile_log="${project_dir}/.relay/logs/relayfile.log"

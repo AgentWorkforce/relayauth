@@ -13,6 +13,8 @@ export interface VerifyOptions {
   cacheTtlMs?: number;
   checkRevocation?: boolean;
   revocationUrl?: string;
+  /** Clock skew tolerance in seconds for nbf/exp checks. Defaults to 30. */
+  clockSkewLeewaySeconds?: number;
 }
 
 type JwtHeader = {
@@ -57,9 +59,9 @@ export class TokenVerifier {
       throw invalidTokenError();
     }
 
-    const jwk = await this._findKey(header.kid, header.alg);
+    const jwk = await this.#findKey(header.kid, header.alg);
     const key = await importVerificationKey(jwk, header.alg);
-    const isValidSignature = await this._verifySignature(
+    const isValidSignature = await this.#verifySignature(
       `${encodedHeader}.${encodedPayload}.${signature}`,
       key,
     );
@@ -68,7 +70,7 @@ export class TokenVerifier {
       throw invalidTokenError();
     }
 
-    this._validateClaims(payload);
+    this.#validateClaims(payload);
 
     if (this.options?.checkRevocation) {
       await this.#checkRevocation(payload.jti);
@@ -94,7 +96,7 @@ export class TokenVerifier {
     }
   }
 
-  async _fetchJwks(forceRefresh = false): Promise<JWKSResponse> {
+  async #fetchJwks(forceRefresh = false): Promise<JWKSResponse> {
     const jwksUrl = this.options?.jwksUrl;
     if (!jwksUrl) {
       throw new RelayAuthError("JWKS URL is required", "missing_jwks_url", 500);
@@ -133,12 +135,12 @@ export class TokenVerifier {
     };
   }
 
-  async _findKey(kid?: string, alg?: string): Promise<JsonWebKey> {
-    const { keys } = await this._fetchJwks();
+  async #findKey(kid?: string, alg?: string): Promise<JsonWebKey> {
+    const { keys } = await this.#fetchJwks();
     let key = selectJwk(keys, kid, alg);
 
     if (!key) {
-      const refreshed = await this._fetchJwks(true);
+      const refreshed = await this.#fetchJwks(true);
       key = selectJwk(refreshed.keys, kid, alg);
     }
 
@@ -149,7 +151,7 @@ export class TokenVerifier {
     return key;
   }
 
-  _decodeHeader(token: string): JwtHeader {
+  #decodeHeader(token: string): JwtHeader {
     const parts = token.split(".");
     if (parts.length !== 3) {
       throw invalidTokenError();
@@ -163,14 +165,14 @@ export class TokenVerifier {
     return header;
   }
 
-  async _verifySignature(token: string, key: CryptoKey): Promise<boolean> {
+  async #verifySignature(token: string, key: CryptoKey): Promise<boolean> {
     try {
       const parts = token.split(".");
       if (parts.length !== 3) {
         return false;
       }
 
-      const header = this._decodeHeader(token);
+      const header = this.#decodeHeader(token);
       const algorithm = resolveVerificationAlgorithm(header.alg);
       if (!algorithm) {
         return false;
@@ -187,19 +189,19 @@ export class TokenVerifier {
     }
   }
 
-  _validateClaims(claims: unknown): asserts claims is RelayAuthTokenClaims {
+  #validateClaims(claims: unknown): asserts claims is RelayAuthTokenClaims {
     const now = Math.floor(Date.now() / 1000);
-    const notBeforeLeeway = 30;
+    const clockSkewLeeway = this.options?.clockSkewLeewaySeconds ?? 30;
 
     if (!isRelayAuthTokenClaims(claims)) {
       throw invalidTokenError();
     }
 
-    if (claims.nbf !== undefined && claims.nbf > now + notBeforeLeeway) {
+    if (claims.nbf !== undefined && claims.nbf > now + clockSkewLeeway) {
       throw invalidTokenError();
     }
 
-    if (claims.exp <= now - notBeforeLeeway) {
+    if (claims.exp <= now - clockSkewLeeway) {
       throw new TokenExpiredError();
     }
 
@@ -226,7 +228,7 @@ export class TokenVerifier {
     }
 
     const [encodedHeader, encodedPayload, signature] = parts;
-    const header = this._decodeHeader(token);
+    const header = this.#decodeHeader(token);
     const payload = decodeBase64UrlJson<RelayAuthTokenClaims>(encodedPayload);
 
     if (!payload) {

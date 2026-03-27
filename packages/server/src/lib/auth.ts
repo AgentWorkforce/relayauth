@@ -2,6 +2,10 @@ import type { RelayAuthTokenClaims } from "@relayauth/types";
 
 import { decodeBase64UrlJson, verifyHs256Signature } from "./jwt.js";
 
+// NOTE: This module duplicates some JWT verification logic from @relayauth/core TokenVerifier.
+// This is intentional: core uses asymmetric JWKS (RS256/EdDSA) while this uses symmetric HMAC (HS256).
+// TODO: Extract shared claims validation into @relayauth/core to reduce duplication.
+
 type JwtHeader = {
   alg?: string;
   typ?: string;

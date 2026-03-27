@@ -8,7 +8,9 @@ export interface RelayAuthTokenClaims {
   sub: string;
   org: string;
   wks: string;
+  /** @deprecated Duplicates `wks` — prefer using `wks` directly */
   workspace_id?: string;
+  /** @deprecated Duplicates `sub` — prefer using `sub` directly */
   agent_name?: string;
   scopes: string[];
   sponsorId: string;

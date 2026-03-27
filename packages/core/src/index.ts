@@ -29,7 +29,7 @@ export {
   IdentitySuspendedError,
 } from "./errors.js";
 
-// Config parsing (added by core-impl worker)
+// Config parsing
 export { parseRelayConfig, parseRelayConfigString } from "./config.js";
 export type { RelayAcl, RelayAgent, RelayConfig, RelayRole } from "./config.js";
 export { seedAcl, seedAclEntries } from "./acl.js";

@@ -86,6 +86,10 @@ export function filePermissionAllows(
   claims: TokenClaims | null,
 ): boolean {
   if (!permissions || permissions.length === 0) {
+    console.warn(
+      "[relayauth] ACL default-open: no permission rules found — granting access. " +
+        "Configure explicit permissions to enforce access control.",
+    );
     return true;
   }
 
@@ -126,7 +130,13 @@ export function filePermissionAllows(
   if (allowMatch) {
     return true;
   }
-  return !enforceableRuleSeen;
+  if (!enforceableRuleSeen) {
+    console.warn(
+      "[relayauth] ACL default-open: permission rules present but none were enforceable — granting access.",
+    );
+    return true;
+  }
+  return false;
 }
 
 export function resolveFilePermissions(

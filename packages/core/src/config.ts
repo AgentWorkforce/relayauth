@@ -61,7 +61,7 @@ function normalizeScope(scope: string, label: string): string {
   try {
     const parsed = parseScope(scope);
     return parsed.raw === "*"
-      ? "*:*:*:*"
+      ? "*"
       : `${parsed.plane}:${parsed.resource}:${parsed.action}:${parsed.path}`;
   } catch (error) {
     const reason = error instanceof Error ? error.message : "invalid scope";
