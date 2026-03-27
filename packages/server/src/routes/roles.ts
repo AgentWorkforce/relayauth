@@ -1,5 +1,5 @@
 import type { Role } from "@relayauth/types";
-import { matchScope } from "@relayauth/sdk/src/scope-matcher.js";
+import { matchScope } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import {
@@ -40,7 +40,7 @@ roles.post("/", async (c) => {
   }
 
   try {
-    const role = await createRole(c.env.DB, {
+    const role = await createRole(c.get("storage"), {
       name: body.name ?? "",
       description: body.description ?? "",
       scopes: Array.isArray(body.scopes) ? body.scopes : [],
@@ -69,7 +69,7 @@ roles.get("/", async (c) => {
   const builtIn = parseBooleanQuery(c.req.query("builtIn"));
 
   try {
-    const data = await listRoles(c.env.DB, auth.claims.org, workspaceId);
+    const data = await listRoles(c.get("storage"), auth.claims.org, workspaceId);
     return c.json(
       {
         data: builtIn === undefined ? data : data.filter((role) => role.builtIn === builtIn),
@@ -95,7 +95,7 @@ roles.get("/:id", async (c) => {
   const id = c.req.param("id").trim();
 
   try {
-    const role = await getRole(c.env.DB, id);
+    const role = await getRole(c.get("storage"), id);
     if (!role || role.orgId !== auth.claims.org) {
       return c.json({ error: "role_not_found" }, 404);
     }
@@ -129,12 +129,12 @@ roles.patch("/:id", async (c) => {
   }
 
   try {
-    const existing = await getRole(c.env.DB, id);
+    const existing = await getRole(c.get("storage"), id);
     if (!existing || existing.orgId !== auth.claims.org) {
       return c.json({ error: "role_not_found" }, 404);
     }
 
-    const role = await updateRole(c.env.DB, id, updates);
+    const role = await updateRole(c.get("storage"), id, updates);
     return c.json(role, 200);
   } catch (error) {
     return handleRoleError(c, error);
@@ -155,12 +155,12 @@ roles.delete("/:id", async (c) => {
   const id = c.req.param("id").trim();
 
   try {
-    const existing = await getRole(c.env.DB, id);
+    const existing = await getRole(c.get("storage"), id);
     if (!existing || existing.orgId !== auth.claims.org) {
       return c.json({ error: "role_not_found" }, 404);
     }
 
-    await deleteRole(c.env.DB, id);
+    await deleteRole(c.get("storage"), id);
     return c.body(null, 204);
   } catch (error) {
     return handleRoleError(c, error);

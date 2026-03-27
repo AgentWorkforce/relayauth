@@ -51,12 +51,16 @@ export async function dispatchWebhook(
         return;
       }
 
+      // 4xx client errors are permanent — fail immediately, do not retry
       if (response.status < 500) {
         throw new Error(`Webhook delivery failed with status ${response.status}`);
       }
 
       lastError = new Error(`Webhook delivery failed with status ${response.status}`);
     } catch (error) {
+      if (error instanceof Error && /status 4\d{2}/.test(error.message)) {
+        throw error;
+      }
       lastError = error;
     }
 

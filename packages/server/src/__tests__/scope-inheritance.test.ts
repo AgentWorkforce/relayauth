@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Policy, PolicyCondition, PolicyEffect, Role } from "@relayauth/types";
+import type { Policy, Role } from "@relayauth/types";
 import type { StoredIdentity } from "../durable-objects/identity-do.js";
-import { generateTestIdentity, mockD1 } from "./test-helpers.js";
+import type { AuthStorage } from "../storage/index.js";
+import {
+  createTestStorage,
+  generateTestIdentity,
+  seedOrganizationContext,
+  seedStoredIdentities,
+  seedWorkspaceContext,
+} from "./test-helpers.js";
 
 type OrganizationRecord = {
   id: string;
@@ -46,110 +53,11 @@ type InheritanceChain = {
 };
 
 type ScopeInheritanceModule = {
-  resolveInheritedScopes?: (db: D1Database, identityId: string) => Promise<string[]>;
-  getInheritanceChain?: (db: D1Database, identityId: string) => Promise<InheritanceChain>;
+  resolveInheritedScopes?: (storage: AuthStorage, identityId: string) => Promise<string[]>;
+  getInheritanceChain?: (storage: AuthStorage, identityId: string) => Promise<InheritanceChain>;
 };
 
-type IdentityRow = {
-  id: string;
-  name: string;
-  type: string;
-  orgId: string;
-  org_id: string;
-  status: string;
-  scopes: string[];
-  scopes_json: string;
-  roles: string[];
-  roles_json: string;
-  metadata: Record<string, string>;
-  metadata_json: string;
-  createdAt: string;
-  created_at: string;
-  updatedAt: string;
-  updated_at: string;
-  sponsorId: string;
-  sponsor_id: string;
-  sponsorChain: string[];
-  sponsor_chain: string;
-  sponsor_chain_json: string;
-  workspaceId: string;
-  workspace_id: string;
-};
-
-type RoleRow = {
-  id: string;
-  name: string;
-  description: string;
-  scopes: string[];
-  scopes_json: string;
-  orgId: string;
-  org_id: string;
-  workspaceId?: string;
-  workspace_id?: string;
-  builtIn: boolean;
-  built_in: number;
-  createdAt: string;
-  created_at: string;
-};
-
-type PolicyRow = {
-  id: string;
-  name: string;
-  effect: PolicyEffect;
-  scopes: string[];
-  scopes_json: string;
-  conditions: PolicyCondition[];
-  conditions_json: string;
-  priority: number;
-  orgId: string;
-  org_id: string;
-  workspaceId?: string;
-  workspace_id?: string;
-  createdAt: string;
-  created_at: string;
-  deletedAt?: string | null;
-  deleted_at?: string | null;
-};
-
-type OrganizationRow = {
-  id: string;
-  orgId: string;
-  org_id: string;
-  name: string;
-  scopes: string[];
-  scopes_json: string;
-  roles: string[];
-  roles_json: string;
-  createdAt: string;
-  created_at: string;
-  updatedAt: string;
-  updated_at: string;
-};
-
-type WorkspaceRow = {
-  id: string;
-  workspaceId: string;
-  workspace_id: string;
-  orgId: string;
-  org_id: string;
-  name: string;
-  scopes: string[];
-  scopes_json: string;
-  roles: string[];
-  roles_json: string;
-  createdAt: string;
-  created_at: string;
-  updatedAt: string;
-  updated_at: string;
-};
-
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function normalizeSql(query: string): string {
-  return query.replace(/\s+/g, " ").trim().toLowerCase();
-}
+type ScopeInheritanceStorage = ReturnType<typeof createTestStorage>;
 
 function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredIdentity {
   const base = generateTestIdentity({
@@ -221,438 +129,57 @@ function createWorkspace(overrides: Partial<WorkspaceRecord> = {}): WorkspaceRec
   };
 }
 
-function toIdentityRow(identity: StoredIdentity): IdentityRow {
-  const metadata = clone(identity.metadata ?? {});
-
-  return {
-    id: identity.id,
-    name: identity.name,
-    type: identity.type,
-    orgId: identity.orgId,
-    org_id: identity.orgId,
-    status: identity.status,
-    scopes: [...identity.scopes],
-    scopes_json: JSON.stringify(identity.scopes),
-    roles: [...identity.roles],
-    roles_json: JSON.stringify(identity.roles),
-    metadata,
-    metadata_json: JSON.stringify(metadata),
-    createdAt: identity.createdAt,
-    created_at: identity.createdAt,
-    updatedAt: identity.updatedAt,
-    updated_at: identity.updatedAt,
-    sponsorId: identity.sponsorId,
-    sponsor_id: identity.sponsorId,
-    sponsorChain: [...identity.sponsorChain],
-    sponsor_chain: JSON.stringify(identity.sponsorChain),
-    sponsor_chain_json: JSON.stringify(identity.sponsorChain),
-    workspaceId: identity.workspaceId,
-    workspace_id: identity.workspaceId,
-  };
-}
-
-function toRoleRow(role: Role): RoleRow {
-  return {
-    id: role.id,
-    name: role.name,
-    description: role.description,
-    scopes: [...role.scopes],
-    scopes_json: JSON.stringify(role.scopes),
-    orgId: role.orgId,
-    org_id: role.orgId,
-    ...(role.workspaceId !== undefined ? { workspaceId: role.workspaceId, workspace_id: role.workspaceId } : {}),
-    builtIn: role.builtIn,
-    built_in: role.builtIn ? 1 : 0,
-    createdAt: role.createdAt,
-    created_at: role.createdAt,
-  };
-}
-
-function toPolicyRow(policy: StoredPolicy): PolicyRow {
-  return {
-    id: policy.id,
-    name: policy.name,
-    effect: policy.effect,
-    scopes: [...policy.scopes],
-    scopes_json: JSON.stringify(policy.scopes),
-    conditions: clone(policy.conditions),
-    conditions_json: JSON.stringify(policy.conditions),
-    priority: policy.priority,
-    orgId: policy.orgId,
-    org_id: policy.orgId,
-    ...(policy.workspaceId !== undefined
-      ? { workspaceId: policy.workspaceId, workspace_id: policy.workspaceId }
-      : {}),
-    createdAt: policy.createdAt,
-    created_at: policy.createdAt,
-    ...(policy.deletedAt !== undefined ? { deletedAt: policy.deletedAt, deleted_at: policy.deletedAt } : {}),
-  };
-}
-
-function toOrganizationRow(org: OrganizationRecord): OrganizationRow {
-  return {
-    id: org.id,
-    orgId: org.id,
-    org_id: org.id,
-    name: org.name,
-    scopes: [...org.scopes],
-    scopes_json: JSON.stringify(org.scopes),
-    roles: [...org.roles],
-    roles_json: JSON.stringify(org.roles),
-    createdAt: org.createdAt,
-    created_at: org.createdAt,
-    updatedAt: org.updatedAt,
-    updated_at: org.updatedAt,
-  };
-}
-
-function toWorkspaceRow(workspace: WorkspaceRecord): WorkspaceRow {
-  return {
-    id: workspace.id,
-    workspaceId: workspace.id,
-    workspace_id: workspace.id,
-    orgId: workspace.orgId,
-    org_id: workspace.orgId,
-    name: workspace.name,
-    scopes: [...workspace.scopes],
-    scopes_json: JSON.stringify(workspace.scopes),
-    roles: [...workspace.roles],
-    roles_json: JSON.stringify(workspace.roles),
-    createdAt: workspace.createdAt,
-    created_at: workspace.createdAt,
-    updatedAt: workspace.updatedAt,
-    updated_at: workspace.updatedAt,
-  };
-}
-
-function extractClauseOrder<TField extends string>(
-  sql: string,
-  patterns: Array<{ field: TField; regexes: RegExp[] }>,
-): Array<{ field: TField; index: number }> {
-  return patterns
-    .map((pattern) => ({
-      field: pattern.field,
-      index: Math.min(
-        ...pattern.regexes
-          .map((regex) => sql.search(regex))
-          .filter((candidate) => candidate >= 0),
-      ),
-    }))
-    .filter((candidate) => Number.isFinite(candidate.index))
-    .sort((left, right) => left.index - right.index);
-}
-
-function filterIdentitiesByQuery(
-  allIdentities: StoredIdentity[],
-  query: string,
-  params: unknown[],
-): StoredIdentity[] {
-  const sql = normalizeSql(query);
-  let identities = [...allIdentities];
-  const orderedClauses = extractClauseOrder(sql, [
-    { field: "orgId", regexes: [/\borg_id\s*=\s*\?/i, /\borgid\s*=\s*\?/i] },
-    { field: "id", regexes: [/\bid\s*=\s*\?/i] },
-    { field: "workspaceId", regexes: [/\bworkspace_id\s*=\s*\?/i, /\bworkspaceid\s*=\s*\?/i] },
-    { field: "status", regexes: [/\bstatus\s*=\s*\?/i] },
-  ]);
-
-  const values = new Map<string, unknown>();
-  for (let index = 0; index < orderedClauses.length; index += 1) {
-    values.set(orderedClauses[index].field, params[index]);
-  }
-
-  const orgId = values.get("orgId");
-  if (typeof orgId === "string") {
-    identities = identities.filter((identity) => identity.orgId === orgId);
-  }
-
-  const id = values.get("id");
-  if (typeof id === "string") {
-    identities = identities.filter((identity) => identity.id === id);
-  }
-
-  const workspaceId = values.get("workspaceId");
-  if (typeof workspaceId === "string") {
-    identities = identities.filter((identity) => identity.workspaceId === workspaceId);
-  }
-
-  const status = values.get("status");
-  if (typeof status === "string") {
-    identities = identities.filter((identity) => identity.status === status);
-  }
-
-  return identities;
-}
-
-function filterRolesByQuery(allRoles: Role[], query: string, params: unknown[]): Role[] {
-  const sql = normalizeSql(query);
-  let roles = [...allRoles];
-
-  // Handle WHERE id IN (?, ?, ...) queries
-  const inMatch = /\bid\s+in\s*\(([^)]+)\)/i.exec(sql);
-  if (inMatch) {
-    const placeholderCount = (inMatch[1].match(/\?/g) ?? []).length;
-    const inIds = params.slice(0, placeholderCount).filter((p): p is string => typeof p === "string");
-    roles = roles.filter((role) => inIds.includes(role.id));
-    roles.sort((left, right) => left.id.localeCompare(right.id));
-    return roles;
-  }
-
-  const orderedClauses = extractClauseOrder(sql, [
-    { field: "orgId", regexes: [/\borg_id\s*=\s*\?/i, /\borgid\s*=\s*\?/i] },
-    { field: "id", regexes: [/\bid\s*=\s*\?/i] },
-    { field: "workspaceId", regexes: [/\bworkspace_id\s*=\s*\?/i, /\bworkspaceid\s*=\s*\?/i] },
-    { field: "name", regexes: [/\bname\s*=\s*\?/i] },
-  ]);
-
-  const values = new Map<string, unknown>();
-  for (let index = 0; index < orderedClauses.length; index += 1) {
-    values.set(orderedClauses[index].field, params[index]);
-  }
-
-  const orgId = values.get("orgId");
-  if (typeof orgId === "string") {
-    roles = roles.filter((role) => role.orgId === orgId);
-  }
-
-  const id = values.get("id");
-  if (typeof id === "string") {
-    roles = roles.filter((role) => role.id === id);
-  }
-
-  const workspaceId = values.get("workspaceId");
-  if (typeof workspaceId === "string") {
-    const includeOrgScoped =
-      /\bworkspace_id\s*=\s*\?\s+or\s+workspace_id\s+is\s+null\b/i.test(sql)
-      || /\bworkspace_id\s+is\s+null\s+or\s+workspace_id\s*=\s*\?\b/i.test(sql)
-      || /\bworkspaceid\s*=\s*\?\s+or\s+workspaceid\s+is\s+null\b/i.test(sql)
-      || /\bworkspaceid\s+is\s+null\s+or\s+workspaceid\s*=\s*\?\b/i.test(sql);
-
-    roles = roles.filter((role) =>
-      includeOrgScoped
-        ? role.workspaceId === workspaceId || role.workspaceId === undefined
-        : role.workspaceId === workspaceId,
-    );
-  } else if (/\bworkspace_id\s+is\s+null\b/i.test(sql) || /\bworkspaceid\s+is\s+null\b/i.test(sql)) {
-    roles = roles.filter((role) => role.workspaceId === undefined);
-  }
-
-  const name = values.get("name");
-  if (typeof name === "string") {
-    roles = roles.filter((role) => role.name === name);
-  }
-
-  roles.sort((left, right) => left.id.localeCompare(right.id));
-  return roles;
-}
-
-function filterPoliciesByQuery(
-  allPolicies: StoredPolicy[],
-  query: string,
-  params: unknown[],
-): StoredPolicy[] {
-  const sql = normalizeSql(query);
-  let policies = [...allPolicies];
-  const orderedClauses = extractClauseOrder(sql, [
-    { field: "orgId", regexes: [/\borg_id\s*=\s*\?/i, /\borgid\s*=\s*\?/i] },
-    { field: "id", regexes: [/\bid\s*=\s*\?/i] },
-    { field: "workspaceId", regexes: [/\bworkspace_id\s*=\s*\?/i, /\bworkspaceid\s*=\s*\?/i] },
-    { field: "name", regexes: [/\bname\s*=\s*\?/i] },
-  ]);
-
-  const values = new Map<string, unknown>();
-  for (let index = 0; index < orderedClauses.length; index += 1) {
-    values.set(orderedClauses[index].field, params[index]);
-  }
-
-  const orgId = values.get("orgId");
-  if (typeof orgId === "string") {
-    policies = policies.filter((policy) => policy.orgId === orgId);
-  }
-
-  const id = values.get("id");
-  if (typeof id === "string") {
-    policies = policies.filter((policy) => policy.id === id);
-  }
-
-  const workspaceId = values.get("workspaceId");
-  if (typeof workspaceId === "string") {
-    const includeOrgScoped =
-      /\bworkspace_id\s*=\s*\?\s+or\s+workspace_id\s+is\s+null\b/i.test(sql)
-      || /\bworkspace_id\s+is\s+null\s+or\s+workspace_id\s*=\s*\?\b/i.test(sql)
-      || /\bworkspaceid\s*=\s*\?\s+or\s+workspaceid\s+is\s+null\b/i.test(sql)
-      || /\bworkspaceid\s+is\s+null\s+or\s+workspaceid\s*=\s*\?\b/i.test(sql);
-
-    policies = policies.filter((policy) =>
-      includeOrgScoped
-        ? policy.workspaceId === workspaceId || policy.workspaceId === undefined
-        : policy.workspaceId === workspaceId,
-    );
-  } else if (/\bworkspace_id\s+is\s+null\b/i.test(sql) || /\bworkspaceid\s+is\s+null\b/i.test(sql)) {
-    policies = policies.filter((policy) => policy.workspaceId === undefined);
-  }
-
-  const name = values.get("name");
-  if (typeof name === "string") {
-    policies = policies.filter((policy) => policy.name === name);
-  }
-
-  if (/\bdeleted_at\s+is\s+null\b/i.test(sql) || /\bdeletedat\s+is\s+null\b/i.test(sql)) {
-    policies = policies.filter((policy) => policy.deletedAt === undefined || policy.deletedAt === null);
-  }
-
-  policies.sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id));
-  return policies;
-}
-
-function filterOrganizationsByQuery(
-  allOrganizations: OrganizationRecord[],
-  query: string,
-  params: unknown[],
-): OrganizationRecord[] {
-  const sql = normalizeSql(query);
-  let organizations = [...allOrganizations];
-  const orderedClauses = extractClauseOrder(sql, [
-    { field: "id", regexes: [/\bid\s*=\s*\?/i] },
-    { field: "orgId", regexes: [/\borg_id\s*=\s*\?/i, /\borgid\s*=\s*\?/i] },
-    { field: "name", regexes: [/\bname\s*=\s*\?/i] },
-  ]);
-
-  const values = new Map<string, unknown>();
-  for (let index = 0; index < orderedClauses.length; index += 1) {
-    values.set(orderedClauses[index].field, params[index]);
-  }
-
-  const id = values.get("id");
-  if (typeof id === "string") {
-    organizations = organizations.filter((organization) => organization.id === id);
-  }
-
-  const orgId = values.get("orgId");
-  if (typeof orgId === "string") {
-    organizations = organizations.filter((organization) => organization.id === orgId);
-  }
-
-  const name = values.get("name");
-  if (typeof name === "string") {
-    organizations = organizations.filter((organization) => organization.name === name);
-  }
-
-  organizations.sort((left, right) => left.id.localeCompare(right.id));
-  return organizations;
-}
-
-function filterWorkspacesByQuery(
-  allWorkspaces: WorkspaceRecord[],
-  query: string,
-  params: unknown[],
-): WorkspaceRecord[] {
-  const sql = normalizeSql(query);
-  let workspaces = [...allWorkspaces];
-  const orderedClauses = extractClauseOrder(sql, [
-    { field: "id", regexes: [/\bid\s*=\s*\?/i] },
-    { field: "workspaceId", regexes: [/\bworkspace_id\s*=\s*\?/i, /\bworkspaceid\s*=\s*\?/i] },
-    { field: "orgId", regexes: [/\borg_id\s*=\s*\?/i, /\borgid\s*=\s*\?/i] },
-    { field: "name", regexes: [/\bname\s*=\s*\?/i] },
-  ]);
-
-  const values = new Map<string, unknown>();
-  for (let index = 0; index < orderedClauses.length; index += 1) {
-    values.set(orderedClauses[index].field, params[index]);
-  }
-
-  const id = values.get("id");
-  if (typeof id === "string") {
-    workspaces = workspaces.filter((workspace) => workspace.id === id);
-  }
-
-  const workspaceId = values.get("workspaceId");
-  if (typeof workspaceId === "string") {
-    workspaces = workspaces.filter((workspace) => workspace.id === workspaceId);
-  }
-
-  const orgId = values.get("orgId");
-  if (typeof orgId === "string") {
-    workspaces = workspaces.filter((workspace) => workspace.orgId === orgId);
-  }
-
-  const name = values.get("name");
-  if (typeof name === "string") {
-    workspaces = workspaces.filter((workspace) => workspace.name === name);
-  }
-
-  workspaces.sort((left, right) => left.id.localeCompare(right.id));
-  return workspaces;
-}
-
-function createScopeInheritanceDb(input: {
+async function createScopeInheritanceStorage(input: {
   organizations?: OrganizationRecord[];
   workspaces?: WorkspaceRecord[];
   identities: StoredIdentity[];
   roles?: Role[];
   policies?: StoredPolicy[];
-}): D1Database {
-  const organizations = new Map(
-    (input.organizations ?? []).map((organization) => [organization.id, clone(organization)]),
-  );
-  const workspaces = new Map(
-    (input.workspaces ?? []).map((workspace) => [workspace.id, clone(workspace)]),
-  );
-  const identities = new Map(input.identities.map((identity) => [identity.id, clone(identity)]));
-  const roles = new Map((input.roles ?? []).map((role) => [role.id, clone(role)]));
-  const policies = new Map((input.policies ?? []).map((policy) => [policy.id, clone(policy)]));
+}): Promise<ScopeInheritanceStorage> {
+  const storage = createTestStorage();
 
-  const resolveRows = (query: string, params: unknown[]): unknown[] => {
-    const sql = normalizeSql(query);
-
-    if (/\bfrom organizations\b/.test(sql)) {
-      return filterOrganizationsByQuery([...organizations.values()], query, params).map(toOrganizationRow);
+  if (input.organizations) {
+    for (const organization of input.organizations) {
+      await seedOrganizationContext(storage, {
+        id: organization.id,
+        orgId: organization.id,
+        scopes: organization.scopes,
+        roles: organization.roles,
+      });
     }
+  }
 
-    if (/\bfrom workspaces\b/.test(sql)) {
-      return filterWorkspacesByQuery([...workspaces.values()], query, params).map(toWorkspaceRow);
+  if (input.workspaces) {
+    for (const workspace of input.workspaces) {
+      await seedWorkspaceContext(storage, {
+        id: workspace.id,
+        workspaceId: workspace.id,
+        orgId: workspace.orgId,
+        scopes: workspace.scopes,
+        roles: workspace.roles,
+      });
     }
+  }
 
-    if (/\bfrom identities\b/.test(sql)) {
-      return filterIdentitiesByQuery([...identities.values()], query, params).map(toIdentityRow);
+  await seedStoredIdentities(storage, input.identities);
+
+  if (input.roles) {
+    for (const role of input.roles) {
+      await storage.roles.create(role);
     }
+  }
 
-    if (/\bfrom roles\b/.test(sql)) {
-      return filterRolesByQuery([...roles.values()], query, params).map(toRoleRow);
+  if (input.policies) {
+    for (const policy of input.policies) {
+      const { deletedAt: _deletedAt, ...activePolicy } = policy;
+      await storage.policies.create(activePolicy);
+      if (policy.deletedAt) {
+        await storage.policies.delete(policy.id);
+      }
     }
+  }
 
-    if (/\bfrom policies\b/.test(sql)) {
-      return filterPoliciesByQuery([...policies.values()], query, params).map(toPolicyRow);
-    }
-
-    return [];
-  };
-
-  const meta = {
-    changed_db: false,
-    changes: 0,
-    duration: 0,
-    rows_read: 0,
-    rows_written: 0,
-  };
-
-  const base = mockD1();
-
-  return {
-    ...base,
-    prepare: (query: string) => ({
-      bind: (...params: unknown[]) => ({
-        first: async <T>() => (resolveRows(query, params)[0] as T | null) ?? null,
-        run: async () => ({ success: true, meta }),
-        raw: async <T>() => resolveRows(query, params) as T[],
-        all: async <T>() => ({ results: resolveRows(query, params) as T[], success: true, meta }),
-      }),
-      first: async <T>() => (resolveRows(query, [])[0] as T | null) ?? null,
-      run: async () => ({ success: true, meta }),
-      raw: async <T>() => resolveRows(query, []) as T[],
-      all: async <T>() => ({ results: resolveRows(query, []) as T[], success: true, meta }),
-    }),
-  } as D1Database;
+  return storage;
 }
 
 async function loadScopeInheritanceModule(): Promise<Required<ScopeInheritanceModule>> {
@@ -664,7 +191,7 @@ async function loadScopeInheritanceModule(): Promise<Required<ScopeInheritanceMo
     assert.fail(
       [
         "Expected ../engine/scope-inheritance.js to exist.",
-        "Implement and export resolveInheritedScopes(db, identityId) and getInheritanceChain(db, identityId).",
+        "Implement and export resolveInheritedScopes(storage, identityId) and getInheritanceChain(storage, identityId).",
         error instanceof Error ? error.message : String(error),
       ].join(" "),
     );
@@ -673,12 +200,12 @@ async function loadScopeInheritanceModule(): Promise<Required<ScopeInheritanceMo
   assert.equal(
     typeof module.resolveInheritedScopes,
     "function",
-    "Expected scope inheritance engine to export resolveInheritedScopes(db, identityId)",
+    "Expected scope inheritance engine to export resolveInheritedScopes(storage, identityId)",
   );
   assert.equal(
     typeof module.getInheritanceChain,
     "function",
-    "Expected scope inheritance engine to export getInheritanceChain(db, identityId)",
+    "Expected scope inheritance engine to export getInheritanceChain(storage, identityId)",
   );
 
   return module as Required<ScopeInheritanceModule>;
@@ -700,7 +227,7 @@ function assertExcludes(scopes: string[], unexpected: string, message: string) {
   assert.equal(scopes.includes(unexpected), false, message);
 }
 
-test("org-level scopes are inherited by identities in every workspace in the org", async () => {
+test("org-level scopes are inherited by identities in every workspace in the org", async (t) => {
   const { resolveInheritedScopes } = await loadScopeInheritanceModule();
   const orgRole = createRole({
     id: "role_org_reports_reader",
@@ -728,23 +255,24 @@ test("org-level scopes are inherited by identities in every workspace in the org
     scopes: [],
     roles: [],
   });
-  const db = createScopeInheritanceDb({
+  const storage = await createScopeInheritanceStorage({
     organizations: [org],
     workspaces: [wsAlpha, wsBeta],
     identities: [alphaIdentity, betaIdentity],
     roles: [orgRole],
   });
+  t.after(() => storage.close());
 
   const [alphaScopes, betaScopes] = await Promise.all([
-    resolveInheritedScopes(db, alphaIdentity.id),
-    resolveInheritedScopes(db, betaIdentity.id),
+    resolveInheritedScopes(storage, alphaIdentity.id),
+    resolveInheritedScopes(storage, betaIdentity.id),
   ]);
 
   assertIncludes(alphaScopes, "relayfile:fs:read:/org/*", "org scopes should flow into ws_alpha");
   assertIncludes(betaScopes, "relayfile:fs:read:/org/*", "org scopes should flow into ws_beta");
 });
 
-test("workspace-level scopes are inherited by all agents in that workspace", async () => {
+test("workspace-level scopes are inherited by all agents in that workspace", async (t) => {
   const { resolveInheritedScopes } = await loadScopeInheritanceModule();
   const orgRole = createRole({
     id: "role_org_docs_reader",
@@ -782,16 +310,17 @@ test("workspace-level scopes are inherited by all agents in that workspace", asy
     scopes: [],
     roles: [],
   });
-  const db = createScopeInheritanceDb({
+  const storage = await createScopeInheritanceStorage({
     organizations: [org],
     workspaces: [workspace],
     identities: [agentOne, agentTwo],
     roles: [orgRole, workspaceRole],
   });
+  t.after(() => storage.close());
 
   const [agentOneScopes, agentTwoScopes] = await Promise.all([
-    resolveInheritedScopes(db, agentOne.id),
-    resolveInheritedScopes(db, agentTwo.id),
+    resolveInheritedScopes(storage, agentOne.id),
+    resolveInheritedScopes(storage, agentTwo.id),
   ]);
 
   assertIncludes(
@@ -806,7 +335,7 @@ test("workspace-level scopes are inherited by all agents in that workspace", asy
   );
 });
 
-test("agent direct scopes are combined with inherited scopes", async () => {
+test("agent direct scopes are combined with inherited scopes", async (t) => {
   const { resolveInheritedScopes } = await loadScopeInheritanceModule();
   const orgRole = createRole({
     id: "role_org_reader_direct",
@@ -837,14 +366,15 @@ test("agent direct scopes are combined with inherited scopes", async () => {
     scopes: ["relayfile:fs:read:/org/team-a/reports/q1.csv"],
     roles: [],
   });
-  const db = createScopeInheritanceDb({
+  const storage = await createScopeInheritanceStorage({
     organizations: [org],
     workspaces: [workspace],
     identities: [identity],
     roles: [orgRole, workspaceRole],
   });
+  t.after(() => storage.close());
 
-  const effectiveScopes = await resolveInheritedScopes(db, identity.id);
+  const effectiveScopes = await resolveInheritedScopes(storage, identity.id);
 
   assertIncludes(
     effectiveScopes,
@@ -858,7 +388,7 @@ test("agent direct scopes are combined with inherited scopes", async () => {
   );
 });
 
-test("workspace scopes cannot exceed org-level scopes and must be intersected", async () => {
+test("workspace scopes cannot exceed org-level scopes and must be intersected", async (t) => {
   const { resolveInheritedScopes } = await loadScopeInheritanceModule();
   const orgRole = createRole({
     id: "role_org_boundary",
@@ -905,14 +435,15 @@ test("workspace scopes cannot exceed org-level scopes and must be intersected", 
     scopes: [],
     roles: [],
   });
-  const db = createScopeInheritanceDb({
+  const storage = await createScopeInheritanceStorage({
     organizations: [org],
     workspaces: [workspace],
     identities: [identity],
     roles: [orgRole, workspaceReadRole, workspaceWriteRole, workspaceOutsideRole],
   });
+  t.after(() => storage.close());
 
-  const effectiveScopes = await resolveInheritedScopes(db, identity.id);
+  const effectiveScopes = await resolveInheritedScopes(storage, identity.id);
 
   assertIncludes(
     effectiveScopes,
@@ -931,7 +462,7 @@ test("workspace scopes cannot exceed org-level scopes and must be intersected", 
   );
 });
 
-test("agent scopes cannot exceed the workspace-level boundary", async () => {
+test("agent scopes cannot exceed the workspace-level boundary", async (t) => {
   const { resolveInheritedScopes } = await loadScopeInheritanceModule();
   const orgRole = createRole({
     id: "role_org_agent_boundary",
@@ -975,14 +506,15 @@ test("agent scopes cannot exceed the workspace-level boundary", async () => {
       "relayfile:fs:read:/org/team-b/secrets.txt",
     ],
   });
-  const db = createScopeInheritanceDb({
+  const storage = await createScopeInheritanceStorage({
     organizations: [org],
     workspaces: [workspace],
     identities: [identity],
     roles: [orgRole, workspaceRole, allowedAgentRole, disallowedAgentRole],
   });
+  t.after(() => storage.close());
 
-  const effectiveScopes = await resolveInheritedScopes(db, identity.id);
+  const effectiveScopes = await resolveInheritedScopes(storage, identity.id);
 
   assertIncludes(
     effectiveScopes,
@@ -1006,7 +538,7 @@ test("agent scopes cannot exceed the workspace-level boundary", async () => {
   );
 });
 
-test("org deny policies block scopes even when the workspace level allows them", async () => {
+test("org deny policies block scopes even when the workspace level allows them", async (t) => {
   const { resolveInheritedScopes } = await loadScopeInheritanceModule();
   const orgRole = createRole({
     id: "role_org_deploy",
@@ -1046,15 +578,16 @@ test("org deny policies block scopes even when the workspace level allows them",
     scopes: [],
     roles: [],
   });
-  const db = createScopeInheritanceDb({
+  const storage = await createScopeInheritanceStorage({
     organizations: [org],
     workspaces: [workspace],
     identities: [identity],
     roles: [orgRole],
     policies: [orgDeny, workspaceAllow],
   });
+  t.after(() => storage.close());
 
-  const effectiveScopes = await resolveInheritedScopes(db, identity.id);
+  const effectiveScopes = await resolveInheritedScopes(storage, identity.id);
 
   assertExcludes(
     effectiveScopes,
@@ -1063,7 +596,7 @@ test("org deny policies block scopes even when the workspace level allows them",
   );
 });
 
-test("workspace deny policies block scopes even when the agent has them directly", async () => {
+test("workspace deny policies block scopes even when the agent has them directly", async (t) => {
   const { resolveInheritedScopes } = await loadScopeInheritanceModule();
   const orgRole = createRole({
     id: "role_org_finance_reader",
@@ -1102,15 +635,16 @@ test("workspace deny policies block scopes even when the agent has them directly
     scopes: ["relayfile:fs:read:/finance/*"],
     roles: [],
   });
-  const db = createScopeInheritanceDb({
+  const storage = await createScopeInheritanceStorage({
     organizations: [org],
     workspaces: [workspace],
     identities: [identity],
     roles: [orgRole, workspaceRole],
     policies: [workspaceDeny],
   });
+  t.after(() => storage.close());
 
-  const effectiveScopes = await resolveInheritedScopes(db, identity.id);
+  const effectiveScopes = await resolveInheritedScopes(storage, identity.id);
 
   assertExcludes(
     effectiveScopes,
@@ -1119,7 +653,7 @@ test("workspace deny policies block scopes even when the agent has them directly
   );
 });
 
-test("resolveInheritedScopes resolves the effective scopes from the full inheritance chain", async () => {
+test("resolveInheritedScopes resolves the effective scopes from the full inheritance chain", async (t) => {
   const { resolveInheritedScopes } = await loadScopeInheritanceModule();
   const orgRole = createRole({
     id: "role_org_docs",
@@ -1155,14 +689,15 @@ test("resolveInheritedScopes resolves the effective scopes from the full inherit
     roles: [agentRole.id],
     scopes: ["relayfile:fs:read:/docs/team-a/runbooks/deploy.md"],
   });
-  const db = createScopeInheritanceDb({
+  const storage = await createScopeInheritanceStorage({
     organizations: [org],
     workspaces: [workspace],
     identities: [identity],
     roles: [orgRole, workspaceRole, agentRole],
   });
+  t.after(() => storage.close());
 
-  const effectiveScopes = await resolveInheritedScopes(db, identity.id);
+  const effectiveScopes = await resolveInheritedScopes(storage, identity.id);
 
   assert.deepEqual(
     sortScopes(effectiveScopes),
@@ -1175,7 +710,7 @@ test("resolveInheritedScopes resolves the effective scopes from the full inherit
   );
 });
 
-test("inheritance chain is ordered org roles then workspace roles then agent roles then direct scopes", async () => {
+test("inheritance chain is ordered org roles then workspace roles then agent roles then direct scopes", async (t) => {
   const { getInheritanceChain } = await loadScopeInheritanceModule();
   const orgRole = createRole({
     id: "role_org_chain",
@@ -1211,14 +746,15 @@ test("inheritance chain is ordered org roles then workspace roles then agent rol
     roles: [agentRole.id],
     scopes: ["relayfile:fs:read:/docs/team-a/runbooks/deploy.md"],
   });
-  const db = createScopeInheritanceDb({
+  const storage = await createScopeInheritanceStorage({
     organizations: [org],
     workspaces: [workspace],
     identities: [identity],
     roles: [orgRole, workspaceRole, agentRole],
   });
+  t.after(() => storage.close());
 
-  const chain = await getInheritanceChain(db, identity.id);
+  const chain = await getInheritanceChain(storage, identity.id);
 
   assert.deepEqual(sortIds(chain.org.roles), [orgRole.id]);
   assert.deepEqual(sortIds(chain.workspace.roles), [workspaceRole.id]);
@@ -1234,7 +770,7 @@ test("inheritance chain is ordered org roles then workspace roles then agent rol
   );
 });
 
-test("getInheritanceChain returns the org, workspace, and agent scope breakdown", async () => {
+test("getInheritanceChain returns the org, workspace, and agent scope breakdown", async (t) => {
   const { getInheritanceChain } = await loadScopeInheritanceModule();
   const orgRole = createRole({
     id: "role_org_breakdown",
@@ -1285,24 +821,20 @@ test("getInheritanceChain returns the org, workspace, and agent scope breakdown"
     roles: [agentRole.id],
     scopes: ["cloud:workflow:run:prod-eu-api"],
   });
-  const db = createScopeInheritanceDb({
+  const storage = await createScopeInheritanceStorage({
     organizations: [org],
     workspaces: [workspace],
     identities: [identity],
     roles: [orgRole, workspaceRole, agentRole],
     policies: [orgPolicy, workspacePolicy],
   });
+  t.after(() => storage.close());
 
-  const chain = await getInheritanceChain(db, identity.id);
+  const chain = await getInheritanceChain(storage, identity.id);
 
   assert.deepEqual(sortScopes(chain.org.scopes), sortScopes(orgRole.scopes));
   assert.deepEqual(sortScopes(chain.workspace.scopes), sortScopes(workspaceRole.scopes));
-  assert.deepEqual(
-    sortScopes(chain.agent.scopes),
-    sortScopes([
-      "cloud:workflow:run:prod-eu-api",
-    ]),
-  );
+  assert.deepEqual(sortScopes(chain.agent.scopes), sortScopes(["cloud:workflow:run:prod-eu-api"]));
   assert.deepEqual(sortIds(chain.org.roles), [orgRole.id]);
   assert.deepEqual(sortIds(chain.workspace.roles), [workspaceRole.id]);
   assert.deepEqual(sortIds(chain.agent.roles), [agentRole.id]);

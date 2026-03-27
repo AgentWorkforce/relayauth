@@ -3,10 +3,12 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
+    "declaration": true,
     "composite": true,
     "skipLibCheck": true,
     "types": [
-      "@cloudflare/workers-types"
+      "@cloudflare/workers-types",
+      "node"
     ]
   },
   "include": [

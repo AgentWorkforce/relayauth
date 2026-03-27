@@ -7,7 +7,10 @@ import {
   createTestRequest,
   generateTestIdentity,
   generateTestToken,
+  seedAuditEntries,
+  seedStoredIdentities,
 } from "./test-helpers.js";
+import type { StoredIdentity } from "../durable-objects/identity-do.js";
 
 type DashboardStatsResponse = {
   tokensIssued: number;
@@ -93,6 +96,15 @@ function createIdentity(
     ...(overrides.suspendedAt !== undefined ? { suspendedAt: overrides.suspendedAt } : {}),
     ...(overrides.suspendReason !== undefined ? { suspendReason: overrides.suspendReason } : {}),
   });
+}
+
+function toStoredIdentity(identity: AgentIdentity): StoredIdentity {
+  return {
+    ...identity,
+    sponsorId: "user_stats_owner",
+    sponsorChain: ["user_stats_owner", "agent_stats_parent", identity.id],
+    workspaceId: "ws_stats",
+  };
 }
 
 function toAuditRow(entry: AuditEntry & { createdAt?: string }): AuditLogRow {
@@ -322,12 +334,9 @@ async function getDashboardStats(
     identities?: AgentIdentity[];
   } = {},
 ): Promise<Response> {
-  const app = createTestApp({
-    DB: createDashboardStatsD1({
-      entries,
-      identities,
-    }),
-  });
+  const app = createTestApp();
+  await seedAuditEntries(app, entries);
+  await seedStoredIdentities(app, identities.map(toStoredIdentity));
   const headers = new Headers();
 
   if (authorization !== undefined) {
@@ -570,9 +579,7 @@ test("GET /v1/stats is scoped to the caller's org", async () => {
 });
 
 test("GET /v1/stats returns 401 without valid auth token", async () => {
-  const app = createTestApp({
-    DB: createDashboardStatsD1(),
-  });
+  const app = createTestApp();
   const request = createTestRequest("GET", "/v1/stats");
   const response = await app.request(request, undefined, app.bindings);
 

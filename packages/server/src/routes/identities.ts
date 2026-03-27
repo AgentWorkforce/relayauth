@@ -4,11 +4,12 @@ import type {
   IdentityStatus,
   IdentityType,
 } from "@relayauth/types";
+import { matchScope } from "@relayauth/sdk";
 import { Hono } from "hono";
 import type { IdentityBudget, StoredIdentity } from "../durable-objects/identity-do.js";
 import type { AppEnv } from "../env.js";
-import { matchScope } from "@relayauth/sdk/src/scope-matcher.js";
 import { authenticateAndAuthorize, decodeBase64UrlJson } from "../lib/auth.js";
+import { isStorageError, type AuthStorage } from "../storage/index.js";
 
 type CreateIdentityRequest = CreateIdentityInput & {
   sponsorId?: string;
@@ -137,13 +138,14 @@ identities.get("/", async (c) => {
   const type = parseIdentityTypeFilter(c.req.query("type"));
   const limit = parseIdentityListLimit(c.req.query("limit"));
   const cursorId = decodeIdentityCursor(c.req.query("cursor"));
+  const storage = c.get("storage");
 
-  const query = buildListIdentitiesQuery(auth.claims.org, status, type, limit, cursorId);
-  const result = await c.env.DB.prepare(query.sql).bind(...query.params).all<ListIdentityRow>();
-  const rows = (result.results ?? [])
-    .map(hydrateListIdentity)
-    .filter((identity): identity is AgentIdentity => identity !== null);
-
+  const rows = await storage.identities.list(auth.claims.org, {
+    status,
+    type,
+    limit: limit + 1,
+    cursorId,
+  });
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
 
@@ -168,24 +170,11 @@ identities.get("/:id", async (c) => {
   }
 
   const id = c.req.param("id").trim();
-  const durableObjectId = c.env.IDENTITY_DO.idFromName(id);
-  const durableObject = c.env.IDENTITY_DO.get(durableObjectId);
-  const response = await durableObject.fetch(
-    new Request("http://identity-do/internal/get", {
-      method: "GET",
-    }),
-  );
-
-  if (response.status === 404) {
+  const identity = await c.get("storage").identities.get(id);
+  if (!identity) {
     return c.json({ error: "identity_not_found" }, 404);
   }
 
-  if (!response.ok) {
-    const message = await response.text().catch(() => "");
-    return c.json({ error: message || "Failed to fetch identity" }, response.status as 400 | 401 | 403 | 500);
-  }
-
-  const identity = await response.json<StoredIdentity>();
   if (identity.orgId !== auth.claims.org) {
     return c.json({ error: "identity_not_found" }, 404);
   }
@@ -205,7 +194,8 @@ identities.patch("/:id", async (c) => {
   }
 
   const id = c.req.param("id").trim();
-  const existing = await getStoredIdentity(c.env.IDENTITY_DO, id);
+  const storage = c.get("storage");
+  const existing = await getStoredIdentity(storage, id);
   if (!existing.ok) {
     return c.json({ error: existing.error }, existing.status);
   }
@@ -223,29 +213,13 @@ identities.patch("/:id", async (c) => {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
-  const durableObjectId = c.env.IDENTITY_DO.idFromName(id);
-  const durableObject = c.env.IDENTITY_DO.get(durableObjectId);
-  const response = await durableObject.fetch(
-    new Request("http://identity-do/internal/update", {
-      method: "PATCH",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(update),
-    }),
-  );
-
-  if (response.status === 404) {
-    return c.json({ error: "identity_not_found" }, 404);
+  try {
+    const identity = await storage.identities.update(id, update);
+    return c.json(identity, 200);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to update identity";
+    return c.json({ error: message }, 500);
   }
-
-  if (!response.ok) {
-    const message = await response.text().catch(() => "");
-    return c.json({ error: message || "Failed to update identity" }, response.status as 400 | 401 | 403 | 500);
-  }
-
-  const identity = await response.json<StoredIdentity>();
-  return c.json(identity, 200);
 });
 
 identities.delete("/:id", async (c) => {
@@ -264,7 +238,8 @@ identities.delete("/:id", async (c) => {
   }
 
   const id = c.req.param("id").trim();
-  const existing = await getStoredIdentity(c.env.IDENTITY_DO, id);
+  const storage = c.get("storage");
+  const existing = await getStoredIdentity(storage, id);
   if (!existing.ok) {
     return c.json({ error: existing.error }, existing.status);
   }
@@ -272,13 +247,20 @@ identities.delete("/:id", async (c) => {
     return c.json({ error: "identity_not_found" }, 404);
   }
 
-  const activeTokenIds = await listActiveTokenIds(c.env.DB, existing.identity.id);
-  const deleted = await deleteStoredIdentity(c.env.IDENTITY_DO, existing.identity.id);
-  if (!deleted.ok) {
-    return c.json({ error: deleted.error }, deleted.status);
+  const activeTokenIds = await storage.tokens.listActiveIds(existing.identity.id);
+
+  try {
+    await storage.identities.delete(existing.identity.id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to delete identity";
+    return c.json({ error: message }, 500);
   }
 
-  await revokeIdentityTokens(c.env.REVOCATION_KV, existing.identity.id, activeTokenIds, new Date().toISOString());
+  await storage.revocations.revokeIdentityTokens(
+    existing.identity.id,
+    activeTokenIds,
+    new Date().toISOString(),
+  );
   return c.body(null, 204);
 });
 
@@ -294,7 +276,8 @@ identities.post("/:id/suspend", async (c) => {
   }
 
   const id = c.req.param("id").trim();
-  const preCheck = await getStoredIdentity(c.env.IDENTITY_DO, id);
+  const storage = c.get("storage");
+  const preCheck = await getStoredIdentity(storage, id);
   if (!preCheck.ok) {
     return c.json({ error: preCheck.error }, preCheck.status);
   }
@@ -312,17 +295,24 @@ identities.post("/:id/suspend", async (c) => {
     return c.json({ error: "reason is required" }, 400);
   }
 
-  const suspended = await suspendIdentity(c.env.IDENTITY_DO, id, reason);
+  const suspended = await suspendIdentity(storage, id, reason);
   if (!suspended.ok) {
     return c.json({ error: suspended.error }, suspended.status);
   }
 
-  const activeTokenIds = await listActiveTokenIds(c.env.DB, suspended.identity.id);
-  await revokeIdentityTokens(c.env.REVOCATION_KV, suspended.identity.id, activeTokenIds, suspended.identity.updatedAt);
+  const activeTokenIds = await storage.tokens.listActiveIds(suspended.identity.id);
+  await storage.revocations.revokeIdentityTokens(
+    suspended.identity.id,
+    activeTokenIds,
+    suspended.identity.updatedAt,
+  );
 
-  const childIdentityIds = await listChildIdentityIds(c.env.DB, suspended.identity.orgId, suspended.identity.id);
+  const childIdentityIds = await storage.identities.listChildIds(
+    suspended.identity.orgId,
+    suspended.identity.id,
+  );
   for (const childIdentityId of childIdentityIds) {
-    const childSuspended = await suspendIdentity(c.env.IDENTITY_DO, childIdentityId, "parent_suspended");
+    const childSuspended = await suspendIdentity(storage, childIdentityId, "parent_suspended");
     if (!childSuspended.ok) {
       if (childSuspended.status === 404 || childSuspended.status === 409) {
         continue;
@@ -331,13 +321,21 @@ identities.post("/:id/suspend", async (c) => {
       return c.json({ error: childSuspended.error }, childSuspended.status);
     }
 
-    const childActiveTokenIds = await listActiveTokenIds(c.env.DB, childSuspended.identity.id);
-    await revokeIdentityTokens(c.env.REVOCATION_KV, childSuspended.identity.id, childActiveTokenIds, childSuspended.identity.updatedAt);
+    const childActiveTokenIds = await storage.tokens.listActiveIds(childSuspended.identity.id);
+    await storage.revocations.revokeIdentityTokens(
+      childSuspended.identity.id,
+      childActiveTokenIds,
+      childSuspended.identity.updatedAt,
+    );
 
-    await writeIdentitySuspendedAuditEvent(c.env.DB, childSuspended.identity, "parent_suspended", auth.claims.sub);
+    await storage.audit.writeIdentitySuspendedEvent(
+      childSuspended.identity,
+      "parent_suspended",
+      auth.claims.sub,
+    );
   }
 
-  await writeIdentitySuspendedAuditEvent(c.env.DB, suspended.identity, reason, auth.claims.sub);
+  await storage.audit.writeIdentitySuspendedEvent(suspended.identity, reason, auth.claims.sub);
   return c.json(suspended.identity, 200);
 });
 
@@ -353,7 +351,8 @@ identities.post("/:id/retire", async (c) => {
   }
 
   const id = c.req.param("id").trim();
-  const preCheck = await getStoredIdentity(c.env.IDENTITY_DO, id);
+  const storage = c.get("storage");
+  const preCheck = await getStoredIdentity(storage, id);
   if (!preCheck.ok) {
     return c.json({ error: preCheck.error }, preCheck.status);
   }
@@ -367,13 +366,17 @@ identities.post("/:id/retire", async (c) => {
   }
 
   const reason = typeof parsedBody.body?.reason === "string" ? parsedBody.body.reason.trim() : undefined;
-  const retired = await retireIdentity(c.env.IDENTITY_DO, id, reason);
+  const retired = await retireIdentity(storage, id, reason);
   if (!retired.ok) {
     return c.json({ error: retired.error }, retired.status);
   }
 
-  const activeTokenIds = await listActiveTokenIds(c.env.DB, retired.identity.id);
-  await revokeIdentityTokens(c.env.REVOCATION_KV, retired.identity.id, activeTokenIds, retired.identity.updatedAt);
+  const activeTokenIds = await storage.tokens.listActiveIds(retired.identity.id);
+  await storage.revocations.revokeIdentityTokens(
+    retired.identity.id,
+    activeTokenIds,
+    retired.identity.updatedAt,
+  );
 
   return c.json(retired.identity, 200);
 });
@@ -390,7 +393,8 @@ identities.post("/:id/reactivate", async (c) => {
   }
 
   const id = c.req.param("id").trim();
-  const preCheck = await getStoredIdentity(c.env.IDENTITY_DO, id);
+  const storage = c.get("storage");
+  const preCheck = await getStoredIdentity(storage, id);
   if (!preCheck.ok) {
     return c.json({ error: preCheck.error }, preCheck.status);
   }
@@ -398,7 +402,7 @@ identities.post("/:id/reactivate", async (c) => {
     return c.json({ error: "identity_not_found" }, 404);
   }
 
-  const reactivated = await reactivateIdentity(c.env.IDENTITY_DO, id);
+  const reactivated = await reactivateIdentity(storage, id);
   if (!reactivated.ok) {
     return c.json({ error: reactivated.error }, reactivated.status);
   }
@@ -432,14 +436,15 @@ identities.post("/", async (c) => {
     return c.json({ error: "sponsorId is required" }, 400);
   }
 
-  const duplicate = await findDuplicateIdentity(c.env.DB, auth.claims.org, name);
+  const storage = c.get("storage");
+  const duplicate = await storage.identities.findDuplicate(auth.claims.org, name);
   if (duplicate) {
     return c.json({ error: "identity_already_exists" }, 409);
   }
 
   const timestamp = new Date().toISOString();
   const id = createIdentityId();
-  const budget = body.budget ?? (await loadOrgBudget(c.env.DB, auth.claims.org));
+  const budget = body.budget ?? (await storage.identities.loadOrgBudget(auth.claims.org));
   const storedIdentity: StoredIdentity = {
     id,
     name,
@@ -452,30 +457,18 @@ identities.post("/", async (c) => {
     createdAt: timestamp,
     updatedAt: timestamp,
     sponsorId,
-    sponsorChain: [...auth.claims.sponsorChain, auth.claims.sub],
+    sponsorChain: [...auth.claims.sponsorChain, id],
     workspaceId: normalizeWorkspaceId(body.workspaceId, auth.claims.wks),
     ...(budget ? { budget } : {}),
   };
 
-  const durableObjectId = c.env.IDENTITY_DO.idFromName(storedIdentity.id);
-  const durableObject = c.env.IDENTITY_DO.get(durableObjectId);
-  const response = await durableObject.fetch(
-    new Request("http://identity-do/internal/create", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(storedIdentity),
-    }),
-  );
-
-  if (!response.ok) {
-    const message = await response.text().catch(() => "");
-    return c.json({ error: message || "Failed to create identity" }, response.status as 400 | 409 | 500);
+  try {
+    const createdIdentity = await storage.identities.create(storedIdentity);
+    return c.json(createdIdentity, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to create identity";
+    return c.json({ error: message }, 500);
   }
-
-  const createdIdentity = await response.json<StoredIdentity>();
-  return c.json(createdIdentity, 201);
 });
 
 function normalizeIdentityType(type: IdentityType | undefined): IdentityType {
@@ -728,14 +721,6 @@ function decodeIdentityCursor(cursor: string | undefined): string | undefined {
   }
 }
 
-async function findDuplicateIdentity(
-  db: D1Database,
-  orgId: string,
-  name: string,
-): Promise<DuplicateIdentityRow | null> {
-  return db.prepare(DUPLICATE_NAME_SQL).bind(orgId, name).first<DuplicateIdentityRow>();
-}
-
 async function parseOptionalJsonObjectBody<T extends object>(
   request: Request,
 ): Promise<
@@ -760,276 +745,102 @@ async function parseOptionalJsonObjectBody<T extends object>(
 }
 
 async function getStoredIdentity(
-  identityNamespace: DurableObjectNamespace,
+  storage: AuthStorage,
   identityId: string,
 ): Promise<
   | { ok: true; identity: StoredIdentity }
   | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 500 }
 > {
-  const durableObjectId = identityNamespace.idFromName(identityId);
-  const durableObject = identityNamespace.get(durableObjectId);
-  const response = await durableObject.fetch(
-    new Request("http://identity-do/internal/get", {
-      method: "GET",
-    }),
-  );
+  try {
+    const identity = await storage.identities.get(identityId);
+    if (!identity) {
+      return {
+        ok: false,
+        error: "identity_not_found",
+        status: 404,
+      };
+    }
 
-  if (response.ok) {
     return {
       ok: true,
-      identity: await response.json<StoredIdentity>(),
+      identity,
     };
-  }
-
-  return {
-    ok: false,
-    error: (await readResponseError(response, "Failed to fetch identity")) ?? "Failed to fetch identity",
-    status: response.status as 400 | 401 | 403 | 404 | 500,
-  };
-}
-
-async function deleteStoredIdentity(
-  identityNamespace: DurableObjectNamespace,
-  identityId: string,
-): Promise<
-  | { ok: true }
-  | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 500 }
-> {
-  const durableObjectId = identityNamespace.idFromName(identityId);
-  const durableObject = identityNamespace.get(durableObjectId);
-  const response = await durableObject.fetch(
-    new Request("http://identity-do/internal/delete", {
-      method: "DELETE",
-    }),
-  );
-
-  if (response.ok) {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to fetch identity";
     return {
-      ok: true,
+      ok: false,
+      error: message,
+      status: isStorageError(error) ? (error.status as 400 | 401 | 403 | 404 | 500) : 500,
     };
   }
-
-  return {
-    ok: false,
-    error: (await readResponseError(response, "Failed to delete identity")) ?? "Failed to delete identity",
-    status: response.status as 400 | 401 | 403 | 404 | 500,
-  };
 }
 
 async function suspendIdentity(
-  identityNamespace: DurableObjectNamespace,
+  storage: AuthStorage,
   identityId: string,
   reason: string,
 ): Promise<
   | { ok: true; identity: StoredIdentity }
   | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 409 | 500 }
 > {
-  const durableObjectId = identityNamespace.idFromName(identityId);
-  const durableObject = identityNamespace.get(durableObjectId);
-  const response = await durableObject.fetch(
-    new Request("http://identity-do/internal/suspend", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ reason }),
-    }),
-  );
-
-  if (response.ok) {
+  try {
     return {
       ok: true,
-      identity: await response.json<StoredIdentity>(),
+      identity: await storage.identities.suspend(identityId, reason),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to suspend identity";
+    return {
+      ok: false,
+      error: message,
+      status: isStorageError(error) ? (error.status as 400 | 401 | 403 | 404 | 409 | 500) : 500,
     };
   }
-
-  return {
-    ok: false,
-    error: (await readResponseError(response, "Failed to suspend identity")) ?? "Failed to suspend identity",
-    status: response.status as 400 | 401 | 403 | 404 | 409 | 500,
-  };
 }
 
 async function retireIdentity(
-  identityNamespace: DurableObjectNamespace,
+  storage: AuthStorage,
   identityId: string,
   reason: string | undefined,
 ): Promise<
   | { ok: true; identity: StoredIdentity }
   | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 409 | 500 }
 > {
-  const durableObjectId = identityNamespace.idFromName(identityId);
-  const durableObject = identityNamespace.get(durableObjectId);
-  const response = await durableObject.fetch(
-    new Request("http://identity-do/internal/retire", {
-      method: "POST",
-      ...(reason
-        ? {
-            headers: {
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({ reason }),
-          }
-        : {}),
-    }),
-  );
-
-  if (response.ok) {
+  try {
     return {
       ok: true,
-      identity: await response.json<StoredIdentity>(),
+      identity: await storage.identities.retire(identityId, reason),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to retire identity";
+    return {
+      ok: false,
+      error: message,
+      status: isStorageError(error) ? (error.status as 400 | 401 | 403 | 404 | 409 | 500) : 500,
     };
   }
-
-  return {
-    ok: false,
-    error: (await readResponseError(response, "Failed to retire identity")) ?? "Failed to retire identity",
-    status: response.status as 400 | 401 | 403 | 404 | 409 | 500,
-  };
 }
 
 async function reactivateIdentity(
-  identityNamespace: DurableObjectNamespace,
+  storage: AuthStorage,
   identityId: string,
 ): Promise<
   | { ok: true; identity: StoredIdentity }
   | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 409 | 500 }
 > {
-  const durableObjectId = identityNamespace.idFromName(identityId);
-  const durableObject = identityNamespace.get(durableObjectId);
-  const response = await durableObject.fetch(
-    new Request("http://identity-do/internal/reactivate", {
-      method: "POST",
-    }),
-  );
-
-  if (response.ok) {
+  try {
     return {
       ok: true,
-      identity: await response.json<StoredIdentity>(),
+      identity: await storage.identities.reactivate(identityId),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to reactivate identity";
+    return {
+      ok: false,
+      error: message,
+      status: isStorageError(error) ? (error.status as 400 | 401 | 403 | 404 | 409 | 500) : 500,
     };
   }
-
-  return {
-    ok: false,
-    error: (await readResponseError(response, "Failed to reactivate identity")) ?? "Failed to reactivate identity",
-    status: response.status as 400 | 401 | 403 | 404 | 409 | 500,
-  };
-}
-
-async function listChildIdentityIds(db: D1Database, orgId: string, sponsorId: string): Promise<string[]> {
-  const result = await db.prepare(CHILD_IDENTITIES_SQL).bind(orgId, sponsorId).all<ChildIdentityRow>();
-  return Array.from(
-    new Set(
-      (result.results ?? [])
-        .map((row) => (typeof row.id === "string" ? row.id.trim() : ""))
-        .filter((id): id is string => id.length > 0 && id !== sponsorId),
-    ),
-  );
-}
-
-async function listActiveTokenIds(db: D1Database, identityId: string): Promise<string[]> {
-  const result = await db.prepare(ACTIVE_TOKENS_SQL).bind(identityId).all<ActiveTokenRow>();
-  return Array.from(
-    new Set(
-      (result.results ?? [])
-        .map((row) => {
-          if (typeof row.id === "string" && row.id.trim()) {
-            return row.id.trim();
-          }
-
-          if (typeof row.jti === "string" && row.jti.trim()) {
-            return row.jti.trim();
-          }
-
-          if (typeof row.tokenId === "string" && row.tokenId.trim()) {
-            return row.tokenId.trim();
-          }
-
-          if (typeof row.token_id === "string" && row.token_id.trim()) {
-            return row.token_id.trim();
-          }
-
-          return "";
-        })
-        .filter((tokenId): tokenId is string => tokenId.length > 0),
-    ),
-  );
-}
-
-async function revokeIdentityTokens(
-  revocationKv: KVNamespace,
-  identityId: string,
-  tokenIds: string[],
-  revokedAt: string,
-): Promise<void> {
-  await Promise.all(
-    tokenIds.map((tokenId) =>
-      revocationKv.put(
-        `revoked:${tokenId}`,
-        JSON.stringify({
-          tokenId,
-          identityId,
-          revokedAt,
-        }),
-      ),
-    ),
-  );
-}
-
-async function writeIdentitySuspendedAuditEvent(
-  db: D1Database,
-  identity: StoredIdentity,
-  reason: string,
-  actorId: string,
-): Promise<void> {
-  const payload = JSON.stringify({
-    eventType: "identity.suspended",
-    status: identity.status,
-    sponsorId: identity.sponsorId,
-    sponsorChain: identity.sponsorChain,
-    actorId,
-    reason,
-  });
-
-  try {
-    await db.prepare(INSERT_AUDIT_EVENT_SQL)
-      .bind(
-        crypto.randomUUID(),
-        identity.orgId,
-        identity.workspaceId,
-        identity.id,
-        "identity.suspended",
-        reason,
-        payload,
-        identity.updatedAt,
-      )
-      .run();
-  } catch (err) {
-    console.error("Failed to write identity suspended audit event", err);
-  }
-}
-
-async function loadOrgBudget(db: D1Database, orgId: string): Promise<IdentityBudget | undefined> {
-  const row = await db.prepare(ORG_BUDGET_SQL).bind(orgId).first<OrgBudgetRow>();
-  if (!row) {
-    return undefined;
-  }
-
-  if (isIdentityBudget(row.budget)) {
-    return row.budget;
-  }
-
-  if (isIdentityBudget(row.defaultBudget)) {
-    return row.defaultBudget;
-  }
-
-  return (
-    parseBudgetValue(row.budget_json) ??
-    parseBudgetValue(row.default_budget) ??
-    parseSettingsBudget(row.settings_json) ??
-    parseBudgetValue(row.data)
-  );
 }
 
 function parseSettingsBudget(value: string | undefined): IdentityBudget | undefined {

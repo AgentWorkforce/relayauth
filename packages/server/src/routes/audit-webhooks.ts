@@ -110,8 +110,6 @@ const DELETE_AUDIT_WEBHOOK_SQL = `
 `;
 
 auditWebhooks.post("/webhooks", requireScope("relayauth:audit:manage"), async (c) => {
-  await ensureAuditWebhookTable(c.env.DB);
-
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
   const body = await c.req.json<CreateAuditWebhookRequest>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -147,34 +145,17 @@ auditWebhooks.post("/webhooks", requireScope("relayauth:audit:manage"), async (c
   }
 
   const timestamp = new Date().toISOString();
-  const record: AuditWebhookRecord = {
-    id: generateAuditWebhookId(),
+  const record = await c.get("storage").auditWebhooks.create({
     orgId,
     url,
     secret,
     ...(events && events.length > 0 ? { events } : {}),
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-
-  await c.env.DB.prepare(INSERT_AUDIT_WEBHOOK_SQL)
-    .bind(
-      record.id,
-      record.orgId,
-      record.url,
-      record.secret,
-      record.events ? JSON.stringify(record.events) : null,
-      record.createdAt,
-      record.updatedAt,
-    )
-    .run();
+  });
 
   return c.json(maskSecret(record), 201);
 });
 
 auditWebhooks.get("/webhooks", requireScope("relayauth:audit:manage"), async (c) => {
-  await ensureAuditWebhookTable(c.env.DB);
-
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
   const orgId = normalizeRequiredString(c.req.query("orgId"), "orgId");
   if (!orgId) {
@@ -185,15 +166,12 @@ auditWebhooks.get("/webhooks", requireScope("relayauth:audit:manage"), async (c)
     return c.json({ error: "orgId does not match authenticated token" }, 403);
   }
 
-  const result = await c.env.DB.prepare(LIST_AUDIT_WEBHOOKS_SQL).bind(orgId).all<AuditWebhookRow>();
-  const records = (result.results ?? []).map(toAuditWebhookRecord).map(maskSecret);
+  const records = (await c.get("storage").auditWebhooks.list(orgId)).map(maskSecret);
 
   return c.json(records, 200);
 });
 
 auditWebhooks.delete("/webhooks/:id", requireScope("relayauth:audit:manage"), async (c) => {
-  await ensureAuditWebhookTable(c.env.DB);
-
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
   const orgId = normalizeRequiredString(c.req.query("orgId"), "orgId");
   if (!orgId) {
@@ -209,14 +187,9 @@ auditWebhooks.delete("/webhooks/:id", requireScope("relayauth:audit:manage"), as
     return c.json({ error: "id is required" }, 400);
   }
 
-  await c.env.DB.prepare(DELETE_AUDIT_WEBHOOK_SQL).bind(orgId, id).run();
+  await c.get("storage").auditWebhooks.delete(orgId, id);
   return c.body(null, 204);
 });
-
-async function ensureAuditWebhookTable(db: D1Database): Promise<void> {
-  await db.exec(CREATE_AUDIT_WEBHOOKS_TABLE_SQL);
-  await db.exec(CREATE_AUDIT_WEBHOOKS_INDEX_SQL);
-}
 
 function toAuditWebhookRecord(row: AuditWebhookRow): AuditWebhookRecord {
   const events = parseStoredEvents(row.events_json);

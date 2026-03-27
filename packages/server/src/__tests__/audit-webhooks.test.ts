@@ -8,6 +8,7 @@ import {
   createTestApp,
   createTestRequest,
   generateTestToken,
+  seedAuditWebhooks,
 } from "./test-helpers.js";
 
 type ExtendedAuditAction = AuditAction | "budget.alert";
@@ -398,17 +399,16 @@ async function requestAuditWebhooks(
     body,
     claims,
     authorization,
-    db,
+    seed = [],
   }: {
     body?: unknown;
     claims?: Partial<RelayAuthTokenClaims>;
     authorization?: string;
-    db?: D1Database;
+    seed?: StoredWebhook[];
   } = {},
-): Promise<Response> {
-  const app = createTestApp({
-    ...(db ? { DB: db } : {}),
-  });
+): Promise<{ response: Response; app: ReturnType<typeof createTestApp> }> {
+  const app = createTestApp();
+  await seedAuditWebhooks(app, seed);
   const request = createTestRequest(
     method,
     path,
@@ -422,7 +422,10 @@ async function requestAuditWebhooks(
         }),
   );
 
-  return app.request(request, undefined, app.bindings);
+  return {
+    response: await app.request(request, undefined, app.bindings),
+    app,
+  };
 }
 
 async function loadDispatcher(): Promise<AuditWebhookDispatcherModule> {
@@ -447,12 +450,10 @@ async function loadDispatcher(): Promise<AuditWebhookDispatcherModule> {
 }
 
 test("POST /v1/audit/webhooks creates a webhook subscription with url, events, and secret", async () => {
-  const { db, records } = createAuditWebhookD1();
-  const response = await requestAuditWebhooks(
+  const { response, app } = await requestAuditWebhooks(
     "POST",
     "/v1/audit/webhooks",
     {
-      db,
       body: {
         orgId: "org_audit_webhooks",
         url: "https://audit.example.com/hooks/budget",
@@ -470,12 +471,16 @@ test("POST /v1/audit/webhooks creates a webhook subscription with url, events, a
   assert.equal(webhook.url, "https://audit.example.com/hooks/budget");
   assert.deepEqual(webhook.events, ["identity.suspended", "scope.denied"]);
   assert.equal(webhook.secret, "****_123");
-  assert.equal(records.size, 1, "expected webhook subscription to persist in D1");
+  assert.equal((await app.storage.auditWebhooks.list("org_audit_webhooks")).length, 1);
 });
 
 test("GET /v1/audit/webhooks lists webhook subscriptions for an org", async () => {
-  const { db } = createAuditWebhookD1([
-    createWebhookRecord({
+  const { response } = await requestAuditWebhooks(
+    "GET",
+    "/v1/audit/webhooks?orgId=org_audit_webhooks",
+    {
+      seed: [
+        createWebhookRecord({
       id: "awh_org_match_1",
       orgId: "org_audit_webhooks",
       url: "https://audit.example.com/hooks/budget-alerts",
@@ -499,12 +504,8 @@ test("GET /v1/audit/webhooks lists webhook subscriptions for an org", async () =
       secret: "whsec_other",
       createdAt: "2026-03-24T17:02:00.000Z",
     }),
-  ]);
-
-  const response = await requestAuditWebhooks(
-    "GET",
-    "/v1/audit/webhooks?orgId=org_audit_webhooks",
-    { db },
+      ],
+    },
   );
 
   const body = await assertJsonResponse<unknown>(response, 200);
@@ -527,12 +528,10 @@ test("DELETE /v1/audit/webhooks/:id removes a webhook subscription", async () =>
     id: "awh_delete_me",
     orgId: "org_audit_webhooks",
   });
-  const { db, records } = createAuditWebhookD1([target]);
-
-  const deleteResponse = await requestAuditWebhooks(
+  const { response: deleteResponse, app } = await requestAuditWebhooks(
     "DELETE",
     "/v1/audit/webhooks/awh_delete_me?orgId=org_audit_webhooks",
-    { db },
+    { seed: [target] },
   );
 
   assert.equal(
@@ -540,12 +539,12 @@ test("DELETE /v1/audit/webhooks/:id removes a webhook subscription", async () =>
     true,
     `expected DELETE to return 200 or 204, received ${deleteResponse.status}`,
   );
-  assert.equal(records.has(target.id), false, "expected subscription to be removed from D1");
+  assert.equal((await app.storage.auditWebhooks.list("org_audit_webhooks")).length, 0);
 
-  const listResponse = await requestAuditWebhooks(
+  const { response: listResponse } = await requestAuditWebhooks(
     "GET",
     "/v1/audit/webhooks?orgId=org_audit_webhooks",
-    { db },
+    {},
   );
   const listBody = await assertJsonResponse<unknown>(listResponse, 200);
   const webhooks = parseWebhookList(listBody);
@@ -554,7 +553,7 @@ test("DELETE /v1/audit/webhooks/:id removes a webhook subscription", async () =>
 });
 
 test("POST /v1/audit/webhooks returns 401 without valid auth token", async () => {
-  const response = await requestAuditWebhooks(
+  const { response } = await requestAuditWebhooks(
     "POST",
     "/v1/audit/webhooks",
     {
@@ -572,7 +571,7 @@ test("POST /v1/audit/webhooks returns 401 without valid auth token", async () =>
 });
 
 test("POST /v1/audit/webhooks returns 403 without relayauth:audit:manage scope", async () => {
-  const response = await requestAuditWebhooks(
+  const { response } = await requestAuditWebhooks(
     "POST",
     "/v1/audit/webhooks",
     {
@@ -593,7 +592,7 @@ test("POST /v1/audit/webhooks returns 403 without relayauth:audit:manage scope",
 });
 
 test("POST /v1/audit/webhooks returns 400 for invalid webhook URL", async () => {
-  const response = await requestAuditWebhooks(
+  const { response } = await requestAuditWebhooks(
     "POST",
     "/v1/audit/webhooks",
     {
@@ -624,7 +623,7 @@ test("POST /v1/audit/webhooks returns 400 for SSRF-prone URLs (private IPs, loca
 
   for (const url of ssrfUrls) {
     await t.test(`rejects ${url}`, async () => {
-      const response = await requestAuditWebhooks(
+      const { response } = await requestAuditWebhooks(
         "POST",
         "/v1/audit/webhooks",
         {

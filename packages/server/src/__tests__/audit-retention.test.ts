@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { mockD1 } from "./test-helpers.js";
-
 type AuditRetentionConfig = {
   orgId: string;
   retentionDays: number;
@@ -130,7 +128,12 @@ function createRetentionD1({
   logs?: AuditLogFixture[];
   configs?: RetentionFixture[];
 } = {}): RetentionD1 {
-  const base = mockD1() as D1Database;
+  const base = {
+    batch: async <T>(statements: D1PreparedStatement[]) =>
+      Promise.all(statements.map((statement) => statement.run())) as Awaited<T>,
+    exec: async () => ({ count: 0, duration: 0 }),
+    dump: async () => new ArrayBuffer(0),
+  } as D1Database;
   const state = {
     auditLogs: [...logs],
     retentionConfig: new Map(configs.map((config) => [config.org_id, config.retention_days])),

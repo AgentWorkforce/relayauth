@@ -8,46 +8,15 @@ import {
   createTestRequest,
   generateTestIdentity,
   generateTestToken,
+  listRevokedTokenIds,
+  seedActiveTokens,
+  seedStoredIdentities,
 } from "./test-helpers.js";
 
 type ActiveToken = {
   id: string;
   identityId: string;
 };
-
-type D1Call = {
-  query: string;
-  params: unknown[];
-};
-
-type KvPutCall = {
-  key: string;
-  value: string;
-};
-
-type DurableObjectCall = {
-  identityId: string;
-  method: string;
-  path: string;
-  body: unknown;
-};
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-    },
-  });
-}
-
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function normalizeSql(query: string): string {
-  return query.replace(/\s+/g, " ").trim().toLowerCase();
-}
 
 function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredIdentity {
   const base = generateTestIdentity(overrides);
@@ -63,180 +32,14 @@ function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredId
   };
 }
 
-function createRecordingD1({
-  activeTokens = [],
-}: {
-  activeTokens?: ActiveToken[];
-} = {}): { db: D1Database; calls: D1Call[] } {
-  const calls: D1Call[] = [];
-  const meta = {
-    changed_db: false,
-    changes: 0,
-    duration: 0,
-    rows_read: 0,
-    rows_written: 0,
-  };
-
-  const resolveRows = (query: string, params: unknown[]): unknown[] => {
-    const normalized = normalizeSql(query);
-
-    if (/from tokens/.test(normalized)) {
-      const [identityId] = params;
-      return activeTokens
-        .filter((token) => token.identityId === identityId)
-        .map((token) => ({
-          id: token.id,
-          jti: token.id,
-          tokenId: token.id,
-          token_id: token.id,
-          identityId: token.identityId,
-          identity_id: token.identityId,
-          status: "active",
-        }));
-    }
-
-    return [];
-  };
-
-  const createPreparedStatement = (query: string) => ({
-    bind: (...params: unknown[]) => ({
-      first: async <T>() => {
-        calls.push({ query: normalizeSql(query), params });
-        return (resolveRows(query, params)[0] as T | null) ?? null;
-      },
-      run: async () => {
-        calls.push({ query: normalizeSql(query), params });
-        return { success: true, meta };
-      },
-      raw: async <T>() => {
-        calls.push({ query: normalizeSql(query), params });
-        return resolveRows(query, params) as T[];
-      },
-      all: async <T>() => {
-        calls.push({ query: normalizeSql(query), params });
-        return { results: resolveRows(query, params) as T[], success: true, meta };
-      },
-    }),
-    first: async <T>() => {
-      calls.push({ query: normalizeSql(query), params: [] });
-      return (resolveRows(query, [])[0] as T | null) ?? null;
-    },
-    run: async () => {
-      calls.push({ query: normalizeSql(query), params: [] });
-      return { success: true, meta };
-    },
-    raw: async <T>() => {
-      calls.push({ query: normalizeSql(query), params: [] });
-      return resolveRows(query, []) as T[];
-    },
-    all: async <T>() => {
-      calls.push({ query: normalizeSql(query), params: [] });
-      return { results: resolveRows(query, []) as T[], success: true, meta };
-    },
-  });
-
+function createAuthHeaders(claims?: Partial<RelayAuthTokenClaims>): HeadersInit {
   return {
-    calls,
-    db: {
-      prepare: (query: string) => createPreparedStatement(query),
-      batch: async <T>(statements: D1PreparedStatement[]) =>
-        Promise.all(statements.map((statement) => statement.run())) as Awaited<T>,
-      exec: async (query: string) => {
-        calls.push({ query: normalizeSql(query), params: [] });
-        return { count: 0, duration: 0 };
-      },
-      dump: async () => new ArrayBuffer(0),
-    } as D1Database,
+    Authorization: `Bearer ${generateTestToken(claims)}`,
+    "X-Confirm-Delete": "true",
   };
 }
 
-function createRecordingKV(): { kv: KVNamespace; puts: KvPutCall[] } {
-  const puts: KvPutCall[] = [];
-  const store = new Map<string, string>();
-
-  return {
-    puts,
-    kv: {
-      get: async (key: string) => store.get(key) ?? null,
-      put: async (key: string, value: string) => {
-        puts.push({ key, value });
-        store.set(key, value);
-      },
-      delete: async (key: string) => {
-        store.delete(key);
-      },
-      list: async () => ({ keys: [], list_complete: true, cacheStatus: null }),
-      getWithMetadata: async (key: string) => ({
-        value: store.get(key) ?? null,
-        metadata: null,
-        cacheStatus: null,
-      }),
-    } as KVNamespace,
-  };
-}
-
-function createIdentityNamespace(seedIdentities: StoredIdentity[]): {
-  namespace: DurableObjectNamespace;
-  identities: Map<string, StoredIdentity>;
-  calls: DurableObjectCall[];
-} {
-  const identities = new Map(seedIdentities.map((identity) => [identity.id, clone(identity)]));
-  const calls: DurableObjectCall[] = [];
-
-  return {
-    identities,
-    calls,
-    namespace: {
-      idFromName: (name: string) => name,
-      get: (id: DurableObjectId) => ({
-        fetch: async (request: Request) => {
-          const identityId = String(id);
-          const current = identities.get(identityId) ?? null;
-          const { pathname } = new URL(request.url);
-          const body = await request.clone().json().catch(() => undefined);
-
-          calls.push({
-            identityId,
-            method: request.method,
-            path: pathname,
-            body,
-          });
-
-          if (pathname === "/internal/get" && request.method === "GET") {
-            return current
-              ? jsonResponse(current, 200)
-              : jsonResponse({ error: "identity_not_found" }, 404);
-          }
-
-          if (pathname === "/internal/delete" && request.method === "DELETE") {
-            if (!current) {
-              return jsonResponse({ error: "identity_not_found" }, 404);
-            }
-
-            identities.delete(identityId);
-            return new Response(null, { status: 204 });
-          }
-
-          return jsonResponse({ error: `unexpected_do_request:${request.method}:${pathname}` }, 500);
-        },
-      }),
-    } as unknown as DurableObjectNamespace,
-  };
-}
-
-function assertRevocationWrites(puts: KvPutCall[], activeTokens: ActiveToken[]): void {
-  assert.equal(puts.length, activeTokens.length, "expected one revocation write per active token");
-
-  for (const token of activeTokens) {
-    assert.equal(
-      puts.some(({ key, value }) => key === `revoked:${token.id}` && value.includes(token.id)),
-      true,
-      `expected revocation writes to include token ${token.id}`,
-    );
-  }
-}
-
-function createDeleteHarness({
+async function createDeleteHarness({
   claims,
   identities = [],
   activeTokens = [],
@@ -244,33 +47,24 @@ function createDeleteHarness({
   claims?: Partial<RelayAuthTokenClaims>;
   identities?: StoredIdentity[];
   activeTokens?: ActiveToken[];
-} = {}): {
-  app: ReturnType<typeof createTestApp>;
-  identityState: Map<string, StoredIdentity>;
-  doCalls: DurableObjectCall[];
-  d1Calls: D1Call[];
-  revocationPuts: KvPutCall[];
-  authHeaders: HeadersInit;
-} {
-  const identityNamespace = createIdentityNamespace(identities);
-  const recordingD1 = createRecordingD1({ activeTokens });
-  const recordingKV = createRecordingKV();
-  const app = createTestApp({
-    IDENTITY_DO: identityNamespace.namespace,
-    DB: recordingD1.db,
-    REVOCATION_KV: recordingKV.kv,
-  });
+} = {}) {
+  const app = createTestApp();
+  await seedStoredIdentities(app, identities);
+
+  for (const [identityId, tokenIds] of Object.entries(
+    activeTokens.reduce<Record<string, string[]>>((acc, token) => {
+      const list = acc[token.identityId] ?? [];
+      list.push(token.id);
+      acc[token.identityId] = list;
+      return acc;
+    }, {}),
+  )) {
+    await seedActiveTokens(app, identityId, tokenIds);
+  }
 
   return {
     app,
-    identityState: identityNamespace.identities,
-    doCalls: identityNamespace.calls,
-    d1Calls: recordingD1.calls,
-    revocationPuts: recordingKV.puts,
-    authHeaders: {
-      Authorization: `Bearer ${generateTestToken(claims)}`,
-      "X-Confirm-Delete": "true",
-    },
+    authHeaders: createAuthHeaders(claims),
   };
 }
 
@@ -297,16 +91,8 @@ async function deleteIdentity(
     activeTokens?: ActiveToken[];
     headers?: HeadersInit;
   } = {},
-): Promise<{
-  response: Response;
-  identityState: Map<string, StoredIdentity>;
-  doCalls: DurableObjectCall[];
-  d1Calls: D1Call[];
-  revocationPuts: KvPutCall[];
-  app: ReturnType<typeof createTestApp>;
-  authHeaders: HeadersInit;
-}> {
-  const harness = createDeleteHarness({ claims, identities, activeTokens });
+) {
+  const harness = await createDeleteHarness({ claims, identities, activeTokens });
   const response = await requestIdentityRoute(
     harness.app,
     "DELETE",
@@ -316,10 +102,6 @@ async function deleteIdentity(
 
   return {
     response,
-    identityState: harness.identityState,
-    doCalls: harness.doCalls,
-    d1Calls: harness.d1Calls,
-    revocationPuts: harness.revocationPuts,
     app: harness.app,
     authHeaders: harness.authHeaders,
   };
@@ -377,19 +159,13 @@ test("DELETE /v1/identities/:id hard deletes the identity from storage", async (
     suspendReason: "manual_review",
   });
 
-  const { response, identityState, doCalls } = await deleteIdentity(identity.id, {
+  const { response, app } = await deleteIdentity(identity.id, {
     claims: { org: identity.orgId },
     identities: [identity],
   });
 
   assert.equal(response.status, 204);
-  assert.equal(identityState.has(identity.id), false);
-  assert.equal(
-    doCalls.some(({ method, path, identityId }) =>
-      method === "DELETE" && path === "/internal/delete" && identityId === identity.id),
-    true,
-    "expected delete flow to call the durable object delete endpoint",
-  );
+  assert.equal(await app.storage.identities.get(identity.id), null);
 });
 
 test("GET /v1/identities/:id returns 404 after DELETE /v1/identities/:id", async () => {
@@ -398,7 +174,7 @@ test("GET /v1/identities/:id returns 404 after DELETE /v1/identities/:id", async
     orgId: "org_delete_then_get",
     status: "active",
   });
-  const harness = createDeleteHarness({
+  const harness = await createDeleteHarness({
     claims: { org: identity.orgId },
     identities: [identity],
   });
@@ -436,15 +212,17 @@ test("DELETE /v1/identities/:id revokes all active tokens for the identity", asy
     { id: "jti_delete_refresh_3", identityId: identity.id },
   ];
 
-  const { response, d1Calls, revocationPuts } = await deleteIdentity(identity.id, {
+  const { response, app } = await deleteIdentity(identity.id, {
     claims: { org: identity.orgId },
     identities: [identity],
     activeTokens,
   });
 
   assert.equal(response.status, 204);
-  assert.equal(d1Calls.some(({ query }) => /from tokens/.test(query)), true);
-  assertRevocationWrites(revocationPuts, activeTokens);
+  assert.deepEqual(
+    await listRevokedTokenIds(app),
+    activeTokens.map((token) => token.id).sort(),
+  );
 });
 
 test("DELETE /v1/identities/:id can delete identities in active, suspended, and retired states", async () => {
@@ -463,12 +241,12 @@ test("DELETE /v1/identities/:id can delete identities in active, suspended, and 
         : {}),
     });
 
-    const { response, identityState } = await deleteIdentity(identity.id, {
+    const { response, app } = await deleteIdentity(identity.id, {
       claims: { org: identity.orgId },
       identities: [identity],
     });
 
     assert.equal(response.status, 204, `expected ${status} identity delete to return 204`);
-    assert.equal(identityState.has(identity.id), false, `expected ${status} identity to be removed from storage`);
+    assert.equal(await app.storage.identities.get(identity.id), null);
   }
 });

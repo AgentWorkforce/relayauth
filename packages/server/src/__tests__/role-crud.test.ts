@@ -414,9 +414,10 @@ async function requestRolesApi(
   } = {},
 ): Promise<{ response: Response; scenario: RoleScenario }> {
   const activeScenario = scenario ?? createRoleScenario();
-  const app = createTestApp({
-    DB: activeScenario.db,
-  });
+  const app = createTestApp();
+  for (const role of activeScenario.roles.values()) {
+    await app.storage.roles.create(cloneRole(role));
+  }
   const token = generateTestToken({
     org: "org_test",
     wks: "ws_test",
@@ -433,6 +434,21 @@ async function requestRolesApi(
   );
 
   const response = await app.request(request, undefined, app.bindings);
+  const rows = await app.storage.DB.prepare(`
+    SELECT data
+    FROM roles
+  `).all<{ data?: string }>();
+  activeScenario.roles = new Map(
+    rows.results
+      .map((row) => {
+        if (typeof row.data !== "string") {
+          return null;
+        }
+        const role = JSON.parse(row.data) as Role;
+        return [role.id, role] as const;
+      })
+      .filter((entry): entry is readonly [string, Role] => entry !== null),
+  );
   return { response, scenario: activeScenario };
 }
 

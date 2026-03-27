@@ -1,24 +1,7 @@
 import type { Policy, PolicyCondition, PolicyEffect } from "@relayauth/types";
-import { parseScope } from "@relayauth/sdk/src/scope-parser.js";
-
-type PolicyRow = {
-  id?: string;
-  name?: string;
-  effect?: PolicyEffect;
-  scopes?: string | string[];
-  scopes_json?: string | string[];
-  conditions?: string | PolicyCondition[];
-  conditions_json?: string | PolicyCondition[];
-  priority?: number;
-  orgId?: string;
-  org_id?: string;
-  workspaceId?: string | null;
-  workspace_id?: string | null;
-  createdAt?: string;
-  created_at?: string;
-  deletedAt?: string | null;
-  deleted_at?: string | null;
-};
+import { parseScope } from "@relayauth/sdk";
+import type { AuthStorage, PolicyStorage } from "../storage/index.js";
+import { resolvePolicyStorage } from "../storage/index.js";
 
 export type CreatePolicyInput = {
   name: string;
@@ -33,6 +16,8 @@ export type CreatePolicyInput = {
 export type UpdatePolicyInput = Partial<
   Pick<Policy, "name" | "effect" | "scopes" | "conditions" | "priority">
 >;
+
+type PolicyStorageSource = D1Database | PolicyStorage | Pick<AuthStorage, "policies">;
 
 class PolicyEngineError extends Error {
   constructor(
@@ -69,24 +54,11 @@ const IPV4_PATTERN =
   /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(?:\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
 const IPV6_PATTERN = /^[0-9a-f:]+$/i;
 
-const SELECT_POLICY_COLUMNS = `
-  SELECT
-    id,
-    name,
-    effect,
-    scopes,
-    scopes_json,
-    conditions,
-    conditions_json,
-    priority,
-    org_id AS orgId,
-    workspace_id AS workspaceId,
-    created_at AS createdAt,
-    deleted_at AS deletedAt
-  FROM policies
-`;
-
-export async function createPolicy(db: D1Database, input: CreatePolicyInput): Promise<Policy> {
+export async function createPolicy(
+  storageSource: PolicyStorageSource,
+  input: CreatePolicyInput,
+): Promise<Policy> {
+  const storage = resolvePolicyStorage(storageSource);
   const orgId = normalizeRequiredString(input.orgId, "orgId is required", "invalid_policy_input");
   const name = validatePolicyName(input.name);
   const effect = validatePolicyEffect(input.effect);
@@ -95,7 +67,7 @@ export async function createPolicy(db: D1Database, input: CreatePolicyInput): Pr
   const priority = validatePolicyPriority(input.priority);
   const workspaceId = normalizeOptionalString(input.workspaceId);
 
-  const duplicate = await findPolicyByName(db, orgId, name, workspaceId);
+  const duplicate = await findPolicyByName(storage, orgId, name, workspaceId);
   if (duplicate) {
     throw new PolicyEngineError(
       `Policy '${name}' already exists in this scope`,
@@ -116,63 +88,24 @@ export async function createPolicy(db: D1Database, input: CreatePolicyInput): Pr
     createdAt: new Date().toISOString(),
   };
 
-  await db
-    .prepare(`
-      INSERT INTO policies (
-        id,
-        name,
-        effect,
-        scopes,
-        scopes_json,
-        conditions,
-        conditions_json,
-        priority,
-        org_id,
-        workspace_id,
-        created_at,
-        deleted_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .bind(
-      policy.id,
-      policy.name,
-      policy.effect,
-      JSON.stringify(policy.scopes),
-      JSON.stringify(policy.scopes),
-      JSON.stringify(policy.conditions),
-      JSON.stringify(policy.conditions),
-      policy.priority,
-      policy.orgId,
-      policy.workspaceId ?? null,
-      policy.createdAt,
-      null,
-    )
-    .run();
-
+  await storage.create(policy);
   return policy;
 }
 
-export async function getPolicy(db: D1Database, id: string): Promise<Policy | null> {
+export async function getPolicy(
+  storageSource: PolicyStorageSource,
+  id: string,
+): Promise<Policy | null> {
   const policyId = normalizeOptionalString(id);
   if (!policyId) {
     return null;
   }
 
-  const row = await db
-    .prepare(`
-      ${SELECT_POLICY_COLUMNS}
-      WHERE id = ? AND deleted_at IS NULL
-      LIMIT 1
-    `)
-    .bind(policyId)
-    .first<PolicyRow>();
-
-  return hydratePolicy(row);
+  return resolvePolicyStorage(storageSource).get(policyId);
 }
 
 export async function listPolicies(
-  db: D1Database,
+  storageSource: PolicyStorageSource,
   orgId: string,
   workspaceId?: string,
 ): Promise<Policy[]> {
@@ -182,48 +115,18 @@ export async function listPolicies(
     "invalid_policy_input",
   );
   const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
-
-  const query = normalizedWorkspaceId
-    ? {
-        sql: `
-          ${SELECT_POLICY_COLUMNS}
-          WHERE org_id = ?
-            AND deleted_at IS NULL
-            AND (workspace_id = ? OR workspace_id IS NULL)
-          ORDER BY priority DESC, id ASC
-        `,
-        params: [normalizedOrgId, normalizedWorkspaceId],
-      }
-    : {
-        sql: `
-          ${SELECT_POLICY_COLUMNS}
-          WHERE org_id = ?
-            AND deleted_at IS NULL
-          ORDER BY priority DESC, id ASC
-        `,
-        params: [normalizedOrgId],
-      };
-
-  const result = await db.prepare(query.sql).bind(...query.params).all<PolicyRow>();
-  return (result.results ?? [])
-    .map(hydratePolicy)
-    .filter((policy): policy is Policy => policy !== null)
-    .filter((policy) =>
-      policy.orgId === normalizedOrgId
-      && (normalizedWorkspaceId === undefined
-        || policy.workspaceId === undefined
-        || policy.workspaceId === normalizedWorkspaceId),
-    );
+  return resolvePolicyStorage(storageSource).list(normalizedOrgId, normalizedWorkspaceId);
 }
 
 export async function updatePolicy(
-  db: D1Database,
+  storageSource: PolicyStorageSource,
   id: string,
   updates: UpdatePolicyInput,
   existingPolicy?: Policy,
 ): Promise<Policy> {
+  const storage = resolvePolicyStorage(storageSource);
   const policyId = normalizeRequiredString(id, "policyId is required", "invalid_policy_input");
-  const current = existingPolicy ?? await getExistingPolicy(db, policyId);
+  const current = existingPolicy ?? await getExistingPolicy(storage, policyId);
 
   const nextName = updates.name === undefined ? current.name : validatePolicyName(updates.name);
   const nextEffect =
@@ -238,7 +141,7 @@ export async function updatePolicy(
     updates.priority === undefined ? current.priority : validatePolicyPriority(updates.priority);
 
   if (nextName !== current.name) {
-    const duplicate = await findPolicyByName(db, current.orgId, nextName, current.workspaceId);
+    const duplicate = await findPolicyByName(storage, current.orgId, nextName, current.workspaceId);
     if (duplicate && duplicate.id !== current.id) {
       throw new PolicyEngineError(
         `Policy '${nextName}' already exists in this scope`,
@@ -248,57 +151,35 @@ export async function updatePolicy(
     }
   }
 
-  await db
-    .prepare(`
-      UPDATE policies
-      SET name = ?, effect = ?, scopes = ?, scopes_json = ?, conditions = ?, conditions_json = ?, priority = ?
-      WHERE id = ? AND org_id = ? AND deleted_at IS NULL
-    `)
-    .bind(
-      nextName,
-      nextEffect,
-      JSON.stringify(nextScopes),
-      JSON.stringify(nextScopes),
-      JSON.stringify(nextConditions),
-      JSON.stringify(nextConditions),
-      nextPriority,
-      current.id,
-      current.orgId,
-    )
-    .run();
-
-  return {
-    ...current,
+  return storage.update(current.id, {
     name: nextName,
     effect: nextEffect,
     scopes: nextScopes,
     conditions: nextConditions,
     priority: nextPriority,
-  };
+  });
 }
 
-export async function deletePolicy(db: D1Database, id: string, existingPolicy?: Policy): Promise<void> {
+export async function deletePolicy(
+  storageSource: PolicyStorageSource,
+  id: string,
+  existingPolicy?: Policy,
+): Promise<void> {
+  const storage = resolvePolicyStorage(storageSource);
   const policy = existingPolicy ?? await getExistingPolicy(
-    db,
+    storage,
     normalizeRequiredString(id, "policyId is required", "invalid_policy_input"),
   );
 
-  await db
-    .prepare(`
-      UPDATE policies
-      SET deleted_at = ?
-      WHERE id = ? AND org_id = ? AND deleted_at IS NULL
-    `)
-    .bind(new Date().toISOString(), policy.id, policy.orgId)
-    .run();
+  await storage.delete(policy.id);
 }
 
 export function isPolicyEngineError(error: unknown): error is PolicyEngineError {
   return error instanceof PolicyEngineError;
 }
 
-async function getExistingPolicy(db: D1Database, id: string): Promise<Policy> {
-  const policy = await getPolicy(db, id);
+async function getExistingPolicy(storage: PolicyStorage, id: string): Promise<Policy> {
+  const policy = await storage.get(id);
   if (!policy) {
     throw new PolicyEngineError("Policy not found", "policy_not_found", 404);
   }
@@ -307,67 +188,19 @@ async function getExistingPolicy(db: D1Database, id: string): Promise<Policy> {
 }
 
 async function findPolicyByName(
-  db: D1Database,
+  storage: PolicyStorage,
   orgId: string,
   name: string,
   workspaceId?: string,
 ): Promise<Policy | null> {
-  const result = await db
-    .prepare(`
-      ${SELECT_POLICY_COLUMNS}
-      WHERE org_id = ? AND name = ? AND deleted_at IS NULL
-      ORDER BY id ASC
-    `)
-    .bind(orgId, name)
-    .all<PolicyRow>();
-
   const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
-  return (result.results ?? [])
-    .map(hydratePolicy)
-    .filter((policy): policy is Policy => policy !== null)
-    .find((policy) =>
-      normalizedWorkspaceId === undefined
-        ? policy.workspaceId === undefined
-        : policy.workspaceId === normalizedWorkspaceId,
-    ) ?? null;
-}
-
-function hydratePolicy(row: PolicyRow | null): Policy | null {
-  if (!row) {
-    return null;
-  }
-
-  const id = normalizeOptionalString(row.id);
-  const name = normalizeOptionalString(row.name);
-  const effect = row.effect;
-  const orgId = normalizeOptionalString(row.orgId) ?? normalizeOptionalString(row.org_id);
-  const createdAt = normalizeOptionalString(row.createdAt) ?? normalizeOptionalString(row.created_at);
-  const deletedAt = normalizeOptionalString(row.deletedAt) ?? normalizeOptionalString(row.deleted_at);
-
-  if (!id || !name || !effect || !orgId || !createdAt || deletedAt) {
-    return null;
-  }
-
-  const scopes = parseStringArrayColumn(row.scopes_json ?? row.scopes);
-  const conditions = parseConditionsColumn(row.conditions_json ?? row.conditions);
-  const workspaceId = normalizeOptionalString(row.workspaceId) ?? normalizeOptionalString(row.workspace_id);
-  const priority = typeof row.priority === "number" ? row.priority : Number(row.priority);
-
-  if (!POLICY_EFFECTS.has(effect) || !Number.isInteger(priority)) {
-    return null;
-  }
-
-  return {
-    id,
-    name,
-    effect,
-    scopes,
-    conditions,
-    priority,
-    orgId,
-    ...(workspaceId ? { workspaceId } : {}),
-    createdAt,
-  };
+  const policies = await storage.list(orgId);
+  return policies.find((policy) =>
+    policy.name === name
+    && (normalizedWorkspaceId === undefined
+      ? policy.workspaceId === undefined
+      : policy.workspaceId === normalizedWorkspaceId),
+  ) ?? null;
 }
 
 function validatePolicyName(raw: string): string {
@@ -621,7 +454,9 @@ function isValidIpOrCidr(value: string): boolean {
     return false;
   }
 
-  return ip.includes(":") ? prefix >= 0 && prefix <= 128 : prefix >= 0 && prefix <= 32;
+  return ip.includes(":")
+    ? prefix >= 0 && prefix <= 128
+    : prefix >= 0 && prefix <= 32;
 }
 
 function isValidIpAddress(value: string): boolean {
@@ -633,7 +468,6 @@ function isValidIpAddress(value: string): boolean {
     return false;
   }
 
-  // Reject multiple :: groups (e.g. ::1::2)
   const doubleColonCount = value.split("::").length - 1;
   if (doubleColonCount > 1) {
     return false;
@@ -644,7 +478,6 @@ function isValidIpAddress(value: string): boolean {
     return false;
   }
 
-  // Without ::, must have exactly 8 groups
   if (doubleColonCount === 0 && parts.length !== 8) {
     return false;
   }
@@ -653,7 +486,6 @@ function isValidIpAddress(value: string): boolean {
     if (part.length === 0) {
       continue;
     }
-
     if (part.length > 4 || !/^[0-9a-f]{1,4}$/i.test(part)) {
       return false;
     }
@@ -678,48 +510,6 @@ function normalizeOptionalString(value: unknown): string | undefined {
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : undefined;
-}
-
-function parseStringArrayColumn(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.filter((entry): entry is string => typeof entry === "string");
-  }
-
-  if (typeof value !== "string" || value.trim().length === 0) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed)
-      ? parsed.filter((entry): entry is string => typeof entry === "string")
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function parseConditionsColumn(value: unknown): PolicyCondition[] {
-  if (Array.isArray(value)) {
-    return value
-      .filter((entry): entry is PolicyCondition => typeof entry === "object" && entry !== null)
-      .map((entry) => ({ ...entry }));
-  }
-
-  if (typeof value !== "string" || value.trim().length === 0) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed)
-      ? parsed
-          .filter((entry): entry is PolicyCondition => typeof entry === "object" && entry !== null)
-          .map((entry) => ({ ...entry }))
-      : [];
-  } catch {
-    return [];
-  }
 }
 
 function createPolicyId(): string {

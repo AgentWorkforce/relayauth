@@ -7,23 +7,13 @@ import {
   createTestRequest,
   generateTestIdentity,
   generateTestToken,
+  seedStoredIdentities,
 } from "./test-helpers.js";
+import type { StoredIdentity } from "../durable-objects/identity-do.js";
 
 type ListIdentitiesResponse = {
   data: AgentIdentity[];
   cursor?: string;
-};
-
-type ListIdentityRow = AgentIdentity & {
-  org_id: string;
-  created_at: string;
-  updated_at: string;
-  last_active_at?: string;
-  suspended_at?: string;
-  suspend_reason?: string;
-  scopes_json: string;
-  roles_json: string;
-  metadata_json: string;
 };
 
 function createIdentity(
@@ -45,25 +35,6 @@ function createIdentity(
     ...(overrides.suspendedAt !== undefined ? { suspendedAt: overrides.suspendedAt } : {}),
     ...(overrides.suspendReason !== undefined ? { suspendReason: overrides.suspendReason } : {}),
   });
-}
-
-function toListRow(identity: AgentIdentity): ListIdentityRow {
-  return {
-    ...identity,
-    org_id: identity.orgId,
-    created_at: identity.createdAt,
-    updated_at: identity.updatedAt,
-    ...(identity.lastActiveAt !== undefined ? { last_active_at: identity.lastActiveAt } : {}),
-    ...(identity.suspendedAt !== undefined ? { suspended_at: identity.suspendedAt } : {}),
-    ...(identity.suspendReason !== undefined ? { suspend_reason: identity.suspendReason } : {}),
-    scopes_json: JSON.stringify(identity.scopes),
-    roles_json: JSON.stringify(identity.roles),
-    metadata_json: JSON.stringify(identity.metadata),
-  };
-}
-
-function normalizeSql(query: string): string {
-  return query.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function decodeCursorCandidate(
@@ -117,88 +88,13 @@ function decodeCursorCandidate(
   return null;
 }
 
-function createListScenarioD1(identities: AgentIdentity[]): D1Database {
-  const meta = {
-    changed_db: false,
-    changes: 0,
-    duration: 0,
-    rows_read: 0,
-    rows_written: 0,
-  };
-
-  const resolveRows = (query: string, params: unknown[]): ListIdentityRow[] => {
-    const normalized = normalizeSql(query);
-    if (!/from identities\b/.test(normalized) && !/\bidentities\b/.test(normalized)) {
-      return [];
-    }
-
-    let rows = identities.map(toListRow);
-    const stringParams = params.filter((param): param is string => typeof param === "string");
-    const numberParams = params.filter((param): param is number => typeof param === "number" && Number.isFinite(param));
-
-    const orgId = stringParams.find((param) => rows.some((row) => row.orgId === param || row.org_id === param));
-    if (orgId) {
-      rows = rows.filter((row) => row.orgId === orgId || row.org_id === orgId);
-    }
-
-    const status = stringParams.find((param): param is IdentityStatus =>
-      param === "active" || param === "suspended" || param === "retired",
-    );
-    if (status) {
-      rows = rows.filter((row) => row.status === status);
-    }
-
-    const type = stringParams.find((param): param is IdentityType =>
-      param === "agent" || param === "human" || param === "service",
-    );
-    if (type) {
-      rows = rows.filter((row) => row.type === type);
-    }
-
-    const cursor = stringParams
-      .map((param) => decodeCursorCandidate(param))
-      .find((candidate) =>
-        candidate &&
-        rows.some((row) => row.id === candidate.id || row.createdAt === candidate.createdAt),
-      );
-    if (cursor) {
-      const anchorIndex = rows.findIndex(
-        (row) => row.id === cursor.id || row.createdAt === cursor.createdAt,
-      );
-      if (anchorIndex >= 0) {
-        rows = rows.slice(anchorIndex + 1);
-      }
-    }
-
-    const inlineLimitMatch = normalized.match(/\blimit\s+(\d+)\b/);
-    const limit = numberParams[0] ?? (inlineLimitMatch ? Number.parseInt(inlineLimitMatch[1] ?? "", 10) : undefined);
-    if (typeof limit === "number" && Number.isFinite(limit)) {
-      rows = rows.slice(0, limit);
-    }
-
-    return rows;
-  };
-
-  const createPreparedStatement = (query: string) => ({
-    bind: (...params: unknown[]) => ({
-      first: async <T>() => (resolveRows(query, params)[0] as T | null) ?? null,
-      run: async () => ({ success: true, meta }),
-      raw: async <T>() => resolveRows(query, params) as T[],
-      all: async <T>() => ({ results: resolveRows(query, params) as T[], success: true, meta }),
-    }),
-    first: async <T>() => (resolveRows(query, [])[0] as T | null) ?? null,
-    run: async () => ({ success: true, meta }),
-    raw: async <T>() => resolveRows(query, []) as T[],
-    all: async <T>() => ({ results: resolveRows(query, []) as T[], success: true, meta }),
-  });
-
+function toStoredIdentity(identity: AgentIdentity): StoredIdentity {
   return {
-    prepare: (query: string) => createPreparedStatement(query),
-    batch: async <T>(statements: D1PreparedStatement[]) =>
-      Promise.all(statements.map((statement) => statement.run())) as Awaited<T>,
-    exec: async () => ({ count: 0, duration: 0 }),
-    dump: async () => new ArrayBuffer(0),
-  } as D1Database;
+    ...identity,
+    sponsorId: "user_list_owner",
+    sponsorChain: ["user_list_owner", "agent_list_parent", identity.id],
+    workspaceId: "ws_test",
+  };
 }
 
 async function listIdentities(
@@ -211,9 +107,8 @@ async function listIdentities(
     identities?: AgentIdentity[];
   } = {},
 ): Promise<Response> {
-  const app = createTestApp({
-    DB: createListScenarioD1(identities),
-  });
+  const app = createTestApp();
+  await seedStoredIdentities(app, identities.map(toStoredIdentity));
   const token = generateTestToken(claims);
   const request = createTestRequest(
     "GET",

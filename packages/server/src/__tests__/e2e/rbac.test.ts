@@ -9,6 +9,7 @@ import { checkAccess, evaluatePermissions } from "../../engine/policy-evaluation
 import { getInheritanceChain } from "../../engine/scope-inheritance.js";
 import type { AppEnv } from "../../env.js";
 import { requireScope } from "../../middleware/scope.js";
+import type { AuthStorage } from "../../storage/index.js";
 import {
   assertJsonResponse,
   createTestApp,
@@ -405,7 +406,7 @@ test("Scopes & RBAC E2E", async (t) => {
   });
 
   await t.test("scope escalation attempt returns 403 and writes a scope.escalation_denied audit event", async () => {
-    const escalationApp = createScopeIssuanceApp();
+    const escalationApp = createScopeIssuanceApp(harness.app.storage);
     const parentToken = generateTestToken({
       sub: primaryIdentity.id,
       org: ORG_ID,
@@ -604,8 +605,13 @@ function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredId
   };
 }
 
-function createScopeIssuanceApp(): Hono<AppEnv> {
+function createScopeIssuanceApp(storage: AuthStorage): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+
+  app.use("*", async (c, next) => {
+    c.set("storage", storage);
+    await next();
+  });
 
   app.post("/subagents", async (c) => {
     const auth = await authenticate(c.req.header("Authorization"), c.env.SIGNING_KEY);
@@ -623,7 +629,7 @@ function createScopeIssuanceApp(): Hono<AppEnv> {
       return c.json({ scopes: narrowed }, 201);
     } catch (error) {
       const deniedScope = matchesAny(requestedScopes, claims.scopes).denied[0] ?? requestedScopes[0] ?? "*";
-      await writeAuditEntry(c.env.DB, {
+      await writeAuditEntry(c.get("storage"), {
         action: "scope.escalation_denied",
         identityId: claims.sub,
         orgId: claims.org,

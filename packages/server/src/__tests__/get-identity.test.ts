@@ -1,82 +1,54 @@
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import test from "node:test";
 import type { AgentIdentity, RelayAuthTokenClaims } from "@relayauth/types";
+import type { StoredIdentity } from "../durable-objects/identity-do.js";
 import {
   assertJsonResponse,
   createTestApp,
   createTestRequest,
   generateTestIdentity,
-  mockDO,
+  generateTestToken,
+  seedStoredIdentity,
 } from "./test-helpers.js";
 
-function base64UrlEncode(value: string | Buffer): string {
-  return Buffer.from(value).toString("base64url");
-}
-
-function signHs256(payload: Record<string, unknown>, secret: string): string {
-  const header = { alg: "HS256", typ: "JWT" };
-  const encodedHeader = base64UrlEncode(JSON.stringify(header));
-  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
-  const unsigned = `${encodedHeader}.${encodedPayload}`;
-  const signature = crypto
-    .createHmac("sha256", secret)
-    .update(unsigned)
-    .digest("base64url");
-
-  return `${unsigned}.${signature}`;
-}
-
 function createAuthToken(overrides: Partial<RelayAuthTokenClaims> = {}): string {
-  const now = Math.floor(Date.now() / 1000);
-  const sponsorId = overrides.sponsorId ?? "user_reader_1";
-  const sub = overrides.sub ?? "agent_reader_1";
-
-  const payload: RelayAuthTokenClaims = {
-    sub,
-    org: overrides.org ?? "org_test",
-    wks: overrides.wks ?? "ws_test",
-    scopes: overrides.scopes ?? ["relayauth:identity:read:*"],
-    sponsorId,
-    sponsorChain: overrides.sponsorChain ?? [sponsorId, sub],
-    token_type: overrides.token_type ?? "access",
-    iss: overrides.iss ?? "relayauth:test",
-    aud: overrides.aud ?? ["relayauth"],
-    exp: overrides.exp ?? now + 3600,
-    iat: overrides.iat ?? now,
-    jti: overrides.jti ?? crypto.randomUUID(),
-    nbf: overrides.nbf,
-    sid: overrides.sid,
-    meta: overrides.meta,
-    parentTokenId: overrides.parentTokenId,
-    budget: overrides.budget,
-  };
-
-  return signHs256(payload as Record<string, unknown>, "dev-secret");
+  return generateTestToken({
+    scopes: ["relayauth:identity:read:*"],
+    sponsorId: "user_reader_1",
+    sub: "agent_reader_1",
+    wks: "ws_test",
+    ...overrides,
+  });
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-    },
-  });
+function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredIdentity {
+  const base = generateTestIdentity(overrides);
+  const sponsorId = overrides.sponsorId ?? "user_reader_1";
+
+  return {
+    ...base,
+    sponsorId,
+    sponsorChain: overrides.sponsorChain ?? [sponsorId, "agent_reader_1", base.id],
+    workspaceId: overrides.workspaceId ?? "ws_test",
+    ...(overrides.budget !== undefined ? { budget: overrides.budget } : {}),
+    ...(overrides.budgetUsage !== undefined ? { budgetUsage: overrides.budgetUsage } : {}),
+  };
 }
 
 async function getIdentity(
   identityId: string,
   {
     claims,
-    response,
+    identity,
   }: {
     claims?: Partial<RelayAuthTokenClaims>;
-    response?: Response | ((request: Request) => Response | Promise<Response>);
+    identity?: StoredIdentity | null;
   } = {},
 ): Promise<Response> {
-  const app = createTestApp({
-    IDENTITY_DO: mockDO(response),
-  });
+  const app = createTestApp();
+  if (identity) {
+    await seedStoredIdentity(app, identity);
+  }
   const request = createTestRequest(
     "GET",
     `/v1/identities/${identityId}`,
@@ -104,7 +76,7 @@ function assertBaseIdentityFields(body: AgentIdentity): void {
 }
 
 test("GET /v1/identities/:id returns 200 with the full identity object", async () => {
-  const identity = generateTestIdentity({
+  const identity = createStoredIdentity({
     id: "agent_get_123",
     name: "Retriever",
     type: "service",
@@ -123,16 +95,16 @@ test("GET /v1/identities/:id returns 200 with the full identity object", async (
 
   const response = await getIdentity(identity.id, {
     claims: { org: identity.orgId },
-    response: () => jsonResponse(identity, 200),
+    identity,
   });
 
-  const body = await assertJsonResponse<AgentIdentity>(response, 200);
+  const body = await assertJsonResponse<StoredIdentity>(response, 200);
 
   assert.deepEqual(body, identity);
 });
 
 test("GET /v1/identities/:id returns all identity fields", async () => {
-  const identity = generateTestIdentity({
+  const identity = createStoredIdentity({
     id: "agent_full_fields",
     name: "Full Fields",
     type: "human",
@@ -153,10 +125,10 @@ test("GET /v1/identities/:id returns all identity fields", async () => {
 
   const response = await getIdentity(identity.id, {
     claims: { org: identity.orgId },
-    response: () => jsonResponse(identity, 200),
+    identity,
   });
 
-  const body = await assertJsonResponse<AgentIdentity>(response, 200);
+  const body = await assertJsonResponse<StoredIdentity>(response, 200);
 
   assertBaseIdentityFields(body);
   assert.equal(body.id, identity.id);
@@ -175,17 +147,13 @@ test("GET /v1/identities/:id returns all identity fields", async () => {
 });
 
 test("GET /v1/identities/:id returns 404 for a non-existent identity", async () => {
-  const response = await getIdentity("agent_missing_404", {
-    response: () => jsonResponse({ error: "identity_not_found" }, 404),
-  });
+  const response = await getIdentity("agent_missing_404");
 
   assert.equal(response.status, 404);
 });
 
 test('GET /v1/identities/:id returns 404 with { error: "identity_not_found" } for a missing identity', async () => {
-  const response = await getIdentity("agent_missing_body", {
-    response: () => jsonResponse({ error: "identity_not_found" }, 404),
-  });
+  const response = await getIdentity("agent_missing_body");
 
   const body = await assertJsonResponse<{ error: string }>(response, 404);
 
@@ -193,14 +161,14 @@ test('GET /v1/identities/:id returns 404 with { error: "identity_not_found" } fo
 });
 
 test("GET /v1/identities/:id returns suspended and retired identities", async () => {
-  const identities: AgentIdentity[] = [
-    generateTestIdentity({
+  const identities: StoredIdentity[] = [
+    createStoredIdentity({
       id: "agent_suspended_1",
       status: "suspended",
       suspendedAt: "2026-03-10T09:00:00.000Z",
       suspendReason: "budget_exceeded",
     }),
-    generateTestIdentity({
+    createStoredIdentity({
       id: "agent_retired_1",
       status: "retired",
     }),
@@ -209,10 +177,10 @@ test("GET /v1/identities/:id returns suspended and retired identities", async ()
   for (const identity of identities) {
     const response = await getIdentity(identity.id, {
       claims: { org: identity.orgId },
-      response: () => jsonResponse(identity, 200),
+      identity,
     });
 
-    const body = await assertJsonResponse<AgentIdentity>(response, 200);
+    const body = await assertJsonResponse<StoredIdentity>(response, 200);
 
     assert.equal(body.id, identity.id);
     assert.equal(body.status, identity.status);

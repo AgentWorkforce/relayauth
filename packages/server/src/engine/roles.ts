@@ -1,21 +1,7 @@
 import type { Role } from "@relayauth/types";
-import { parseScope } from "@relayauth/sdk/src/scope-parser.js";
-
-type RoleRow = {
-  id?: string;
-  name?: string;
-  description?: string;
-  scopes?: string | string[];
-  scopes_json?: string | string[];
-  orgId?: string;
-  org_id?: string;
-  workspaceId?: string | null;
-  workspace_id?: string | null;
-  builtIn?: boolean | number;
-  built_in?: boolean | number;
-  createdAt?: string;
-  created_at?: string;
-};
+import { parseScope } from "@relayauth/sdk";
+import type { AuthStorage, RoleStorage } from "../storage/index.js";
+import { resolveRoleStorage } from "../storage/index.js";
 
 export type CreateRoleInput = {
   name: string;
@@ -27,6 +13,8 @@ export type CreateRoleInput = {
 };
 
 export type UpdateRoleInput = Partial<Pick<Role, "name" | "description" | "scopes">>;
+
+type RoleStorageSource = D1Database | RoleStorage | Pick<AuthStorage, "roles">;
 
 class RoleEngineError extends Error {
   constructor(
@@ -41,21 +29,11 @@ class RoleEngineError extends Error {
 
 const ROLE_NAME_PATTERN = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 
-const SELECT_ROLE_COLUMNS = `
-  SELECT
-    id,
-    name,
-    description,
-    scopes,
-    scopes_json,
-    org_id AS orgId,
-    workspace_id AS workspaceId,
-    built_in AS builtIn,
-    created_at AS createdAt
-  FROM roles
-`;
-
-export async function createRole(db: D1Database, input: CreateRoleInput): Promise<Role> {
+export async function createRole(
+  storageSource: RoleStorageSource,
+  input: CreateRoleInput,
+): Promise<Role> {
+  const storage = resolveRoleStorage(storageSource);
   const orgId = normalizeRequiredString(input.orgId, "orgId is required", "invalid_role_input");
   const name = validateRoleName(input.name, input.builtIn === true);
   const description = normalizeRequiredString(
@@ -67,7 +45,7 @@ export async function createRole(db: D1Database, input: CreateRoleInput): Promis
   const workspaceId = normalizeOptionalString(input.workspaceId);
   const builtIn = input.builtIn === true;
 
-  const duplicate = await findRoleByName(db, orgId, name);
+  const duplicate = (await storage.list(orgId)).find((role) => role.name === name);
   if (duplicate) {
     throw new RoleEngineError(`Role '${name}' already exists in this org`, "role_name_conflict", 409);
   }
@@ -83,101 +61,40 @@ export async function createRole(db: D1Database, input: CreateRoleInput): Promis
     createdAt: new Date().toISOString(),
   };
 
-  await db
-    .prepare(`
-      INSERT INTO roles (
-        id,
-        name,
-        description,
-        scopes,
-        scopes_json,
-        org_id,
-        workspace_id,
-        built_in,
-        created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .bind(
-      role.id,
-      role.name,
-      role.description,
-      JSON.stringify(role.scopes),
-      JSON.stringify(role.scopes),
-      role.orgId,
-      role.workspaceId ?? null,
-      role.builtIn ? 1 : 0,
-      role.createdAt,
-    )
-    .run();
-
+  await storage.create(role);
   return role;
 }
 
-export async function getRole(db: D1Database, id: string): Promise<Role | null> {
+export async function getRole(
+  storageSource: RoleStorageSource,
+  id: string,
+): Promise<Role | null> {
   const roleId = normalizeOptionalString(id);
   if (!roleId) {
     return null;
   }
 
-  const row = await db
-    .prepare(`
-      ${SELECT_ROLE_COLUMNS}
-      WHERE id = ?
-      LIMIT 1
-    `)
-    .bind(roleId)
-    .first<RoleRow>();
-
-  return hydrateRole(row);
+  return resolveRoleStorage(storageSource).get(roleId);
 }
 
 export async function listRoles(
-  db: D1Database,
+  storageSource: RoleStorageSource,
   orgId: string,
   workspaceId?: string,
 ): Promise<Role[]> {
   const normalizedOrgId = normalizeRequiredString(orgId, "orgId is required", "invalid_role_input");
   const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
-
-  const query = normalizedWorkspaceId
-    ? {
-        sql: `
-          ${SELECT_ROLE_COLUMNS}
-          WHERE org_id = ?
-            AND (workspace_id = ? OR workspace_id IS NULL)
-          ORDER BY name ASC, id ASC
-        `,
-        params: [normalizedOrgId, normalizedWorkspaceId],
-      }
-    : {
-        sql: `
-          ${SELECT_ROLE_COLUMNS}
-          WHERE org_id = ?
-          ORDER BY name ASC, id ASC
-        `,
-        params: [normalizedOrgId],
-      };
-
-  const result = await db.prepare(query.sql).bind(...query.params).all<RoleRow>();
-  return (result.results ?? [])
-    .map(hydrateRole)
-    .filter((role): role is Role => role !== null)
-    .filter((role) =>
-      role.orgId === normalizedOrgId
-      && (normalizedWorkspaceId === undefined
-        || role.workspaceId === undefined
-        || role.workspaceId === normalizedWorkspaceId),
-    );
+  return resolveRoleStorage(storageSource).list(normalizedOrgId, normalizedWorkspaceId);
 }
 
 export async function updateRole(
-  db: D1Database,
+  storageSource: RoleStorageSource,
   id: string,
   updates: UpdateRoleInput,
 ): Promise<Role> {
+  const storage = resolveRoleStorage(storageSource);
   const roleId = normalizeRequiredString(id, "roleId is required", "invalid_role_input");
-  const current = await getExistingMutableRole(db, roleId);
+  const current = await getExistingMutableRole(storage, roleId);
 
   const nextName =
     updates.name === undefined ? current.name : validateRoleName(updates.name, current.builtIn);
@@ -189,57 +106,39 @@ export async function updateRole(
     updates.scopes === undefined ? current.scopes : validateRoleScopes(updates.scopes);
 
   if (nextName !== current.name) {
-    const duplicate = await findRoleByName(db, current.orgId, nextName);
-    if (duplicate && duplicate.id !== current.id) {
+    const duplicate = (await storage.list(current.orgId))
+      .find((role) => role.name === nextName && role.id !== current.id);
+    if (duplicate) {
       throw new RoleEngineError(`Role '${nextName}' already exists in this org`, "role_name_conflict", 409);
     }
   }
 
-  await db
-    .prepare(`
-      UPDATE roles
-      SET name = ?, description = ?, scopes = ?, scopes_json = ?
-      WHERE id = ? AND org_id = ?
-    `)
-    .bind(
-      nextName,
-      nextDescription,
-      JSON.stringify(nextScopes),
-      JSON.stringify(nextScopes),
-      current.id,
-      current.orgId,
-    )
-    .run();
-
-  return {
-    ...current,
+  return storage.update(current.id, {
     name: nextName,
     description: nextDescription,
     scopes: nextScopes,
-  };
+  });
 }
 
-export async function deleteRole(db: D1Database, id: string): Promise<void> {
+export async function deleteRole(
+  storageSource: RoleStorageSource,
+  id: string,
+): Promise<void> {
+  const storage = resolveRoleStorage(storageSource);
   const role = await getExistingMutableRole(
-    db,
+    storage,
     normalizeRequiredString(id, "roleId is required", "invalid_role_input"),
   );
 
-  await db
-    .prepare(`
-      DELETE FROM roles
-      WHERE id = ? AND org_id = ?
-    `)
-    .bind(role.id, role.orgId)
-    .run();
+  await storage.delete(role.id);
 }
 
 export function isRoleEngineError(error: unknown): error is RoleEngineError {
   return error instanceof RoleEngineError;
 }
 
-async function getExistingMutableRole(db: D1Database, id: string): Promise<Role> {
-  const role = await getRole(db, id);
+async function getExistingMutableRole(storage: RoleStorage, id: string): Promise<Role> {
+  const role = await storage.get(id);
   if (!role) {
     throw new RoleEngineError("role_not_found", "role_not_found", 404);
   }
@@ -249,50 +148,6 @@ async function getExistingMutableRole(db: D1Database, id: string): Promise<Role>
   }
 
   return role;
-}
-
-async function findRoleByName(db: D1Database, orgId: string, name: string): Promise<Role | null> {
-  const row = await db
-    .prepare(`
-      ${SELECT_ROLE_COLUMNS}
-      WHERE org_id = ? AND name = ?
-      LIMIT 1
-    `)
-    .bind(orgId, name)
-    .first<RoleRow>();
-
-  return hydrateRole(row);
-}
-
-function hydrateRole(row: RoleRow | null): Role | null {
-  if (!row) {
-    return null;
-  }
-
-  const id = normalizeOptionalString(row.id);
-  const name = normalizeOptionalString(row.name);
-  const description = normalizeOptionalString(row.description);
-  const orgId = normalizeOptionalString(row.orgId) ?? normalizeOptionalString(row.org_id);
-  const createdAt = normalizeOptionalString(row.createdAt) ?? normalizeOptionalString(row.created_at);
-
-  if (!id || !name || !description || !orgId || !createdAt) {
-    return null;
-  }
-
-  const scopes = parseStringArrayColumn(row.scopes_json ?? row.scopes);
-  const workspaceId = normalizeOptionalString(row.workspaceId) ?? normalizeOptionalString(row.workspace_id);
-  const builtIn = row.builtIn === true || row.builtIn === 1 || row.built_in === true || row.built_in === 1;
-
-  return {
-    id,
-    name,
-    description,
-    scopes,
-    orgId,
-    ...(workspaceId ? { workspaceId } : {}),
-    builtIn,
-    createdAt,
-  };
 }
 
 function validateRoleName(raw: string, builtIn: boolean): string {
@@ -359,25 +214,6 @@ function normalizeOptionalString(value: unknown): string | undefined {
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : undefined;
-}
-
-function parseStringArrayColumn(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.filter((entry): entry is string => typeof entry === "string");
-  }
-
-  if (typeof value !== "string" || value.trim().length === 0) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed)
-      ? parsed.filter((entry): entry is string => typeof entry === "string")
-      : [];
-  } catch {
-    return [];
-  }
 }
 
 function createRoleId(): string {

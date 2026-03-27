@@ -8,6 +8,8 @@ import {
   createTestRequest,
   generateTestIdentity,
   generateTestToken,
+  seedAuditEntries,
+  seedStoredIdentities,
 } from "./test-helpers.js";
 
 type ActivityEntry = AuditEntry & { createdAt?: string };
@@ -476,10 +478,9 @@ async function getIdentityActivity(
     identities?: StoredIdentity[];
   } = {},
 ): Promise<Response> {
-  const app = createTestApp({
-    DB: createIdentityActivityD1({ entries, identities }),
-    IDENTITY_DO: createIdentityNamespace(identities),
-  });
+  const app = createTestApp();
+  await seedStoredIdentities(app, identities);
+  await seedAuditEntries(app, entries);
   const token = authorization ?? `Bearer ${generateTestToken(claims)}`;
   const request = createTestRequest(
     "GET",

@@ -8,23 +8,10 @@ import {
   createTestRequest,
   generateTestIdentity,
   generateTestToken,
-  mockDO,
+  seedStoredIdentity,
 } from "./test-helpers.js";
 
 type UpdateIdentityBody = Partial<StoredIdentity>;
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-    },
-  });
-}
-
-function cloneIdentity(identity: StoredIdentity): StoredIdentity {
-  return JSON.parse(JSON.stringify(identity)) as StoredIdentity;
-}
 
 function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredIdentity {
   const base = generateTestIdentity(overrides);
@@ -39,53 +26,6 @@ function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredId
   };
 }
 
-function createUpdateIdentityDoStub(initialIdentity: StoredIdentity | null): DurableObjectNamespace {
-  let current = initialIdentity ? cloneIdentity(initialIdentity) : null;
-
-  return mockDO(async (request) => {
-    const { pathname } = new URL(request.url);
-
-    if (pathname === "/internal/get" && request.method === "GET") {
-      return current
-        ? jsonResponse(current, 200)
-        : jsonResponse({ error: "identity_not_found" }, 404);
-    }
-
-    if (pathname === "/internal/update" && (request.method === "PATCH" || request.method === "POST")) {
-      if (!current) {
-        return jsonResponse({ error: "identity_not_found" }, 404);
-      }
-
-      const update = await request.json<UpdateIdentityBody>().catch(() => null);
-      if (!update || typeof update !== "object" || Array.isArray(update) || Object.keys(update).length === 0) {
-        return jsonResponse({ error: "Invalid JSON body" }, 400);
-      }
-
-      const timestamp = new Date().toISOString();
-      current = {
-        ...current,
-        ...update,
-        metadata: update.metadata ? { ...current.metadata, ...update.metadata } : current.metadata,
-        scopes: update.scopes ?? current.scopes,
-        roles: update.roles ?? current.roles,
-        sponsorChain: update.sponsorChain ?? current.sponsorChain,
-        budget: update.budget ?? current.budget,
-        budgetUsage: update.budgetUsage ?? current.budgetUsage,
-        updatedAt: timestamp,
-      };
-
-      return jsonResponse(current, 200);
-    }
-
-    return jsonResponse(
-      {
-        error: `unexpected_do_request:${request.method}:${pathname}`,
-      },
-      500,
-    );
-  });
-}
-
 async function patchIdentity(
   identityId: string,
   body: unknown,
@@ -97,9 +37,11 @@ async function patchIdentity(
     identity?: StoredIdentity | null;
   } = {},
 ): Promise<Response> {
-  const app = createTestApp({
-    IDENTITY_DO: createUpdateIdentityDoStub(identity === undefined ? createStoredIdentity({ id: identityId }) : identity),
-  });
+  const app = createTestApp();
+  const storedIdentity = identity === undefined ? createStoredIdentity({ id: identityId }) : identity;
+  if (storedIdentity) {
+    await seedStoredIdentity(app, storedIdentity);
+  }
   const request = createTestRequest(
     "PATCH",
     `/v1/identities/${identityId}`,

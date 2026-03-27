@@ -2,8 +2,15 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import type { AgentIdentity, CreateIdentityInput, RelayAuthTokenClaims } from "@relayauth/types";
-import type { IdentityBudget } from "../durable-objects/identity-do.js";
-import { assertJsonResponse, createTestApp, createTestRequest, mockDO } from "./test-helpers.js";
+import type { IdentityBudget, StoredIdentity } from "../durable-objects/identity-do.js";
+import {
+  assertJsonResponse,
+  createTestApp,
+  createTestRequest,
+  generateTestIdentity,
+  seedOrgBudget,
+  seedStoredIdentity,
+} from "./test-helpers.js";
 
 type CreateIdentityRequest = CreateIdentityInput & {
   sponsorId?: string;
@@ -16,15 +23,6 @@ type CreatedIdentity = AgentIdentity & {
   sponsorChain?: string[];
   workspaceId?: string;
   budget?: IdentityBudget;
-};
-
-type D1Scenario = {
-  duplicateIdentity?: {
-    id: string;
-    name: string;
-    orgId: string;
-  };
-  orgBudget?: IdentityBudget;
 };
 
 function base64UrlEncode(value: string | Buffer): string {
@@ -71,137 +69,19 @@ function createAuthToken(overrides: Partial<RelayAuthTokenClaims> = {}): string 
   return signHs256(payload as Record<string, unknown>, "dev-secret");
 }
 
-function normalizeSql(query: string): string {
-  return query.replace(/\s+/g, " ").trim().toLowerCase();
-}
 
-function createScenarioD1({ duplicateIdentity, orgBudget }: D1Scenario = {}): D1Database {
-  const meta = {
-    changed_db: false,
-    changes: 0,
-    duration: 0,
-    rows_read: 0,
-    rows_written: 0,
-  };
-
-  const resolveRows = (query: string, params: unknown[]): unknown[] => {
-    const normalized = normalizeSql(query);
-
-    if (
-      duplicateIdentity &&
-      /(identity|identities)/.test(normalized) &&
-      /name/.test(normalized) &&
-      params.some((param) => String(param ?? "") === duplicateIdentity.name)
-    ) {
-      return [
-        {
-          id: duplicateIdentity.id,
-          name: duplicateIdentity.name,
-          orgId: duplicateIdentity.orgId,
-          org_id: duplicateIdentity.orgId,
-          count: 1,
-          exists: 1,
-        },
-      ];
-    }
-
-    if (orgBudget && /budget/.test(normalized) && /(org|organization)/.test(normalized)) {
-      const budgetJson = JSON.stringify(orgBudget);
-      return [
-        {
-          budget: orgBudget,
-          budget_json: budgetJson,
-          defaultBudget: orgBudget,
-          default_budget: budgetJson,
-          data: budgetJson,
-          settings_json: JSON.stringify({ budget: orgBudget }),
-        },
-      ];
-    }
-
-    return [];
-  };
-
-  const createPreparedStatement = (query: string) => ({
-    bind: (...params: unknown[]) => ({
-      first: async <T>() => (resolveRows(query, params)[0] as T | null) ?? null,
-      run: async () => ({ success: true, meta }),
-      raw: async <T>() => resolveRows(query, params) as T[],
-      all: async <T>() => ({ results: resolveRows(query, params) as T[], success: true, meta }),
-    }),
-    first: async <T>() => (resolveRows(query, [])[0] as T | null) ?? null,
-    run: async () => ({ success: true, meta }),
-    raw: async <T>() => resolveRows(query, []) as T[],
-    all: async <T>() => ({ results: resolveRows(query, []) as T[], success: true, meta }),
-  });
+function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredIdentity {
+  const base = generateTestIdentity(overrides);
+  const sponsorId = overrides.sponsorId ?? "user_sponsor_1";
 
   return {
-    prepare: (query: string) => createPreparedStatement(query),
-    batch: async <T>(statements: D1PreparedStatement[]) =>
-      Promise.all(statements.map((statement) => statement.run())) as Awaited<T>,
-    exec: async () => ({ count: 0, duration: 0 }),
-    dump: async () => new ArrayBuffer(0),
-  } as D1Database;
-}
-
-function isStringRecord(value: unknown): value is Record<string, string> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Object.values(value).every((entry) => typeof entry === "string")
-  );
-}
-
-function extractIdentityPayload(body: unknown): Partial<CreatedIdentity> {
-  if (!body || typeof body !== "object") {
-    return {};
-  }
-
-  if ("identity" in body && body.identity && typeof body.identity === "object") {
-    return body.identity as Partial<CreatedIdentity>;
-  }
-
-  return body as Partial<CreatedIdentity>;
-}
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-    },
-  });
-}
-
-function createIdentityDoStub() {
-  return mockDO(async (request) => {
-    const rawBody = await request.json().catch(() => undefined);
-    const candidate = extractIdentityPayload(rawBody);
-    const timestamp = new Date().toISOString();
-
-    return jsonResponse(
-      {
-        id:
-          typeof candidate.id === "string" && candidate.id.length > 0
-            ? candidate.id
-            : `agent_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`,
-        name: candidate.name ?? "Generated Identity",
-        type: candidate.type ?? "agent",
-        orgId: candidate.orgId ?? "org_test",
-        status: candidate.status ?? "active",
-        scopes: Array.isArray(candidate.scopes) ? candidate.scopes : [],
-        roles: Array.isArray(candidate.roles) ? candidate.roles : [],
-        metadata: isStringRecord(candidate.metadata) ? candidate.metadata : {},
-        createdAt: candidate.createdAt ?? timestamp,
-        updatedAt: candidate.updatedAt ?? timestamp,
-        ...(typeof candidate.workspaceId === "string" ? { workspaceId: candidate.workspaceId } : {}),
-        ...(typeof candidate.sponsorId === "string" ? { sponsorId: candidate.sponsorId } : {}),
-        ...(Array.isArray(candidate.sponsorChain) ? { sponsorChain: candidate.sponsorChain } : {}),
-        ...(candidate.budget ? { budget: candidate.budget } : {}),
-      } satisfies CreatedIdentity,
-      201,
-    );
-  });
+    ...base,
+    sponsorId,
+    sponsorChain: overrides.sponsorChain ?? [sponsorId, "agent_parent_1", base.id],
+    workspaceId: overrides.workspaceId ?? "ws_auth_ctx",
+    ...(overrides.budget !== undefined ? { budget: overrides.budget } : {}),
+    ...(overrides.budgetUsage !== undefined ? { budgetUsage: overrides.budgetUsage } : {}),
+  };
 }
 
 function assertIsoTimestamp(value: string, fieldName: string): void {
@@ -213,16 +93,21 @@ async function postCreateIdentity(
   body: CreateIdentityRequest,
   {
     claims,
-    db,
+    duplicateIdentity,
+    orgBudget,
   }: {
     claims?: Partial<RelayAuthTokenClaims>;
-    db?: D1Database;
+    duplicateIdentity?: StoredIdentity;
+    orgBudget?: IdentityBudget;
   } = {},
 ): Promise<Response> {
-  const app = createTestApp({
-    DB: db ?? createScenarioD1(),
-    IDENTITY_DO: createIdentityDoStub(),
-  });
+  const app = createTestApp();
+  if (duplicateIdentity) {
+    await seedStoredIdentity(app, duplicateIdentity);
+  }
+  if (orgBudget) {
+    await seedOrgBudget(app, claims?.org ?? "org_auth_ctx", orgBudget);
+  }
   const request = createTestRequest(
     "POST",
     "/v1/identities",
@@ -304,7 +189,10 @@ test("POST /v1/identities auto-populates sponsorChain from the authenticated par
 
   const body = await assertJsonResponse<CreatedIdentity>(response, 201);
 
-  assert.deepEqual(body.sponsorChain, ["user_jane", "agent_root_1", "agent_parent_9", "agent_parent_9"]);
+  // sponsorChain should be parent's chain + the NEW identity's ID (not parent's sub)
+  assert.equal(body.sponsorChain.length, 4);
+  assert.deepEqual(body.sponsorChain.slice(0, 3), ["user_jane", "agent_root_1", "agent_parent_9"]);
+  assert.equal(body.sponsorChain[3], body.id);
 });
 
 test("POST /v1/identities defaults budget from the org when the request omits budget", async () => {
@@ -320,7 +208,7 @@ test("POST /v1/identities defaults budget from the org when the request omits bu
       sponsorId: "user_budget_owner",
     },
     {
-      db: createScenarioD1({ orgBudget }),
+      orgBudget,
     },
   );
 
@@ -336,12 +224,10 @@ test("POST /v1/identities returns 409 when an identity with the same name alread
       sponsorId: "user_sponsor_1",
     },
     {
-      db: createScenarioD1({
-        duplicateIdentity: {
+      duplicateIdentity: createStoredIdentity({
           id: "agent_existing_1",
           name: "existing-agent",
           orgId: "org_auth_ctx",
-        },
       }),
     },
   );

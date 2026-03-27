@@ -1,5 +1,5 @@
 import type { Action, Policy, PolicyCondition } from "@relayauth/types";
-import { parseScope } from "@relayauth/sdk/src/scope-parser.js";
+import { parseScope } from "@relayauth/sdk";
 
 import { writeAuditEntry } from "./audit-logger.js";
 import { listPolicies } from "./policies.js";
@@ -9,37 +9,8 @@ import type {
   IdentityBudgetUsage,
   StoredIdentity,
 } from "../durable-objects/identity-do.js";
-
-type IdentityRow = {
-  id?: string;
-  name?: string;
-  type?: StoredIdentity["type"];
-  orgId?: string;
-  org_id?: string;
-  status?: StoredIdentity["status"];
-  scopes?: string | string[];
-  scopes_json?: string | string[];
-  roles?: string | string[];
-  roles_json?: string | string[];
-  metadata?: Record<string, string>;
-  metadata_json?: string | Record<string, string>;
-  createdAt?: string;
-  created_at?: string;
-  updatedAt?: string;
-  updated_at?: string;
-  sponsorId?: string;
-  sponsor_id?: string;
-  sponsorChain?: string[] | string;
-  sponsor_chain?: string[] | string;
-  sponsor_chain_json?: string | string[];
-  workspaceId?: string;
-  workspace_id?: string;
-  budget?: IdentityBudget | null;
-  budget_json?: string | IdentityBudget | null;
-  budgetUsage?: IdentityBudgetUsage | null;
-  budget_usage?: string | IdentityBudgetUsage | null;
-  budget_usage_json?: string | IdentityBudgetUsage | null;
-};
+import type { AuthStorage } from "../storage/index.js";
+import { resolveAuthStorage } from "../storage/index.js";
 
 type EvaluationContext = {
   identityId?: string;
@@ -73,44 +44,19 @@ type ScopeDecision = {
   policies: Policy[];
 };
 
-const SELECT_IDENTITY_SQL = `
-  SELECT
-    id,
-    name,
-    type,
-    org_id AS orgId,
-    status,
-    scopes,
-    scopes_json,
-    roles,
-    roles_json,
-    metadata,
-    metadata_json,
-    created_at AS createdAt,
-    updated_at AS updatedAt,
-    sponsor_id AS sponsorId,
-    sponsor_chain AS sponsorChain,
-    sponsor_chain_json,
-    workspace_id AS workspaceId,
-    budget,
-    budget_json,
-    budget_usage AS budgetUsage,
-    budget_usage_json
-  FROM identities
-  WHERE org_id = ? AND id = ?
-  LIMIT 1
-`;
+type PolicyEvaluationStorageSource = D1Database | AuthStorage;
 
 const WEEKDAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 const MANAGE_IMPLIES = new Set<Action>(["read", "write", "create", "delete"]);
 
 export async function evaluatePermissions(
-  db: D1Database,
+  storageSource: PolicyEvaluationStorageSource,
   identityId: string,
   orgId: string,
   context: EvaluationContext = {},
 ): Promise<EvaluationResult> {
-  const identity = await getIdentity(db, identityId, orgId);
+  const storage = resolveAuthStorage(storageSource);
+  const identity = await getIdentity(storage, identityId, orgId);
   if (!identity || identity.orgId !== orgId || identity.status !== "active") {
     return {
       effectiveScopes: [],
@@ -121,8 +67,8 @@ export async function evaluatePermissions(
 
   const evaluationContext = createEvaluationContext(identity, context);
   const [roles, policies] = await Promise.all([
-    listIdentityRoles(db, identity.id),
-    listPolicies(db, identity.orgId, evaluationContext.workspaceId),
+    listIdentityRoles(storage, identity.id),
+    listPolicies(storage, identity.orgId, evaluationContext.workspaceId),
   ]);
 
   return evaluatePermissionsWithData(identity, roles, policies, evaluationContext);
@@ -151,23 +97,24 @@ function evaluatePermissionsWithData(
 }
 
 export async function getEffectiveScopes(
-  db: D1Database,
+  storageSource: PolicyEvaluationStorageSource,
   identityId: string,
   orgId: string,
   context: EvaluationContext = {},
 ): Promise<string[]> {
-  const result = await evaluatePermissions(db, identityId, orgId, context);
+  const result = await evaluatePermissions(storageSource, identityId, orgId, context);
   return result.effectiveScopes;
 }
 
 export async function checkAccess(
-  db: D1Database,
+  storageSource: PolicyEvaluationStorageSource,
   identityId: string,
   orgId: string,
   requestedScope: string,
   context: EvaluationContext = {},
 ): Promise<AccessDecision> {
-  const identity = await getIdentity(db, identityId, orgId);
+  const storage = resolveAuthStorage(storageSource);
+  const identity = await getIdentity(storage, identityId, orgId);
   if (!identity) {
     return { allowed: false, reason: "identity_not_found" };
   }
@@ -184,7 +131,7 @@ export async function checkAccess(
   const budgetState = evaluateBudgetState(identity.budget, identity.budgetUsage);
 
   if (budgetState === "exceeded") {
-    await writeBudgetAudit(db, identity, requestedScope, "budget.exceeded", "denied");
+    await writeBudgetAudit(storage, identity, requestedScope, "budget.exceeded", "denied");
     return {
       allowed: false,
       reason: "budget_exceeded",
@@ -192,12 +139,12 @@ export async function checkAccess(
   }
 
   if (budgetState === "alert") {
-    await writeBudgetAudit(db, identity, requestedScope, "budget.alert", "allowed");
+    await writeBudgetAudit(storage, identity, requestedScope, "budget.alert", "allowed");
   }
 
   const [roles, policies] = await Promise.all([
-    listIdentityRoles(db, identity.id),
-    listPolicies(db, identity.orgId, evaluationContext.workspaceId),
+    listIdentityRoles(storage, identity.id),
+    listPolicies(storage, identity.orgId, evaluationContext.workspaceId),
   ]);
 
   const result = evaluatePermissionsWithData(identity, roles, policies, evaluationContext);
@@ -329,12 +276,13 @@ function resolveScopeDecision(scope: string, policies: Policy[]): ScopeDecision 
 }
 
 async function resolveRequestPolicyDecision(
-  db: D1Database,
+  storageSource: PolicyEvaluationStorageSource,
   identity: StoredIdentity,
   requestedScope: string,
   context: EvaluationContext,
 ): Promise<ScopeDecision | null> {
-  const policies = await listPolicies(db, identity.orgId, context.workspaceId);
+  const storage = resolveAuthStorage(storageSource);
+  const policies = await listPolicies(storage, identity.orgId, context.workspaceId);
   return resolveRequestPolicyDecisionFromPolicies(policies, requestedScope, context);
 }
 
@@ -396,63 +344,12 @@ function scopesOverlap(left: string, right: string): boolean {
 }
 
 async function getIdentity(
-  db: D1Database,
+  storage: AuthStorage,
   identityId: string,
   orgId: string,
 ): Promise<StoredIdentity | null> {
-  const row = await db
-    .prepare(SELECT_IDENTITY_SQL)
-    .bind(orgId.trim(), identityId.trim())
-    .first<IdentityRow>();
-
-  return hydrateIdentity(row);
-}
-
-function hydrateIdentity(row: IdentityRow | null): StoredIdentity | null {
-  if (!row) {
-    return null;
-  }
-
-  const id = normalizeOptionalString(row.id);
-  const name = normalizeOptionalString(row.name);
-  const type = row.type;
-  const orgId = normalizeOptionalString(row.orgId) ?? normalizeOptionalString(row.org_id);
-  const status = row.status;
-  const createdAt = normalizeOptionalString(row.createdAt) ?? normalizeOptionalString(row.created_at);
-  const updatedAt = normalizeOptionalString(row.updatedAt) ?? normalizeOptionalString(row.updated_at);
-  const sponsorId = normalizeOptionalString(row.sponsorId) ?? normalizeOptionalString(row.sponsor_id);
-  const workspaceId = normalizeOptionalString(row.workspaceId) ?? normalizeOptionalString(row.workspace_id);
-
-  if (!id || !name || !type || !orgId || !status || !createdAt || !updatedAt || !sponsorId || !workspaceId) {
-    return null;
-  }
-
-  const metadata = parseRecordColumn(row.metadata_json ?? row.metadata);
-  const sponsorChain = parseStringArrayColumn(
-    row.sponsor_chain_json ?? row.sponsorChain ?? row.sponsor_chain,
-  );
-  const budget = parseBudgetColumn(row.budget_json ?? row.budget);
-  const budgetUsage = parseBudgetUsageColumn(
-    row.budget_usage_json ?? row.budgetUsage ?? row.budget_usage,
-  );
-
-  return {
-    id,
-    name,
-    type,
-    orgId,
-    status,
-    scopes: parseStringArrayColumn(row.scopes_json ?? row.scopes),
-    roles: parseStringArrayColumn(row.roles_json ?? row.roles),
-    metadata,
-    createdAt,
-    updatedAt,
-    sponsorId,
-    sponsorChain: sponsorChain.length > 0 ? sponsorChain : [sponsorId, id],
-    workspaceId,
-    ...(budget ? { budget } : {}),
-    ...(budgetUsage ? { budgetUsage } : {}),
-  };
+  const identity = await storage.identities.get(identityId.trim());
+  return identity && identity.orgId === orgId.trim() ? identity : null;
 }
 
 function createEvaluationContext(
@@ -667,13 +564,13 @@ function evaluateBudgetState(
 }
 
 async function writeBudgetAudit(
-  db: D1Database,
+  storage: AuthStorage,
   identity: StoredIdentity,
   requestedScope: string,
   action: "budget.exceeded" | "budget.alert",
   result: "allowed" | "denied",
 ): Promise<void> {
-  await writeAuditEntry(db, {
+  await writeAuditEntry(storage, {
     action,
     identityId: identity.id,
     orgId: identity.orgId,

@@ -1,6 +1,5 @@
 import type { RelayAuthTokenClaims } from "@relayauth/types";
-import { RelayAuthError } from "@relayauth/sdk/src/errors.js";
-import { ScopeChecker } from "@relayauth/sdk/src/scopes.js";
+import { RelayAuthError, ScopeChecker } from "@relayauth/sdk";
 import type { Context, MiddlewareHandler } from "hono";
 
 import type { AppEnv } from "../env.js";
@@ -210,4 +209,3 @@ async function verifyHs256Token(
 
   return payload;
 }
-

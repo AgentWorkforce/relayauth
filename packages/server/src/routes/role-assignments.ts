@@ -1,5 +1,5 @@
 import type { RelayAuthTokenClaims, Role } from "@relayauth/types";
-import { matchScope } from "@relayauth/sdk/src/scope-matcher.js";
+import { matchScope } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { StoredIdentity } from "../durable-objects/identity-do.js";
 import type { AppEnv } from "../env.js";
@@ -9,6 +9,7 @@ import {
   removeRole,
 } from "../engine/role-assignments.js";
 import { getRole } from "../engine/roles.js";
+import type { AuthStorage } from "../storage/index.js";
 
 type AssignRoleRequest = {
   roleId?: string;
@@ -46,7 +47,8 @@ roleAssignments.post("/:id/roles", async (c) => {
     return c.json({ error: "roleId is required" }, 400);
   }
 
-  const identity = await getStoredIdentity(c.env.IDENTITY_DO, identityId);
+  const storage = c.get("storage");
+  const identity = await getStoredIdentity(storage, identityId);
   if (!identity.ok) {
     return c.json({ error: identity.error }, identity.status);
   }
@@ -60,12 +62,12 @@ roleAssignments.post("/:id/roles", async (c) => {
   }
 
   try {
-    await assignRole(c.env.DB, identityId, roleId, auth.claims.org);
+    await assignRole(storage, identityId, roleId, auth.claims.org);
   } catch (error) {
     return handleRoleAssignmentError(c, error);
   }
 
-  const updated = await updateStoredIdentityRoles(c.env.IDENTITY_DO, identityId, [
+  const updated = await updateStoredIdentityRoles(storage, identityId, [
     ...identity.identity.roles,
     roleId,
   ]);
@@ -96,7 +98,8 @@ roleAssignments.delete("/:id/roles/:roleId", async (c) => {
     return c.json({ error: "roleId is required" }, 400);
   }
 
-  const identity = await getStoredIdentity(c.env.IDENTITY_DO, identityId);
+  const storage = c.get("storage");
+  const identity = await getStoredIdentity(storage, identityId);
   if (!identity.ok) {
     return c.json({ error: identity.error }, identity.status);
   }
@@ -110,13 +113,13 @@ roleAssignments.delete("/:id/roles/:roleId", async (c) => {
   }
 
   try {
-    await removeRole(c.env.DB, identityId, roleId);
+    await removeRole(storage, identityId, roleId);
   } catch (error) {
     return handleRoleAssignmentError(c, error);
   }
 
   const updated = await updateStoredIdentityRoles(
-    c.env.IDENTITY_DO,
+    storage,
     identityId,
     identity.identity.roles.filter((assignedRoleId) => assignedRoleId !== roleId),
   );
@@ -142,7 +145,8 @@ roleAssignments.get("/:id/roles", async (c) => {
     return c.json({ error: "identityId is required" }, 400);
   }
 
-  const identity = await getStoredIdentity(c.env.IDENTITY_DO, identityId);
+  const storage = c.get("storage");
+  const identity = await getStoredIdentity(storage, identityId);
   if (!identity.ok) {
     return c.json({ error: identity.error }, identity.status);
   }
@@ -151,7 +155,7 @@ roleAssignments.get("/:id/roles", async (c) => {
     return c.json({ error: "cross_org_role_assignment_forbidden" }, 403);
   }
 
-  const roles = await loadAssignedRoles(c.env.DB, identity.identity);
+  const roles = await loadAssignedRoles(storage, identity.identity);
   return c.json({ data: roles }, 200);
 });
 
@@ -303,72 +307,48 @@ async function parseJsonObjectBody<T extends object>(request: Request): Promise<
 }
 
 async function getStoredIdentity(
-  identityNamespace: DurableObjectNamespace,
+  storage: AuthStorage,
   identityId: string,
 ): Promise<
   | { ok: true; identity: StoredIdentity }
   | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 500 }
 > {
-  const durableObjectId = identityNamespace.idFromName(identityId);
-  const durableObject = identityNamespace.get(durableObjectId);
-  const response = await durableObject.fetch(
-    new Request("http://identity-do/internal/get", {
-      method: "GET",
-    }),
-  );
+  try {
+    const identity = await storage.identities.get(identityId);
+    if (!identity) {
+      return { ok: false, error: "identity_not_found", status: 404 };
+    }
 
-  if (response.ok) {
-    return {
-      ok: true,
-      identity: await response.json<StoredIdentity>(),
-    };
+    return { ok: true, identity };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to fetch identity";
+    return { ok: false, error: message, status: 500 };
   }
-
-  return {
-    ok: false,
-    error: (await readResponseError(response, "Failed to fetch identity")) ?? "Failed to fetch identity",
-    status: response.status as 400 | 401 | 403 | 404 | 500,
-  };
 }
 
 async function updateStoredIdentityRoles(
-  identityNamespace: DurableObjectNamespace,
+  storage: AuthStorage,
   identityId: string,
   roles: string[],
 ): Promise<
   | { ok: true; identity: StoredIdentity }
   | { ok: false; error: string; status: 400 | 401 | 403 | 404 | 500 }
 > {
-  const durableObjectId = identityNamespace.idFromName(identityId);
-  const durableObject = identityNamespace.get(durableObjectId);
-  const response = await durableObject.fetch(
-    new Request("http://identity-do/internal/update", {
-      method: "PATCH",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ roles }),
-    }),
-  );
-
-  if (response.ok) {
+  try {
     return {
       ok: true,
-      identity: await response.json<StoredIdentity>(),
+      identity: await storage.identities.update(identityId, { roles }),
     };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to update identity";
+    return { ok: false, error: message, status: 500 };
   }
-
-  return {
-    ok: false,
-    error: (await readResponseError(response, "Failed to update identity")) ?? "Failed to update identity",
-    status: response.status as 400 | 401 | 403 | 404 | 500,
-  };
 }
 
-async function loadAssignedRoles(db: D1Database, identity: StoredIdentity): Promise<Role[]> {
+async function loadAssignedRoles(storage: AuthStorage, identity: StoredIdentity): Promise<Role[]> {
   const roles = await Promise.all(
     Array.from(new Set(identity.roles))
-      .map(async (roleId) => getRole(db, roleId)),
+      .map(async (roleId) => getRole(storage, roleId)),
   );
 
   return roles
@@ -383,20 +363,6 @@ function handleRoleAssignmentError(c: Context<AppEnv>, error: unknown): Response
 
   const message = error instanceof Error ? error.message : "internal_error";
   return c.json({ error: message || "internal_error" }, 500);
-}
-
-async function readResponseError(response: Response, fallback: string): Promise<string> {
-  try {
-    const body = await response.clone().json<{ error?: unknown }>();
-    if (typeof body?.error === "string" && body.error.trim()) {
-      return body.error;
-    }
-  } catch {
-    // Fall back to plain text below.
-  }
-
-  const text = await response.text().catch(() => "");
-  return text || fallback;
 }
 
 function normalizeOptionalString(value: unknown): string | undefined {

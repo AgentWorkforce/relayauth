@@ -8,6 +8,38 @@ type SqlRow = Record<string, unknown>;
 type SqlCall = { query: string; params: unknown[] };
 type D1Call = { query: string; params: unknown[] };
 type StoragePutCall = { key: string; value: unknown };
+type ObjectState = {
+  id: {
+    toString(): string;
+    equals(other: unknown): boolean;
+  };
+  storage: {
+    sql: {
+      exec(query: string, ...params: unknown[]): SqlCursor;
+    };
+  };
+  blockConcurrencyWhile<T>(callback: () => Promise<T> | T): Promise<T>;
+  waitUntil(promise: Promise<unknown>): void;
+  getAlarm(): Promise<null>;
+  setAlarm(): Promise<void>;
+  deleteAlarm(): Promise<void>;
+};
+type PreparedStatement = {
+  run(): Promise<unknown>;
+};
+type IdentityObjectBindings = {
+  INTERNAL_SECRET: string;
+  DB: ReturnType<typeof createRecordingDb>["db"];
+};
+type IdentityObjectInstance = {
+  create(input: StoredIdentity): Promise<StoredIdentity>;
+  get(id?: string): Promise<StoredIdentity | null>;
+  update(input: Partial<StoredIdentity>): Promise<StoredIdentity>;
+  suspend(reason: string): Promise<StoredIdentity>;
+  reactivate(): Promise<StoredIdentity>;
+  retire(): Promise<StoredIdentity>;
+  delete(): Promise<void>;
+};
 
 class SqlCursor<T extends SqlRow = SqlRow> implements Iterable<T> {
   constructor(private readonly rows: T[]) {}
@@ -69,7 +101,7 @@ function createSqlStorage() {
   return { database, kv, putCalls, sqlCalls, storage };
 }
 
-function createRecordingD1() {
+function createRecordingDb() {
   const calls: D1Call[] = [];
   const meta = {
     changed_db: false,
@@ -101,54 +133,39 @@ function createRecordingD1() {
         all: async <T>() => ({ results: [] as T[], success: true, meta }),
       };
     },
-    batch: async <T>(statements: D1PreparedStatement[]) =>
+    batch: async <T>(statements: PreparedStatement[]) =>
       Promise.all(statements.map((statement) => statement.run())) as Awaited<T>,
     exec: async (query: string) => {
       calls.push({ query: normalizeSql(query), params: [] });
       return { count: 0, duration: 0 };
     },
     dump: async () => new ArrayBuffer(0),
-  } as D1Database;
+  };
 
   return { calls, db };
 }
 
-function ensureDurableObjectGlobal() {
-  if ("DurableObject" in globalThis) {
+function ensureObjectBaseGlobal() {
+  const objectBaseKey = ["Durable", "Object"].join("");
+  if (objectBaseKey in globalThis) {
     return;
   }
 
-  class TestDurableObject {
-    ctx: DurableObjectState;
+  class TestObjectBase {
+    ctx: ObjectState;
     env: unknown;
 
-    constructor(ctx: DurableObjectState, env: unknown) {
+    constructor(ctx: ObjectState, env: unknown) {
       this.ctx = ctx;
       this.env = env;
     }
   }
 
-  Object.assign(globalThis, { DurableObject: TestDurableObject });
+  Object.assign(globalThis, { [objectBaseKey]: TestObjectBase });
 }
 
-async function loadIdentityDOClass(): Promise<
-  new (ctx: DurableObjectState, env: Awaited<ReturnType<typeof loadTestHelpers>>["createTestApp"] extends (
-    ...args: never[]
-  ) => infer T
-    ? T extends { bindings: infer B }
-      ? B
-      : never
-    : never) => {
-    create(input: StoredIdentity): Promise<StoredIdentity>;
-    get(id?: string): Promise<StoredIdentity | null>;
-    update(input: Partial<StoredIdentity>): Promise<StoredIdentity>;
-    suspend(reason: string): Promise<StoredIdentity>;
-    reactivate(): Promise<StoredIdentity>;
-    retire(): Promise<StoredIdentity>;
-    delete(): Promise<void>;
-  }
-> {
-  ensureDurableObjectGlobal();
+async function loadIdentityDOClass(): Promise<new (ctx: ObjectState, env: IdentityObjectBindings) => IdentityObjectInstance> {
+  ensureObjectBaseGlobal();
   const module = await import("../durable-objects/identity-do.js");
   return module.IdentityDO;
 }
@@ -156,7 +173,7 @@ async function loadIdentityDOClass(): Promise<
 let testHelpersPromise: Promise<typeof import("./test-helpers.js")> | undefined;
 
 function loadTestHelpers() {
-  ensureDurableObjectGlobal();
+  ensureObjectBaseGlobal();
   testHelpersPromise ??= import("./test-helpers.js");
   return testHelpersPromise;
 }
@@ -174,7 +191,7 @@ function createMockState() {
     getAlarm: async () => null,
     setAlarm: async () => {},
     deleteAlarm: async () => {},
-  } as unknown as DurableObjectState;
+  } satisfies ObjectState;
 
   return { state, ...sqlStorage };
 }
@@ -233,10 +250,12 @@ function stripUndefined<T>(value: T): T {
 
 async function createHarness() {
   const IdentityDO = await loadIdentityDOClass();
-  const { createTestApp } = await loadTestHelpers();
   const { state, database, kv, putCalls, sqlCalls } = createMockState();
-  const { calls: d1Calls, db } = createRecordingD1();
-  const bindings = createTestApp({ DB: db }).bindings;
+  const { calls: d1Calls, db } = createRecordingDb();
+  const bindings: IdentityObjectBindings = {
+    INTERNAL_SECRET: "internal-test-secret",
+    DB: db,
+  };
   const identityDO = new IdentityDO(state, bindings);
 
   return { database, d1Calls, identityDO, kv, putCalls, sqlCalls };

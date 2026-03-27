@@ -2,6 +2,8 @@ import type { AuditAction, AuditEntry, RelayAuthTokenClaims } from "@relayauth/t
 import type { MiddlewareHandler } from "hono";
 
 import type { AppEnv } from "../env.js";
+import type { AuthStorage, AuditStorage } from "../storage/index.js";
+import { resolveAuditStorage, resolveContextStorage } from "../storage/index.js";
 import { decodeBase64UrlJson, verifyHs256Signature } from "../lib/jwt.js";
 
 export type ExtendedAuditAction =
@@ -15,6 +17,7 @@ export type AuditLoggerEntry = Omit<AuditEntry, "action"> & {
 };
 
 type AuditLoggerInput = Partial<AuditLoggerEntry>;
+type AuditStorageSource = D1Database | AuditStorage | Pick<AuthStorage, "audit">;
 
 type TokenValidationResult =
   | { ok: true; claims: RelayAuthTokenClaims }
@@ -24,24 +27,6 @@ type JwtHeader = {
   alg?: string;
   typ?: string;
 };
-
-const AUDIT_LOG_INSERT_SQL = `
-  INSERT INTO audit_logs (
-    id,
-    action,
-    identity_id,
-    org_id,
-    workspace_id,
-    plane,
-    resource,
-    result,
-    metadata_json,
-    ip,
-    user_agent,
-    timestamp
-  )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`;
 
 const AUDIT_ACTIONS = new Set<ExtendedAuditAction>([
   "token.issued",
@@ -85,14 +70,18 @@ const SENSITIVE_ACTIONS = new Set<string>([
   "key.rotated",
 ]);
 
-export async function writeAuditEntry(db: D1Database, entry: AuditLoggerInput): Promise<void> {
+export async function writeAuditEntry(
+  storageSource: AuditStorageSource,
+  entry: AuditLoggerInput,
+): Promise<void> {
   const normalized = normalizeAuditEntry(entry);
+  const storage = resolveAuditStorage(storageSource);
 
   try {
-    await db.prepare(AUDIT_LOG_INSERT_SQL).bind(...toInsertParams(normalized)).run();
+    await storage.write(normalized);
   } catch (error) {
     auditWriteFailureCount++;
-    console.error("Failed to write audit log entry to D1", error);
+    console.error("Failed to write audit log entry to storage", error);
     if (SENSITIVE_ACTIONS.has(normalized.action)) {
       throw new Error("Audit write failed for sensitive operation");
     }
@@ -100,7 +89,7 @@ export async function writeAuditEntry(db: D1Database, entry: AuditLoggerInput): 
 }
 
 export async function flushAuditBatch(
-  db: D1Database,
+  storageSource: AuditStorageSource,
   entries: AuditLoggerInput[],
 ): Promise<void> {
   const normalizedEntries = entries.map((entry) => normalizeAuditEntry(entry));
@@ -109,15 +98,13 @@ export async function flushAuditBatch(
     return;
   }
 
+  const storage = resolveAuditStorage(storageSource);
   try {
-    const statements = normalizedEntries.map((entry) =>
-      db.prepare(AUDIT_LOG_INSERT_SQL).bind(...toInsertParams(entry)),
-    );
-    await db.batch(statements);
+    await storage.writeBatch(normalizedEntries);
   } catch (error) {
     auditWriteFailureCount += normalizedEntries.length;
-    console.error("Failed to write audit log batch to D1", error);
-    const hasSensitive = normalizedEntries.some((e) => SENSITIVE_ACTIONS.has(e.action));
+    console.error("Failed to write audit log batch to storage", error);
+    const hasSensitive = normalizedEntries.some((entry) => SENSITIVE_ACTIONS.has(entry.action));
     if (hasSensitive) {
       throw new Error("Audit batch write failed for sensitive operations");
     }
@@ -142,7 +129,7 @@ export function createAuditMiddleware(): MiddlewareHandler<AppEnv> {
           metadata.reason = validation.reason;
         }
 
-        await writeAuditEntry(c.env.DB, {
+        await writeAuditEntry(resolveContextStorage(c), {
           action: "token.validated",
           identityId: claims.sub,
           orgId: claims.org,
@@ -232,23 +219,6 @@ function validateMetadata(
   return normalized;
 }
 
-function toInsertParams(entry: AuditLoggerEntry): unknown[] {
-  return [
-    entry.id,
-    entry.action,
-    entry.identityId,
-    entry.orgId,
-    entry.workspaceId ?? null,
-    entry.plane ?? null,
-    entry.resource ?? null,
-    entry.result,
-    entry.metadata ? JSON.stringify(entry.metadata) : null,
-    entry.ip ?? null,
-    entry.userAgent ?? null,
-    entry.timestamp,
-  ];
-}
-
 function generateAuditId(): string {
   return `aud_${crypto.randomUUID()}`;
 }
@@ -261,10 +231,11 @@ function validateNonEmptyString(value: unknown, fieldName: string): string {
 }
 
 function validateOptionalString(value: unknown): string | undefined {
-  if (value === undefined || value === null) {
+  if (typeof value !== "string") {
     return undefined;
   }
-  return validateNonEmptyString(value, "value");
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 async function validateAuthorizationHeader(
@@ -273,25 +244,19 @@ async function validateAuthorizationHeader(
 ): Promise<TokenValidationResult> {
   const [scheme, token] = authorization.split(/\s+/, 2);
   if (scheme !== "Bearer" || !token) {
-    return { ok: false, reason: "invalid_authorization" };
+    return { ok: false, reason: "invalid_authorization_header" };
   }
 
   const parts = token.split(".");
   if (parts.length !== 3) {
-    return { ok: false, reason: "malformed_token" };
+    return { ok: false, reason: "invalid_token_shape" };
   }
 
   const [encodedHeader, encodedPayload, signature] = parts;
   const header = decodeBase64UrlJson<JwtHeader>(encodedHeader);
-  const payload = decodeBase64UrlJson<RelayAuthTokenClaims>(encodedPayload);
-  const claims = isRelayAuthClaims(payload) ? payload : undefined;
-
-  if (!header || header.alg !== "HS256" || !payload) {
-    return { ok: false, claims, reason: "malformed_token" };
-  }
-
-  if (!claims) {
-    return { ok: false, reason: "invalid_claims" };
+  const claims = decodeBase64UrlJson<RelayAuthTokenClaims>(encodedPayload);
+  if (!header || !claims || header.alg !== "HS256") {
+    return { ok: false, claims: claims ?? undefined, reason: "invalid_token_header" };
   }
 
   const isValidSignature = await verifyHs256Signature(
@@ -300,46 +265,42 @@ async function validateAuthorizationHeader(
     signingKey,
   );
   if (!isValidSignature) {
-    return { ok: false, claims, reason: "invalid_signature" };
+    return { ok: false, claims, reason: "invalid_token_signature" };
   }
 
   const now = Math.floor(Date.now() / 1000);
   if (typeof claims.exp !== "number" || claims.exp <= now) {
-    return { ok: false, claims, reason: "expired_token" };
+    return { ok: false, claims, reason: "token_expired" };
+  }
+
+  if (
+    typeof claims.sub !== "string" ||
+    typeof claims.org !== "string" ||
+    typeof claims.wks !== "string" ||
+    typeof claims.sponsorId !== "string" ||
+    !Array.isArray(claims.sponsorChain) ||
+    typeof claims.jti !== "string"
+  ) {
+    return { ok: false, claims, reason: "invalid_token_claims" };
   }
 
   return { ok: true, claims };
 }
 
-function isRelayAuthClaims(payload: unknown): payload is RelayAuthTokenClaims {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return false;
-  }
-
-  const candidate = payload as Partial<RelayAuthTokenClaims>;
-  return (
-    typeof candidate.sub === "string" &&
-    typeof candidate.org === "string" &&
-    typeof candidate.wks === "string" &&
-    typeof candidate.sponsorId === "string" &&
-    typeof candidate.jti === "string" &&
-    Array.isArray(candidate.sponsorChain)
-  );
-}
-
-
 function extractClientIp(
   cfConnectingIp: string | undefined,
   xForwardedFor: string | undefined,
 ): string | undefined {
-  if (typeof cfConnectingIp === "string" && cfConnectingIp.trim().length > 0) {
-    return cfConnectingIp.trim();
+  const direct = validateOptionalString(cfConnectingIp);
+  if (direct) {
+    return direct;
   }
 
-  if (typeof xForwardedFor !== "string") {
+  const forwarded = validateOptionalString(xForwardedFor);
+  if (!forwarded) {
     return undefined;
   }
 
-  const [firstIp] = xForwardedFor.split(",", 1);
-  return firstIp?.trim() || undefined;
+  const first = forwarded.split(",")[0]?.trim();
+  return first ? first : undefined;
 }

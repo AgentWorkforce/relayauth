@@ -1,5 +1,5 @@
 import type { Policy, PolicyCondition, PolicyEffect } from "@relayauth/types";
-import { matchScope } from "@relayauth/sdk/src/scope-matcher.js";
+import { matchScope } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import {
@@ -44,7 +44,7 @@ policies.post("/", async (c) => {
   }
 
   try {
-    const policy = await createPolicy(c.env.DB, {
+    const policy = await createPolicy(c.get("storage"), {
       name: body.name ?? "",
       effect: (body.effect ?? "") as PolicyEffect,
       scopes: Array.isArray(body.scopes) ? body.scopes : [],
@@ -75,7 +75,7 @@ policies.get("/", async (c) => {
   const effect = normalizePolicyEffect(c.req.query("effect"));
 
   try {
-    const data = await listPolicies(c.env.DB, auth.claims.org, workspaceId);
+    const data = await listPolicies(c.get("storage"), auth.claims.org, workspaceId);
     return c.json(
       {
         data: effect ? data.filter((policy) => policy.effect === effect) : data,
@@ -101,7 +101,7 @@ policies.get("/:id", async (c) => {
   const id = c.req.param("id").trim();
 
   try {
-    const policy = await getPolicy(c.env.DB, id);
+    const policy = await getPolicy(c.get("storage"), id);
     if (!policy || policy.orgId !== auth.claims.org) {
       return c.json({ error: "policy_not_found" }, 404);
     }
@@ -135,12 +135,12 @@ policies.patch("/:id", async (c) => {
   }
 
   try {
-    const existing = await getPolicy(c.env.DB, id);
+    const existing = await getPolicy(c.get("storage"), id);
     if (!existing || existing.orgId !== auth.claims.org) {
       return c.json({ error: "policy_not_found" }, 404);
     }
 
-    const policy = await updatePolicy(c.env.DB, id, updates, existing);
+    const policy = await updatePolicy(c.get("storage"), id, updates, existing);
     return c.json(policy, 200);
   } catch (error) {
     return handlePolicyError(c, error);
@@ -161,12 +161,12 @@ policies.delete("/:id", async (c) => {
   const id = c.req.param("id").trim();
 
   try {
-    const existing = await getPolicy(c.env.DB, id);
+    const existing = await getPolicy(c.get("storage"), id);
     if (!existing || existing.orgId !== auth.claims.org) {
       return c.json({ error: "policy_not_found" }, 404);
     }
 
-    await deletePolicy(c.env.DB, id, existing);
+    await deletePolicy(c.get("storage"), id, existing);
     return c.body(null, 204);
   } catch (error) {
     return handlePolicyError(c, error);

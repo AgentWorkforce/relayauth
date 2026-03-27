@@ -5,54 +5,8 @@ type StoredIdentity = Omit<BaseStoredIdentity, "workspaceId"> & { workspaceId?: 
 import { applyPolicies, evaluateCondition, scopeMatches as policyEvalScopeMatches } from "./policy-evaluation.js";
 import { listPolicies } from "./policies.js";
 import { listIdentityRoles } from "./role-assignments.js";
-
-type IdentityRow = {
-  id?: string;
-  name?: string;
-  type?: StoredIdentity["type"];
-  orgId?: string;
-  org_id?: string;
-  status?: StoredIdentity["status"];
-  scopes?: string | string[];
-  scopes_json?: string | string[];
-  roles?: string | string[];
-  roles_json?: string | string[];
-  metadata?: Record<string, string>;
-  metadata_json?: string | Record<string, string>;
-  createdAt?: string;
-  created_at?: string;
-  updatedAt?: string;
-  updated_at?: string;
-  sponsorId?: string;
-  sponsor_id?: string;
-  sponsorChain?: string[] | string;
-  sponsor_chain?: string[] | string;
-  sponsor_chain_json?: string | string[];
-  workspaceId?: string;
-  workspace_id?: string;
-};
-
-type OrganizationRow = {
-  id?: string;
-  orgId?: string;
-  org_id?: string;
-  scopes?: string | string[];
-  scopes_json?: string | string[];
-  roles?: string | string[];
-  roles_json?: string | string[];
-};
-
-type WorkspaceRow = {
-  id?: string;
-  workspaceId?: string;
-  workspace_id?: string;
-  orgId?: string;
-  org_id?: string;
-  scopes?: string | string[];
-  scopes_json?: string | string[];
-  roles?: string | string[];
-  roles_json?: string | string[];
-};
+import type { AuthStorage } from "../storage/index.js";
+import { resolveAuthStorage } from "../storage/index.js";
 
 type EvaluationContext = {
   identityId?: string;
@@ -94,81 +48,33 @@ export type InheritanceChain = {
   effective: string[];
 };
 
-const SELECT_IDENTITY_SQL = `
-  SELECT
-    id,
-    name,
-    type,
-    org_id AS orgId,
-    status,
-    scopes,
-    scopes_json,
-    roles,
-    roles_json,
-    metadata,
-    metadata_json,
-    created_at AS createdAt,
-    updated_at AS updatedAt,
-    sponsor_id AS sponsorId,
-    sponsor_chain AS sponsorChain,
-    sponsor_chain_json,
-    workspace_id AS workspaceId
-  FROM identities
-  WHERE id = ?
-  LIMIT 1
-`;
-
-const SELECT_ORGANIZATION_SQL = `
-  SELECT
-    id,
-    org_id AS orgId,
-    scopes,
-    scopes_json,
-    roles,
-    roles_json
-  FROM organizations
-  WHERE id = ?
-  LIMIT 1
-`;
-
-const SELECT_WORKSPACE_SQL = `
-  SELECT
-    id,
-    workspace_id AS workspaceId,
-    org_id AS orgId,
-    scopes,
-    scopes_json,
-    roles,
-    roles_json
-  FROM workspaces
-  WHERE id = ?
-  LIMIT 1
-`;
+type ScopeInheritanceStorageSource = D1Database | AuthStorage;
 
 export async function resolveInheritedScopes(
-  db: D1Database,
+  storageSource: ScopeInheritanceStorageSource,
   identityId: string,
 ): Promise<string[]> {
-  const chain = await getInheritanceChain(db, identityId);
+  const chain = await getInheritanceChain(storageSource, identityId);
   return chain.effective;
 }
 
 export async function getInheritanceChain(
-  db: D1Database,
+  storageSource: ScopeInheritanceStorageSource,
   identityId: string,
 ): Promise<InheritanceChain> {
-  const identity = await getIdentity(db, identityId);
+  const storage = resolveAuthStorage(storageSource);
+  const identity = await getIdentity(storage, identityId);
   if (!identity || identity.status !== "active") {
     return emptyInheritanceChain();
   }
 
   const [orgContext, workspaceContext, agentContext, loadedPolicies] = await Promise.all([
-    loadOrganizationContext(db, identity.orgId),
+    loadOrganizationContext(storage, identity.orgId),
     identity.workspaceId
-      ? loadWorkspaceContext(db, identity.workspaceId)
+      ? loadWorkspaceContext(storage, identity.workspaceId)
       : Promise.resolve({ scopes: [], roles: [] } as WorkspaceContext),
-    loadAgentContext(db, identity),
-    listPolicies(db, identity.orgId, identity.workspaceId),
+    loadAgentContext(storage, identity),
+    listPolicies(storage, identity.orgId, identity.workspaceId),
   ]);
 
   const context = createEvaluationContext(identity);
@@ -229,22 +135,23 @@ export async function getInheritanceChain(
   };
 }
 
-async function getOrgScopes(db: D1Database, orgId: string): Promise<string[]> {
-  const context = await loadOrganizationContext(db, orgId);
+async function getOrgScopes(storageSource: AuthStorage | D1Database, orgId: string): Promise<string[]> {
+  const context = await loadOrganizationContext(resolveAuthStorage(storageSource), orgId);
   return context.scopes;
 }
 
-async function getWorkspaceScopes(db: D1Database, workspaceId: string): Promise<string[]> {
-  const context = await loadWorkspaceContext(db, workspaceId);
+async function getWorkspaceScopes(storageSource: AuthStorage | D1Database, workspaceId: string): Promise<string[]> {
+  const context = await loadWorkspaceContext(resolveAuthStorage(storageSource), workspaceId);
   return context.scopes;
 }
 
-async function getAgentScopes(db: D1Database, identityId: string): Promise<string[]> {
-  const identity = await getIdentity(db, identityId);
+async function getAgentScopes(storageSource: AuthStorage | D1Database, identityId: string): Promise<string[]> {
+  const storage = resolveAuthStorage(storageSource);
+  const identity = await getIdentity(storage, identityId);
   if (!identity) {
     return [];
   }
-  const context = await loadAgentContext(db, identity);
+  const context = await loadAgentContext(storage, identity);
   return context.scopes;
 }
 
@@ -268,18 +175,17 @@ function intersectScopes(parentScopes: string[], childScopes: string[]): string[
 }
 
 async function loadOrganizationContext(
-  db: D1Database,
+  storage: AuthStorage,
   orgId: string,
 ): Promise<OrganizationContext> {
-  const row = await db.prepare(SELECT_ORGANIZATION_SQL).bind(orgId.trim()).first<OrganizationRow>();
-  if (!row) {
+  const organization = await storage.contexts.getOrganization(orgId.trim());
+  if (!organization) {
     return { scopes: [], roles: [] };
   }
 
-  const roleIds = parseStringArrayColumn(row.roles_json ?? row.roles);
-  const roles = await loadRolesByIds(db, roleIds);
+  const roles = await loadRolesByIds(storage, organization.roles);
   const scopes = dedupeScopes([
-    ...parseStringArrayColumn(row.scopes_json ?? row.scopes),
+    ...organization.scopes,
     ...roles.flatMap((role) => role.scopes),
   ]);
 
@@ -287,18 +193,17 @@ async function loadOrganizationContext(
 }
 
 async function loadWorkspaceContext(
-  db: D1Database,
+  storage: AuthStorage,
   workspaceId: string,
 ): Promise<WorkspaceContext> {
-  const row = await db.prepare(SELECT_WORKSPACE_SQL).bind(workspaceId.trim()).first<WorkspaceRow>();
-  if (!row) {
+  const workspace = await storage.contexts.getWorkspace(workspaceId.trim());
+  if (!workspace) {
     return { scopes: [], roles: [] };
   }
 
-  const roleIds = parseStringArrayColumn(row.roles_json ?? row.roles);
-  const roles = await loadRolesByIds(db, roleIds);
+  const roles = await loadRolesByIds(storage, workspace.roles);
   const scopes = dedupeScopes([
-    ...parseStringArrayColumn(row.scopes_json ?? row.scopes),
+    ...workspace.scopes,
     ...roles.flatMap((role) => role.scopes),
   ]);
 
@@ -306,10 +211,10 @@ async function loadWorkspaceContext(
 }
 
 async function loadAgentContext(
-  db: D1Database,
+  storage: AuthStorage,
   identity: StoredIdentity,
 ): Promise<AgentContext> {
-  const roles = await listIdentityRoles(db, identity.id);
+  const roles = await listIdentityRoles(storage, identity.id);
 
   const scopes = dedupeScopes([
     ...identity.scopes,
@@ -319,122 +224,16 @@ async function loadAgentContext(
   return { scopes, roles };
 }
 
-async function loadRolesByIds(db: D1Database, roleIds: string[]): Promise<Role[]> {
-  const uniqueRoleIds = dedupeScopes(roleIds);
-  if (uniqueRoleIds.length === 0) {
-    return [];
-  }
-
-  const placeholders = uniqueRoleIds.map(() => "?").join(", ");
-  const result = await db
-    .prepare(`
-      SELECT
-        id,
-        name,
-        description,
-        scopes,
-        scopes_json,
-        org_id AS orgId,
-        workspace_id AS workspaceId,
-        built_in AS builtIn,
-        created_at AS createdAt
-      FROM roles
-      WHERE id IN (${placeholders})
-    `)
-    .bind(...uniqueRoleIds)
-    .all<{
-      id?: string;
-      name?: string;
-      description?: string;
-      scopes?: string | string[];
-      scopes_json?: string | string[];
-      orgId?: string;
-      org_id?: string;
-      workspaceId?: string | null;
-      workspace_id?: string | null;
-      builtIn?: boolean | number;
-      built_in?: boolean | number;
-      createdAt?: string;
-      created_at?: string;
-    }>();
-
-  return (result.results ?? [])
-    .map((row) => {
-      const id = normalizeOptionalString(row.id);
-      const name = normalizeOptionalString(row.name);
-      const description = normalizeOptionalString(row.description);
-      const orgId = normalizeOptionalString(row.orgId) ?? normalizeOptionalString(row.org_id);
-      const createdAt = normalizeOptionalString(row.createdAt) ?? normalizeOptionalString(row.created_at);
-
-      if (!id || !name || !description || !orgId || !createdAt) {
-        return null;
-      }
-
-      const scopes = parseStringArrayColumn(row.scopes_json ?? row.scopes);
-      const workspaceId = normalizeOptionalString(row.workspaceId) ?? normalizeOptionalString(row.workspace_id);
-      const builtIn = row.builtIn === true || row.builtIn === 1 || row.built_in === true || row.built_in === 1;
-
-      return {
-        id,
-        name,
-        description,
-        scopes,
-        orgId,
-        ...(workspaceId ? { workspaceId } : {}),
-        builtIn,
-        createdAt,
-      } as Role;
-    })
-    .filter((role): role is Role => role !== null);
+async function loadRolesByIds(storage: AuthStorage, roleIds: string[]): Promise<Role[]> {
+  return storage.roles.listByIds(dedupeScopes(roleIds));
 }
 
 async function getIdentity(
-  db: D1Database,
+  storage: AuthStorage,
   identityId: string,
 ): Promise<StoredIdentity | null> {
-  const row = await db.prepare(SELECT_IDENTITY_SQL).bind(identityId.trim()).first<IdentityRow>();
-  return hydrateIdentity(row);
-}
-
-function hydrateIdentity(row: IdentityRow | null): StoredIdentity | null {
-  if (!row) {
-    return null;
-  }
-
-  const id = normalizeOptionalString(row.id);
-  const name = normalizeOptionalString(row.name);
-  const type = row.type;
-  const orgId = normalizeOptionalString(row.orgId) ?? normalizeOptionalString(row.org_id);
-  const status = row.status;
-  const createdAt = normalizeOptionalString(row.createdAt) ?? normalizeOptionalString(row.created_at);
-  const updatedAt = normalizeOptionalString(row.updatedAt) ?? normalizeOptionalString(row.updated_at);
-  const sponsorId = normalizeOptionalString(row.sponsorId) ?? normalizeOptionalString(row.sponsor_id);
-  const workspaceId = normalizeOptionalString(row.workspaceId) ?? normalizeOptionalString(row.workspace_id);
-
-  if (!id || !name || !type || !orgId || !status || !createdAt || !updatedAt || !sponsorId) {
-    return null;
-  }
-
-  const metadata = parseRecordColumn(row.metadata_json ?? row.metadata);
-  const sponsorChain = parseStringArrayColumn(
-    row.sponsor_chain_json ?? row.sponsorChain ?? row.sponsor_chain,
-  );
-
-  return {
-    id,
-    name,
-    type,
-    orgId,
-    status,
-    scopes: parseStringArrayColumn(row.scopes_json ?? row.scopes),
-    roles: parseStringArrayColumn(row.roles_json ?? row.roles),
-    metadata,
-    createdAt,
-    updatedAt,
-    sponsorId,
-    sponsorChain: sponsorChain.length > 0 ? sponsorChain : [sponsorId, id],
-    ...(workspaceId ? { workspaceId } : {}),
-  };
+  const identity = await storage.identities.get(identityId.trim());
+  return identity ? { ...identity } : null;
 }
 
 function createEvaluationContext(identity: StoredIdentity): EvaluationContext {

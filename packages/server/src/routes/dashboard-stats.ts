@@ -64,9 +64,10 @@ dashboardStats.get("/", async (c) => {
     return c.json({ error: "missing_org_context" }, 401);
   }
 
+  const storage = c.get("storage");
   const [auditCounts, identityCounts] = await Promise.all([
-    queryAuditCounts(c.env.DB, claims.org, parsedQuery.value),
-    queryIdentityCounts(c.env.DB, claims.org),
+    storage.audit.getActionCounts(claims.org, parsedQuery.value),
+    storage.identities.getStatusCounts(claims.org),
   ]);
 
   const response: DashboardStatsResponse = {
@@ -111,65 +112,6 @@ function parseDashboardStatsQuery(
     },
   };
 }
-
-async function queryAuditCounts(
-  db: D1Database,
-  orgId: string,
-  query: DashboardStatsQuery,
-): Promise<DashboardAuditCounts> {
-  const built = buildAuditCountsQuery(orgId, query);
-  const result = await db.prepare(built.sql).bind(...built.params).all<DashboardAuditCountRow>();
-  return summarizeAuditCounts(result.results ?? []);
-}
-
-async function queryIdentityCounts(
-  db: D1Database,
-  orgId: string,
-): Promise<DashboardIdentityCounts> {
-  const result = await db.prepare(IDENTITY_COUNTS_SQL).bind(orgId).all<DashboardIdentityCountRow>();
-  return summarizeIdentityCounts(result.results ?? []);
-}
-
-function buildAuditCountsQuery(
-  orgId: string,
-  query: DashboardStatsQuery,
-): { sql: string; params: unknown[] } {
-  const clauses = [
-    "org_id = ?",
-    "(",
-    "action IN ('token.issued', 'token.refreshed', 'token.revoked', 'scope.denied')",
-    "OR (action = 'scope.checked' AND result IN ('allowed', 'denied'))",
-    ")",
-  ];
-  const params: unknown[] = [orgId];
-
-  if (query.from) {
-    clauses.push("timestamp >= ?");
-    params.push(query.from);
-  }
-
-  if (query.to) {
-    clauses.push("timestamp < ?");
-    params.push(query.to);
-  }
-
-  return {
-    sql: `
-      SELECT action, COUNT(*) AS count
-      FROM audit_logs
-      WHERE ${clauses.join(" AND ")}
-      GROUP BY action
-    `,
-    params,
-  };
-}
-
-const IDENTITY_COUNTS_SQL = `
-  SELECT status, COUNT(*) AS count
-  FROM identities
-  WHERE org_id = ? AND status IN ('active', 'suspended')
-  GROUP BY status
-`;
 
 function summarizeAuditCounts(rows: DashboardAuditCountRow[]): DashboardAuditCounts {
   const counts: DashboardAuditCounts = {

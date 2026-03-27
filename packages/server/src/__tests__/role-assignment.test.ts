@@ -18,45 +18,10 @@ type RoleListResponse = {
   data: Role[];
 };
 
-type RoleRow = {
-  id: string;
-  name: string;
-  description: string;
-  scopes: string[];
-  scopes_json: string;
-  orgId: string;
-  org_id: string;
-  workspaceId?: string;
-  workspace_id?: string;
-  builtIn: boolean;
-  built_in: number;
-  createdAt: string;
-  created_at: string;
-};
-
-type DurableObjectCall = {
-  identityId: string;
-  method: string;
-  path: string;
-  body: unknown;
-};
-
 type RoleAssignmentScenario = {
-  db: D1Database;
   roles: Map<string, Role>;
   identities: Map<string, StoredIdentity>;
-  identityNamespace: DurableObjectNamespace;
-  doCalls: DurableObjectCall[];
 };
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-    },
-  });
-}
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -353,10 +318,13 @@ async function requestRoleAssignmentApi(
   } = {},
 ): Promise<{ response: Response; scenario: RoleAssignmentScenario }> {
   const activeScenario = scenario ?? createRoleAssignmentScenario();
-  const app = createTestApp({
-    DB: activeScenario.db,
-    IDENTITY_DO: activeScenario.identityNamespace,
-  });
+  const app = createTestApp();
+  for (const role of activeScenario.roles.values()) {
+    await app.storage.roles.create(clone(role));
+  }
+  for (const identity of activeScenario.identities.values()) {
+    await app.storage.identities.create(clone(identity));
+  }
   const token = generateTestToken({
     org: "org_test",
     wks: "ws_test",
@@ -373,6 +341,37 @@ async function requestRoleAssignmentApi(
   });
 
   const response = await app.request(request, undefined, app.bindings);
+  const roleRows = await app.storage.DB.prepare(`
+    SELECT data
+    FROM roles
+  `).all<{ data?: string }>();
+  activeScenario.roles = new Map(
+    roleRows.results
+      .map((row) => {
+        if (typeof row.data !== "string") {
+          return null;
+        }
+        const role = JSON.parse(row.data) as Role;
+        return [role.id, role] as const;
+      })
+      .filter((entry): entry is readonly [string, Role] => entry !== null),
+  );
+
+  const identityRows = await app.storage.DB.prepare(`
+    SELECT data
+    FROM identities
+  `).all<{ data?: string }>();
+  activeScenario.identities = new Map(
+    identityRows.results
+      .map((row) => {
+        if (typeof row.data !== "string") {
+          return null;
+        }
+        const identity = JSON.parse(row.data) as StoredIdentity;
+        return [identity.id, identity] as const;
+      })
+      .filter((entry): entry is readonly [string, StoredIdentity] => entry !== null),
+  );
   return { response, scenario: activeScenario };
 }
 
