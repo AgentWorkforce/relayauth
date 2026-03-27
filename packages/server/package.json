@@ -24,10 +24,6 @@
     "./node": {
       "types": "./dist/entrypoints/node.d.ts",
       "import": "./dist/entrypoints/node.js"
-    },
-    "./cloudflare": {
-      "types": "./dist/entrypoints/cloudflare.d.ts",
-      "import": "./dist/entrypoints/cloudflare.js"
     }
   },
   "scripts": {

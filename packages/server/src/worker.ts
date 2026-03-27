@@ -14,7 +14,6 @@ import policies from "./routes/policies.js";
 import roleAssignments from "./routes/role-assignments.js";
 import roles from "./routes/roles.js";
 import type { AuthStorage } from "./storage/index.js";
-import { createCloudflareStorage, type CloudflareStorageBindings } from "./storage/index.js";
 
 // Routes that do not require authentication
 const PUBLIC_PATHS = new Set([
@@ -49,7 +48,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   }
 
   app.use("*", async (c, next) => {
-    c.set("storage", options.storage ?? createCloudflareStorage(c.env as unknown as CloudflareStorageBindings));
+    if (!options.storage) {
+      throw new Error("storage is required — use createSqliteStorage (local) or provide a storage adapter");
+    }
+    c.set("storage", options.storage);
     await next();
   });
 
