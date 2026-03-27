@@ -946,65 +946,98 @@ cmd_run() {
 
   ensure_state_dirs
   mount_dir="$(pwd)/.relay/workspace-${agent_name}"
-  local project_dir
+  local project_dir mount_log mount_pid mount_once_output denied_count mounted_file_count
   project_dir="$(pwd)"
+  mount_log=".relay/logs/${agent_name}-mount.log"
   mkdir -p "${mount_dir}"
+  [[ -x "${RELAYFILE_MOUNT_BIN}" ]] || error "missing relayfile mount binary: ${RELAYFILE_MOUNT_BIN}"
 
-  # Build filtered workspace: copy allowed files, skip ignored, chmod readonly
-  echo "Building filtered workspace at ${mount_dir}…"
-  local compiled_json
-  compiled_json="$(npx tsx "${DOTFILE_COMPILER_TS}" --project-dir "${project_dir}" --agent "${agent_name}" --workspace "${workspace}")"
+  echo "Mounting workspace at ${mount_dir}…"
+  if ! mount_once_output="$(
+    "${RELAYFILE_MOUNT_BIN}" \
+      --base-url "${DEFAULT_RELAYFILE_URL}" \
+      --workspace "${workspace}" \
+      --token "${token}" \
+      --local-dir "${mount_dir}" \
+      --once 2>&1
+  )"; then
+    echo "${mount_once_output}" >&2
+    error "initial workspace sync failed for ${agent_name}"
+  fi
 
-  # Parse the compiled output to get file lists
-  local ignored_files readonly_files readwrite_files
-  ignored_files="$(echo "${compiled_json}" | node -e "
-    const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
-    (d.compiled?.ignoredPaths || []).forEach(p => console.log(p));
-  ")"
-  readonly_files="$(echo "${compiled_json}" | node -e "
-    const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
-    (d.compiled?.readonlyPaths || []).forEach(p => console.log(p));
-  ")"
+  denied_count="$(printf '%s\n' "${mount_once_output}" | grep -c "skipping denied file" 2>/dev/null || echo 0)"
+  mounted_file_count="$(find "${mount_dir}" -type f -not -path "${mount_dir}/.relay/*" -not -name "_PERMISSIONS.md" -not -name "CLAUDE.md" 2>/dev/null | wc -l | tr -d ' ')"
 
-  # Copy all non-ignored files preserving directory structure
-  local file_count=0
-  while IFS= read -r -d '' file; do
-    local rel_path="${file#${project_dir}/}"
-    # Skip dotfile/relay internals
-    [[ "${rel_path}" != .relay/* ]] || continue
-    [[ "${rel_path}" != .git/* ]] || continue
-    [[ "${rel_path}" != node_modules/* ]] || continue
+  # Generate _PERMISSIONS.md and CLAUDE.md so agents understand the permission model
+  local readonly_list ignored_list compiled_json_content
+  compiled_json_content=""
+  if [[ -f ".relay/compiled-acl.json" ]]; then
+    compiled_json_content="$(<".relay/compiled-acl.json")"
+  fi
 
-    # Skip ignored files
-    if echo "${ignored_files}" | grep -qxF "${rel_path}" 2>/dev/null; then
-      continue
-    fi
+  readonly_list="$(echo "${compiled_json_content}" | node -e "
+    try {
+      const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+      const agents = d.agents || [];
+      const a = agents[0] || {};
+      (a.readonlyPatterns || []).forEach(p => console.log('- ' + p));
+    } catch {}
+  " 2>/dev/null)" || readonly_list=""
 
-    # Copy file
-    local dest="${mount_dir}/${rel_path}"
-    mkdir -p "$(dirname "${dest}")"
-    cp "${file}" "${dest}"
+  ignored_list="$(echo "${compiled_json_content}" | node -e "
+    try {
+      const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+      const agents = d.agents || [];
+      const a = agents[0] || {};
+      (a.ignoredPatterns || []).forEach(p => console.log('- ' + p));
+    } catch {}
+  " 2>/dev/null)" || ignored_list=""
 
-    # Set readonly if in readonly list
-    if echo "${readonly_files}" | grep -qxF "${rel_path}" 2>/dev/null; then
-      chmod 444 "${dest}"
-    fi
+  local perms_doc="# Workspace Permissions
 
-    file_count=$((file_count + 1))
-  done < <(find "${project_dir}" -type f -print0 2>/dev/null)
+This workspace is managed by the relay. File access is controlled
+by .agentignore and .agentreadonly in the project root.
 
-  echo "  ✓ ${file_count} files copied (ignored files excluded, readonly files protected)"
+## Read-only files (cannot be modified)
+${readonly_list:-None}
 
-  local agent_pid=""
+## Hidden files (not available in this workspace)
+${ignored_list:-None}
+
+## Writable files
+All other files can be read and modified freely.
+
+If you get \"permission denied\", the file is read-only.
+Changes to read-only files will be automatically reverted.
+Do not attempt to chmod files — permissions will be restored."
+
+  printf '%s\n' "${perms_doc}" > "${mount_dir}/_PERMISSIONS.md"
+  printf '%s\n' "${perms_doc}" > "${mount_dir}/CLAUDE.md"
+
+  mount_pid=""
+  "${RELAYFILE_MOUNT_BIN}" \
+    --base-url "${DEFAULT_RELAYFILE_URL}" \
+    --workspace "${workspace}" \
+    --token "${token}" \
+    --local-dir "${mount_dir}" \
+    > "${mount_log}" 2>&1 &
+  mount_pid=$!
+  sleep 1
+  if ! service_alive "${mount_pid}"; then
+    local mount_tail
+    mount_tail="$(tail -n 5 "${mount_log}" 2>/dev/null | tr '\n' ' ')"
+    error "mount process for ${agent_name} exited early; check ${mount_log}${mount_tail:+ (${mount_tail})}"
+  fi
+
   local cleaned_up=0
 
   cleanup_run() {
     [[ ${cleaned_up} -eq 0 ]] || return 0
     cleaned_up=1
 
-    if [[ -n "${agent_pid}" ]] && service_alive "${agent_pid}"; then
-      kill -TERM "${agent_pid}" >/dev/null 2>&1 || true
-      wait "${agent_pid}" 2>/dev/null || true
+    if [[ -n "${mount_pid}" ]] && service_alive "${mount_pid}"; then
+      kill -TERM "${mount_pid}" >/dev/null 2>&1 || true
+      wait "${mount_pid}" 2>/dev/null || true
     fi
 
     # Sync writable files back to project
@@ -1012,6 +1045,7 @@ cmd_run() {
     local synced=0
     while IFS= read -r -d '' file; do
       local rel_path="${file#${mount_dir}/}"
+      [[ "${rel_path}" != .relay/* ]] || continue
       local orig="${project_dir}/${rel_path}"
       # Only sync writable files (skip readonly)
       [[ -w "${file}" ]] || continue
@@ -1053,8 +1087,8 @@ cmd_run() {
   echo ""
   echo "Launching ${agent_cli} as relay agent \"${agent_name}\""
   echo "  Workspace: ${mount_dir}"
-  echo "  Ignored: $(echo "${ignored_files}" | grep -c . 2>/dev/null || echo 0) files hidden"
-  echo "  Readonly: $(echo "${readonly_files}" | grep -c . 2>/dev/null || echo 0) files protected"
+  echo "  Mounted files: ${mounted_file_count} files"
+  echo "  Permissions denied (initial sync): ${denied_count} files"
   if [[ ${#sandbox_flags[@]} -gt 0 ]]; then
     echo "  Sandbox: relay-enforced (${sandbox_flags[*]})"
   fi
