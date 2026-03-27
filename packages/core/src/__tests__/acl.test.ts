@@ -9,7 +9,7 @@ test("seedAclEntries writes relayfile ACL marker files", async () => {
 
   globalThis.fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
     calls.push({ input: new URL(String(input)), init });
-    return new Response(null, { status: 200 });
+    return new Response(JSON.stringify({ errorCount: 0, errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
 
   try {
@@ -26,16 +26,24 @@ test("seedAclEntries writes relayfile ACL marker files", async () => {
     globalThis.fetch = originalFetch;
   }
 
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0]?.input.pathname, "/v1/workspaces/workspace-a/fs/file");
-  assert.equal(calls[0]?.input.searchParams.get("path"), "/.relayfile.acl");
-  assert.equal(calls[1]?.input.searchParams.get("path"), "/src/.relayfile.acl");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.input.pathname, "/v1/workspaces/workspace-a/fs/bulk");
   assert.equal((calls[0]?.init?.headers as Record<string, string>)?.authorization, "Bearer token-123");
 
   const firstBody = JSON.parse(String(calls[0]?.init?.body));
   assert.deepEqual(firstBody, {
-    content: JSON.stringify({ semantics: { permissions: ["agent:root:read"] } }),
-    encoding: "utf-8",
+    files: [
+      {
+        path: "/.relayfile.acl",
+        content: JSON.stringify({ semantics: { permissions: ["agent:root:read"] } }),
+        encoding: "utf-8",
+      },
+      {
+        path: "/src/.relayfile.acl",
+        content: JSON.stringify({ semantics: { permissions: ["agent:dev:write"] } }),
+        encoding: "utf-8",
+      },
+    ],
   });
 });
 
@@ -47,7 +55,7 @@ test("seedAclEntries surfaces relayfile API failures", async () => {
   try {
     await assert.rejects(
       () => seedAclEntries("workspace-a", { "/src": ["agent:dev:write"] }, "http://relayfile", "token"),
-      /failed to seed ACL for \/src: HTTP 500 boom/,
+      /failed to seed ACLs: HTTP 500 boom/,
     );
   } finally {
     globalThis.fetch = originalFetch;

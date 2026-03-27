@@ -33,9 +33,21 @@ export async function seedAclEntries(
     throw new Error(`failed to seed ACLs: HTTP ${response.status} ${body}`.trim());
   }
 
-  const result = await response.json() as { errorCount: number; errors: any[] };
-  if (result.errorCount > 0) {
-    throw new Error(`ACL seeding had ${result.errorCount} error(s): ${JSON.stringify(result.errors)}`);
+  const body = await response.text().catch(() => "");
+  if (!body) {
+    return;
+  }
+
+  let result: { errorCount?: unknown; errors?: unknown };
+  try {
+    result = JSON.parse(body);
+  } catch (_error) {
+    return;
+  }
+
+  if (typeof result?.errorCount === "number" && result.errorCount > 0) {
+    const errors = Array.isArray(result.errors) ? result.errors : [];
+    throw new Error(`ACL seeding had ${result.errorCount} error(s): ${JSON.stringify(errors)}`);
   }
 }
 
