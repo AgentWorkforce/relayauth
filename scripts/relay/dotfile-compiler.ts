@@ -68,26 +68,42 @@ export function compileDotfiles(projectDir: string, agentName: string, workspace
   const readonlyPaths: string[] = [];
   const readwritePaths: string[] = [];
 
+  // Track files per directory to determine if ALL files in a dir are ignored
+  const dirFiles = new Map<string, { ignored: string[]; allowed: string[] }>();
+
   walkProjectFiles(path.resolve(projectDir), (relativePath, isDirectory) => {
     if (isDirectory) {
       return;
     }
 
+    const dir = normalizeAclDir(path.dirname(relativePath));
+    const entry = dirFiles.get(dir) ?? { ignored: [], allowed: [] };
+
     if (isIgnored(relativePath, perms)) {
       ignoredPaths.push(relativePath);
-      addRule(aclMap, normalizeAclDir(path.dirname(relativePath)), `deny:agent:${agentName}`);
-      return;
+      entry.ignored.push(relativePath);
+    } else {
+      entry.allowed.push(relativePath);
+      addScope(scopes, "read", relativePath);
+      if (isReadonly(relativePath, perms)) {
+        readonlyPaths.push(relativePath);
+      } else {
+        readwritePaths.push(relativePath);
+        addScope(scopes, "write", relativePath);
+      }
     }
 
-    addScope(scopes, "read", relativePath);
-    if (isReadonly(relativePath, perms)) {
-      readonlyPaths.push(relativePath);
-      return;
-    }
-
-    readwritePaths.push(relativePath);
-    addScope(scopes, "write", relativePath);
+    dirFiles.set(dir, entry);
   });
+
+  // Only add deny rules on directories where ALL files are ignored.
+  // For mixed directories (some ignored, some not), the token scopes
+  // handle enforcement — the agent simply won't have scopes for ignored files.
+  for (const [dir, { ignored, allowed }] of dirFiles.entries()) {
+    if (ignored.length > 0 && allowed.length === 0) {
+      addRule(aclMap, dir, `deny:agent:${agentName}`);
+    }
+  }
 
   const acl: Record<string, string[]> = {};
   for (const [aclDir, rules] of aclMap.entries()) {
