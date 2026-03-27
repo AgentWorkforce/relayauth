@@ -1098,6 +1098,11 @@ Do not attempt to chmod files — permissions will be restored."
   fi
   echo ""
 
+  # Copy .agentdeny if it exists
+  if [[ -f "${project_dir}/.agentdeny" ]]; then
+    cp "${project_dir}/.agentdeny" "${mount_dir}/.agentdeny"
+  fi
+
   # Run agent in foreground (needs TTY for interactive agents like codex/claude)
   local agent_status=0
   (
@@ -1107,6 +1112,9 @@ Do not attempt to chmod files — permissions will be restored."
     export RELAYFILE_WORKSPACE="${workspace}"
     export RELAY_WORKSPACE="${mount_dir}"
     export RELAY_AGENT_NAME="${agent_name}"
+    if [[ -f ".agentdeny" ]]; then
+      source "${RELAYAUTH_ROOT}/scripts/relay/agentdeny-hook.sh"
+    fi
     exec "${agent_cli}" "${sandbox_flags[@]}" "${extra_args[@]}"
   ) || agent_status=$?
 

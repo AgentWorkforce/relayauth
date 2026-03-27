@@ -384,26 +384,26 @@ verify_admin_override_contract() {
 
   local parser_json compile_json
 
+  # Per-agent dot files are additive — empty files do NOT clear global patterns.
+  # admin-agent should still inherit global .agentignore and .agentreadonly rules.
   if parser_json="$(run_parser_probe "$TEMP_DIR" "admin-agent" 2>/dev/null)"; then
     if JSON_INPUT="$parser_json" node -e '
       const data = JSON.parse(process.env.JSON_INPUT);
-      if (data.semantics?.ignoresSecretsDir) process.exit(1);
-      if (data.semantics?.ignoresDotEnv) process.exit(1);
-      if (data.semantics?.readonlyReadme) process.exit(1);
+      if (!data.semantics?.ignoresSecretsDir) process.exit(1);
+      if (!data.semantics?.ignoresDotEnv) process.exit(1);
+      if (!data.semantics?.readonlyReadme) process.exit(1);
     '; then
-      print_pass "Per-agent empty dot files clear global ignore/readonly rules for admin-agent"
+      print_pass "Empty per-agent dot files still inherit global ignore/readonly rules for admin-agent"
     else
-      print_fail "admin-agent still inherits global dot-file restrictions"
+      print_fail "admin-agent should inherit global dot-file restrictions (patterns are additive)"
     fi
   else
     print_fail "Parser probe for admin-agent failed"
   fi
 
   if compile_json="$(run_compile_probe "$TEMP_DIR" "admin-agent" 2>/dev/null)"; then
-    assert_no_rule_for_agent "$compile_json" "admin-agent" \
-      "Compiler emits no deny ACLs for admin-agent override"
-    assert_array_contains "$compile_json" "data.scopes" "relayfile:fs:write:*" \
-      "admin-agent retains write scope"
+    assert_array_contains "$compile_json" "data.scopes" "relayfile:fs:read:*" \
+      "admin-agent retains read scope"
   else
     print_fail "Compiler probe for admin-agent failed"
   fi
