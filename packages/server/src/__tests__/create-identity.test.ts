@@ -304,7 +304,10 @@ test("POST /v1/identities auto-populates sponsorChain from the authenticated par
 
   const body = await assertJsonResponse<CreatedIdentity>(response, 201);
 
-  assert.deepEqual(body.sponsorChain, ["user_jane", "agent_root_1", "agent_parent_9", "agent_parent_9"]);
+  // sponsorChain should be parent's chain + the NEW identity's ID (not parent's sub)
+  assert.equal(body.sponsorChain.length, 4);
+  assert.deepEqual(body.sponsorChain.slice(0, 3), ["user_jane", "agent_root_1", "agent_parent_9"]);
+  assert.equal(body.sponsorChain[3], body.id);
 });
 
 test("POST /v1/identities defaults budget from the org when the request omits budget", async () => {
