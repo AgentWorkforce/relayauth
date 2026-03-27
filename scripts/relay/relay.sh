@@ -656,9 +656,7 @@ cmd_provision() {
   if dotfiles_exist; then
     local compiled_bundle summary_json ignored_count readonly_count
     compiled_bundle="$(build_compiled_acl_bundle "${config_json}" "${workspace}")"
-    if [[ "${EFFECTIVE_CONFIG_PATH}" == "relay.yaml" ]]; then
-      npx tsx "${SEED_ACL_TS}" --compiled-json "${compiled_bundle}" --base-url "${DEFAULT_RELAYFILE_URL}" --token "${admin_token}"
-    fi
+    npx tsx "${SEED_ACL_TS}" --compiled-json "${compiled_bundle}" --base-url "${DEFAULT_RELAYFILE_URL}" --token "${admin_token}"
     summary_json="$(<"${compiled_bundle}")"
     ignored_count="$(config_value "${summary_json}" 'data.summary.ignored')"
     readonly_count="$(config_value "${summary_json}" 'data.summary.readonly')"
