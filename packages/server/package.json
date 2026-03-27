@@ -30,7 +30,8 @@
     "dev": "wrangler dev",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --import tsx src/__tests__/*.test.ts"
+    "test": "node --test --import tsx src/__tests__/*.test.ts",
+    "test:e2e": "node --test --import tsx src/__tests__/e2e/*.test.ts"
   },
   "dependencies": {
     "@relayauth/sdk": "*",

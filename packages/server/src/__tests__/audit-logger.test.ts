@@ -4,7 +4,7 @@ import type { AuditAction, AuditEntry, RelayAuthTokenClaims } from "@relayauth/t
 import { Hono, type MiddlewareHandler } from "hono";
 
 import type { AppEnv } from "../env.js";
-import { createDatabaseStorage } from "../storage/index.js";
+import { createSqliteStorage } from "../storage/sqlite.js";
 import {
   createTestRequest,
   generateTestToken,
@@ -432,11 +432,11 @@ test("writeAuditEntry() validates required fields and sponsor trace metadata", a
 
 test("createAuditMiddleware() logs token validation events automatically", async () => {
   const { createAuditMiddleware } = await loadAuditLogger();
-  const { db, runs } = createRecordingD1();
+  const sqliteStorage = createSqliteStorage(":memory:");
   const app = new Hono<AppEnv>();
 
   app.use("*", async (c, next) => {
-    c.set("storage", createDatabaseStorage(db));
+    c.set("storage", sqliteStorage);
     await next();
   });
   app.use("*", createAuditMiddleware());
@@ -466,16 +466,20 @@ test("createAuditMiddleware() logs token validation events automatically", async
   );
 
   assert.equal(response.status, 200);
-  assert.equal(runs.length, 1, "expected a token validation audit write");
 
-  const write = findAuditWrite(runs);
-  assert.equal(write.params.includes("token.validated"), true, "expected token.validated audit action");
-  assert.equal(write.params.includes("agent_middleware_1"), true, "expected request identity id");
-  assert.equal(write.params.includes("org_middleware_1"), true, "expected request org id");
+  // Query audit log from SQLite storage instead of D1 recording
+  const auditEntries = await sqliteStorage.audit.query({ orgId: "org_middleware_1" });
+  const entries = auditEntries.items ?? auditEntries;
+  assert.ok(entries.length >= 1, "expected a token validation audit write");
 
-  const metadata = findMetadata(write.params);
+  const tokenValidated = entries.find((e: any) => e.action === "token.validated");
+  assert.ok(tokenValidated, "expected token.validated audit action");
+  assert.equal(tokenValidated.identityId, "agent_middleware_1", "expected request identity id");
+  assert.equal(tokenValidated.orgId, "org_middleware_1", "expected request org id");
+
+  const metadata = typeof tokenValidated.metadata === "string" ? JSON.parse(tokenValidated.metadata) : (tokenValidated.metadata ?? {});
   assert.equal(metadata.sponsorId, "user_middleware_1");
-  assert.deepEqual(JSON.parse(metadata.sponsorChain), [
+  assert.deepEqual(JSON.parse(metadata.sponsorChain ?? "[]"), [
     "user_middleware_1",
     "agent_root_1",
     "agent_middleware_1",

@@ -135,5 +135,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   return app;
 }
 
-const app = createApp();
-export default app;
+// No default export — callers must provide storage:
+// import { createApp } from '@relayauth/server';
+// const app = createApp({ storage: createSqliteStorage() });
