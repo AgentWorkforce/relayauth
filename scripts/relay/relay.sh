@@ -1012,7 +1012,6 @@ Changes to read-only files will be automatically reverted.
 Do not attempt to chmod files — permissions will be restored."
 
   printf '%s\n' "${perms_doc}" > "${mount_dir}/_PERMISSIONS.md"
-  printf '%s\n' "${perms_doc}" > "${mount_dir}/CLAUDE.md"
 
   mount_pid=""
   "${RELAYFILE_MOUNT_BIN}" \
