@@ -7,6 +7,7 @@
   "type": "module",
   "dependencies": {
     "hono": "^4",
+    "@relayauth/sdk": "0.1.0",
     "@relayauth/types": "0.1.0"
   },
   "devDependencies": {
@@ -15,8 +16,8 @@
   },
   "scripts": {
     "dev": "wrangler dev --config ../../wrangler.toml --local --persist-to ../../.wrangler/state --ip 127.0.0.1 --port 8787",
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit",
     "test": "node --test --import tsx src/__tests__/*.test.ts src/__tests__/e2e/*.test.ts"
   }
 }
