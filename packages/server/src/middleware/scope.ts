@@ -4,6 +4,7 @@ import { ScopeChecker } from "@relayauth/sdk/src/scopes.js";
 import type { Context, MiddlewareHandler } from "hono";
 
 import type { AppEnv } from "../env.js";
+import { decodeBase64UrlJson, verifyHs256Signature } from "../lib/jwt.js";
 
 export type ScopeMiddlewareOptions = {
   onError?: (error: Error) => Response | Promise<Response> | void | Promise<void>;
@@ -210,48 +211,3 @@ async function verifyHs256Token(
   return payload;
 }
 
-async function verifyHs256Signature(
-  value: string,
-  signature: string,
-  signingKey: string,
-): Promise<boolean> {
-  try {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(signingKey),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["verify"],
-    );
-
-    return crypto.subtle.verify(
-      "HMAC",
-      key,
-      decodeBase64UrlToBytes(signature).buffer as ArrayBuffer,
-      new TextEncoder().encode(value),
-    );
-  } catch {
-    return false;
-  }
-}
-
-function decodeBase64UrlJson<T>(value: string): T | null {
-  try {
-    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-    return JSON.parse(atob(padded)) as T;
-  } catch {
-    return null;
-  }
-}
-
-function decodeBase64UrlToBytes(value: string): Uint8Array {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-  const decoded = atob(padded);
-  const bytes = new Uint8Array(decoded.length);
-  for (let i = 0; i < decoded.length; i++) {
-    bytes[i] = decoded.charCodeAt(i);
-  }
-  return bytes;
-}

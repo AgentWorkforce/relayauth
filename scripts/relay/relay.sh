@@ -914,28 +914,55 @@ cmd_run() {
 
   ensure_state_dirs
   mount_dir="$(pwd)/.relay/workspace-${agent_name}"
-  mount_state_file="$(pwd)/.relay/${agent_name}.mount-state.json"
-  mount_log="$(pwd)/.relay/logs/${agent_name}-mount.log"
+  local project_dir
+  project_dir="$(pwd)"
   mkdir -p "${mount_dir}"
 
-  echo "Syncing relay workspace into ${mount_dir}…"
-  "${RELAYFILE_MOUNT_BIN}" \
-    --base-url "${DEFAULT_RELAYFILE_URL}" \
-    --workspace "${workspace}" \
-    --token "${token}" \
-    --state-file "${mount_state_file}" \
-    --local-dir "${mount_dir}" \
-    --once
+  # Build filtered workspace: copy allowed files, skip ignored, chmod readonly
+  echo "Building filtered workspace at ${mount_dir}…"
+  local compiled_json
+  compiled_json="$(npx tsx "${DOTFILE_COMPILER_TS}" --project-dir "${project_dir}" --agent "${agent_name}" --workspace "${workspace}")"
 
-  "${RELAYFILE_MOUNT_BIN}" \
-    --base-url "${DEFAULT_RELAYFILE_URL}" \
-    --workspace "${workspace}" \
-    --token "${token}" \
-    --state-file "${mount_state_file}" \
-    --local-dir "${mount_dir}" \
-    > "${mount_log}" 2>&1 &
-  local mount_pid=$!
-  register_mount "${agent_name}" "${mount_pid}" "${mount_dir}" "${workspace}" "${mount_log}" "${mount_state_file}"
+  # Parse the compiled output to get file lists
+  local ignored_files readonly_files readwrite_files
+  ignored_files="$(echo "${compiled_json}" | node -e "
+    const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+    (d.compiled?.ignoredPaths || []).forEach(p => console.log(p));
+  ")"
+  readonly_files="$(echo "${compiled_json}" | node -e "
+    const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+    (d.compiled?.readonlyPaths || []).forEach(p => console.log(p));
+  ")"
+
+  # Copy all non-ignored files preserving directory structure
+  local file_count=0
+  while IFS= read -r -d '' file; do
+    local rel_path="${file#${project_dir}/}"
+    # Skip dotfile/relay internals
+    [[ "${rel_path}" != .relay/* ]] || continue
+    [[ "${rel_path}" != .git/* ]] || continue
+    [[ "${rel_path}" != node_modules/* ]] || continue
+
+    # Skip ignored files
+    if echo "${ignored_files}" | grep -qxF "${rel_path}" 2>/dev/null; then
+      continue
+    fi
+
+    # Copy file
+    local dest="${mount_dir}/${rel_path}"
+    mkdir -p "$(dirname "${dest}")"
+    cp "${file}" "${dest}"
+
+    # Set readonly if in readonly list
+    if echo "${readonly_files}" | grep -qxF "${rel_path}" 2>/dev/null; then
+      chmod 444 "${dest}"
+    fi
+
+    file_count=$((file_count + 1))
+  done < <(find "${project_dir}" -type f -print0 2>/dev/null)
+
+  echo "  ✓ ${file_count} files copied (ignored files excluded, readonly files protected)"
+
   local agent_pid=""
   local cleaned_up=0
 
@@ -947,20 +974,37 @@ cmd_run() {
       kill -TERM "${agent_pid}" >/dev/null 2>&1 || true
       wait "${agent_pid}" 2>/dev/null || true
     fi
-    if [[ -n "${mount_pid}" ]] && service_alive "${mount_pid}"; then
-      kill -TERM "${mount_pid}" >/dev/null 2>&1 || true
-      wait "${mount_pid}" 2>/dev/null || true
-    fi
 
-    unregister_mount "${agent_name}" 2>/dev/null || true
-    rm -f "${mount_state_file}"
+    # Sync writable files back to project
+    echo "Syncing changes back to project…"
+    local synced=0
+    while IFS= read -r -d '' file; do
+      local rel_path="${file#${mount_dir}/}"
+      local orig="${project_dir}/${rel_path}"
+      # Only sync writable files (skip readonly)
+      [[ -w "${file}" ]] || continue
+      # Only sync if changed
+      if [[ -f "${orig}" ]] && cmp -s "${file}" "${orig}" 2>/dev/null; then
+        continue
+      fi
+      mkdir -p "$(dirname "${orig}")"
+      cp "${file}" "${orig}"
+      synced=$((synced + 1))
+    done < <(find "${mount_dir}" -type f -print0 2>/dev/null)
+    echo "  ✓ ${synced} file(s) synced back"
+
     rm -rf "${mount_dir}"
   }
 
   trap 'cleanup_run' EXIT
   trap 'cleanup_run; return 130 2>/dev/null || exit 130' INT TERM
 
+  echo ""
   echo "Launching ${agent_cli} as relay agent \"${agent_name}\""
+  echo "  Workspace: ${mount_dir}"
+  echo "  Ignored: $(echo "${ignored_files}" | grep -c . 2>/dev/null || echo 0) files hidden"
+  echo "  Readonly: $(echo "${readonly_files}" | grep -c . 2>/dev/null || echo 0) files protected"
+  echo ""
   (
     cd "${mount_dir}" || exit 1
     export RELAYFILE_TOKEN="${token}"

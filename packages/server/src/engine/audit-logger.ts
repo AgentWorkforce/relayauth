@@ -2,6 +2,7 @@ import type { AuditAction, AuditEntry, RelayAuthTokenClaims } from "@relayauth/t
 import type { MiddlewareHandler } from "hono";
 
 import type { AppEnv } from "../env.js";
+import { decodeBase64UrlJson, verifyHs256Signature } from "../lib/jwt.js";
 
 export type ExtendedAuditAction =
   | AuditAction
@@ -326,53 +327,6 @@ function isRelayAuthClaims(payload: unknown): payload is RelayAuthTokenClaims {
   );
 }
 
-function decodeBase64UrlJson<T>(value: string): T | null {
-  try {
-    return JSON.parse(decodeBase64Url(value)) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function verifyHs256Signature(
-  value: string,
-  signature: string,
-  signingKey: string,
-): Promise<boolean> {
-  try {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(signingKey),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["verify"],
-    );
-
-    return crypto.subtle.verify(
-      "HMAC",
-      key,
-      decodeBase64UrlToBytes(signature),
-      new TextEncoder().encode(value),
-    );
-  } catch {
-    return false;
-  }
-}
-
-function decodeBase64Url(value: string): string {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-  return atob(padded);
-}
-
-function decodeBase64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
-  const decoded = decodeBase64Url(value);
-  const bytes = new Uint8Array(decoded.length);
-  for (let index = 0; index < decoded.length; index += 1) {
-    bytes[index] = decoded.charCodeAt(index);
-  }
-  return bytes;
-}
 
 function extractClientIp(
   cfConnectingIp: string | undefined,
