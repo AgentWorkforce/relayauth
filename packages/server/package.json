@@ -37,8 +37,8 @@
     "test": "node --test --import tsx src/__tests__/*.test.ts"
   },
   "dependencies": {
-    "@relayauth/sdk": "workspace:*",
-    "@relayauth/types": "workspace:*",
+    "@relayauth/sdk": "*",
+    "@relayauth/types": "*",
     "@hono/node-server": "^1.19.11",
     "hono": "^4"
   },

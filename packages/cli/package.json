@@ -19,8 +19,8 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@relayauth/sdk": "workspace:*",
-    "@relayauth/types": "workspace:*"
+    "@relayauth/sdk": "*",
+    "@relayauth/types": "*"
   },
   "devDependencies": {
     "tsx": "^4.19.2",
