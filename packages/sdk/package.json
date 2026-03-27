@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@relayauth/types": "*",
+    "@relayauth/types": "0.1.0",
     "hono": "^4"
   },
   "devDependencies": {

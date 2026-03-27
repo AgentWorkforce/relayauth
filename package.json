@@ -14,6 +14,7 @@
     "e2e": "npx tsx scripts/e2e.ts"
   },
   "devDependencies": {
+    "@relayauth/types": "0.1.0",
     "@types/node": "^24.6.0",
     "agent-trajectories": "^0.5.2",
     "ignore": "^7.0.5",
