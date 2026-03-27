@@ -8,6 +8,9 @@ import {
   createTestRequest,
   generateTestIdentity,
   generateTestToken,
+  listRevokedTokenIds,
+  seedActiveTokens,
+  seedStoredIdentities,
 } from "./test-helpers.js";
 
 type RetireRequest = {
@@ -18,40 +21,6 @@ type ActiveToken = {
   id: string;
   identityId: string;
 };
-
-type D1Call = {
-  query: string;
-  params: unknown[];
-};
-
-type KvPutCall = {
-  key: string;
-  value: string;
-};
-
-type DurableObjectCall = {
-  identityId: string;
-  method: string;
-  path: string;
-  body: unknown;
-};
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-    },
-  });
-}
-
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function normalizeSql(query: string): string {
-  return query.replace(/\s+/g, " ").trim().toLowerCase();
-}
 
 function assertIsoTimestamp(value: string | undefined, fieldName: string): void {
   assert.equal(typeof value, "string", `${fieldName} should be set`);
@@ -72,233 +41,7 @@ function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredId
   };
 }
 
-function createRecordingD1({
-  activeTokens = [],
-}: {
-  activeTokens?: ActiveToken[];
-} = {}): { db: D1Database; calls: D1Call[] } {
-  const calls: D1Call[] = [];
-  const meta = {
-    changed_db: false,
-    changes: 0,
-    duration: 0,
-    rows_read: 0,
-    rows_written: 0,
-  };
-
-  const resolveRows = (query: string): unknown[] => {
-    const normalized = normalizeSql(query);
-    if (/token/.test(normalized)) {
-      return activeTokens.map((token) => ({
-        id: token.id,
-        jti: token.id,
-        tokenId: token.id,
-        token_id: token.id,
-        identityId: token.identityId,
-        identity_id: token.identityId,
-        status: "active",
-      }));
-    }
-
-    return [];
-  };
-
-  const createPreparedStatement = (query: string) => ({
-    bind: (...params: unknown[]) => ({
-      first: async <T>() => {
-        calls.push({ query: normalizeSql(query), params });
-        return (resolveRows(query)[0] as T | null) ?? null;
-      },
-      run: async () => {
-        calls.push({ query: normalizeSql(query), params });
-        return { success: true, meta };
-      },
-      raw: async <T>() => {
-        calls.push({ query: normalizeSql(query), params });
-        return resolveRows(query) as T[];
-      },
-      all: async <T>() => {
-        calls.push({ query: normalizeSql(query), params });
-        return { results: resolveRows(query) as T[], success: true, meta };
-      },
-    }),
-    first: async <T>() => {
-      calls.push({ query: normalizeSql(query), params: [] });
-      return (resolveRows(query)[0] as T | null) ?? null;
-    },
-    run: async () => {
-      calls.push({ query: normalizeSql(query), params: [] });
-      return { success: true, meta };
-    },
-    raw: async <T>() => {
-      calls.push({ query: normalizeSql(query), params: [] });
-      return resolveRows(query) as T[];
-    },
-    all: async <T>() => {
-      calls.push({ query: normalizeSql(query), params: [] });
-      return { results: resolveRows(query) as T[], success: true, meta };
-    },
-  });
-
-  return {
-    calls,
-    db: {
-      prepare: (query: string) => createPreparedStatement(query),
-      batch: async <T>(statements: D1PreparedStatement[]) =>
-        Promise.all(statements.map((statement) => statement.run())) as Awaited<T>,
-      exec: async (query: string) => {
-        calls.push({ query: normalizeSql(query), params: [] });
-        return { count: 0, duration: 0 };
-      },
-      dump: async () => new ArrayBuffer(0),
-    } as D1Database,
-  };
-}
-
-function createRecordingKV(): { kv: KVNamespace; puts: KvPutCall[] } {
-  const puts: KvPutCall[] = [];
-  const store = new Map<string, string>();
-
-  return {
-    puts,
-    kv: {
-      get: async (key: string) => store.get(key) ?? null,
-      put: async (key: string, value: string) => {
-        puts.push({ key, value });
-        store.set(key, value);
-      },
-      delete: async (key: string) => {
-        store.delete(key);
-      },
-      list: async () => ({ keys: [], list_complete: true, cacheStatus: null }),
-      getWithMetadata: async (key: string) => ({
-        value: store.get(key) ?? null,
-        metadata: null,
-        cacheStatus: null,
-      }),
-    } as KVNamespace,
-  };
-}
-
-function createIdentityNamespace(seedIdentities: StoredIdentity[]): {
-  namespace: DurableObjectNamespace;
-  identities: Map<string, StoredIdentity>;
-  calls: DurableObjectCall[];
-} {
-  const identities = new Map(seedIdentities.map((identity) => [identity.id, clone(identity)]));
-  const calls: DurableObjectCall[] = [];
-
-  const applyRetirement = (current: StoredIdentity): StoredIdentity => {
-    if (current.status === "retired") {
-      throw new Error("identity_already_retired");
-    }
-
-    const timestamp = new Date().toISOString();
-    const retired: StoredIdentity = {
-      ...current,
-      status: "retired",
-      suspendedAt: undefined,
-      suspendReason: undefined,
-      updatedAt: timestamp,
-    };
-
-    identities.set(current.id, retired);
-    return retired;
-  };
-
-  const applyReactivation = (current: StoredIdentity): StoredIdentity => {
-    if (current.status === "active") {
-      throw new Error("identity_already_active");
-    }
-
-    if (current.status === "retired") {
-      throw new Error("retired_identity_cannot_be_reactivated");
-    }
-
-    const timestamp = new Date().toISOString();
-    const reactivated: StoredIdentity = {
-      ...current,
-      status: "active",
-      suspendedAt: undefined,
-      suspendReason: undefined,
-      updatedAt: timestamp,
-    };
-
-    identities.set(current.id, reactivated);
-    return reactivated;
-  };
-
-  return {
-    identities,
-    calls,
-    namespace: {
-      idFromName: (name: string) => name,
-      get: (id: DurableObjectId) => ({
-        fetch: async (request: Request) => {
-          const identityId = String(id);
-          const current = identities.get(identityId) ?? null;
-          const { pathname } = new URL(request.url);
-          const body = await request.clone().json().catch(() => undefined);
-
-          calls.push({
-            identityId,
-            method: request.method,
-            path: pathname,
-            body,
-          });
-
-          if (pathname === "/internal/get" && request.method === "GET") {
-            return current
-              ? jsonResponse(current, 200)
-              : jsonResponse({ error: "identity_not_found" }, 404);
-          }
-
-          if (pathname === "/internal/retire" && request.method === "POST") {
-            if (!current) {
-              return jsonResponse({ error: "identity_not_found" }, 404);
-            }
-
-            try {
-              return jsonResponse(applyRetirement(current), 200);
-            } catch (error) {
-              const message = error instanceof Error ? error.message : "unable_to_retire_identity";
-              return jsonResponse({ error: message }, 409);
-            }
-          }
-
-          if (pathname === "/internal/reactivate" && request.method === "POST") {
-            if (!current) {
-              return jsonResponse({ error: "identity_not_found" }, 404);
-            }
-
-            try {
-              return jsonResponse(applyReactivation(current), 200);
-            } catch (error) {
-              const message = error instanceof Error ? error.message : "unable_to_reactivate_identity";
-              return jsonResponse({ error: message }, 409);
-            }
-          }
-
-          return jsonResponse({ error: `unexpected_do_request:${request.method}:${pathname}` }, 500);
-        },
-      }),
-    } as unknown as DurableObjectNamespace,
-  };
-}
-
-function assertRevocationWrites(puts: KvPutCall[], activeTokens: ActiveToken[]): void {
-  assert.ok(puts.length > 0, "expected retire flow to call REVOCATION_KV.put()");
-
-  for (const token of activeTokens) {
-    assert.equal(
-      puts.some(({ key, value }) => `${key} ${value}`.includes(token.id)),
-      true,
-      `expected revocation writes to include token ${token.id}`,
-    );
-  }
-}
-
-function createRetireHarness({
+async function createRetireHarness({
   claims,
   identities = [],
   activeTokens = [],
@@ -306,32 +49,26 @@ function createRetireHarness({
   claims?: Partial<RelayAuthTokenClaims>;
   identities?: StoredIdentity[];
   activeTokens?: ActiveToken[];
-} = {}): {
-  app: ReturnType<typeof createTestApp>;
-  identityState: Map<string, StoredIdentity>;
-  doCalls: DurableObjectCall[];
-  d1Calls: D1Call[];
-  revocationPuts: KvPutCall[];
-  authHeaders: HeadersInit;
-} {
-  const identityNamespace = createIdentityNamespace(identities);
-  const recordingD1 = createRecordingD1({ activeTokens });
-  const recordingKV = createRecordingKV();
-  const app = createTestApp({
-    IDENTITY_DO: identityNamespace.namespace,
-    DB: recordingD1.db,
-    REVOCATION_KV: recordingKV.kv,
-  });
+} = {}) {
+  const app = createTestApp();
+  await seedStoredIdentities(app, identities);
+
+  for (const [identityId, tokenIds] of Object.entries(
+    activeTokens.reduce<Record<string, string[]>>((acc, token) => {
+      const list = acc[token.identityId] ?? [];
+      list.push(token.id);
+      acc[token.identityId] = list;
+      return acc;
+    }, {}),
+  )) {
+    await seedActiveTokens(app, identityId, tokenIds);
+  }
 
   return {
     app,
-    identityState: identityNamespace.identities,
-    doCalls: identityNamespace.calls,
-    d1Calls: recordingD1.calls,
-    revocationPuts: recordingKV.puts,
     authHeaders: {
       Authorization: `Bearer ${generateTestToken(claims)}`,
-    },
+    } satisfies HeadersInit,
   };
 }
 
@@ -358,14 +95,8 @@ async function postRetireIdentity(
     identities?: StoredIdentity[];
     activeTokens?: ActiveToken[];
   } = {},
-): Promise<{
-  response: Response;
-  identityState: Map<string, StoredIdentity>;
-  doCalls: DurableObjectCall[];
-  d1Calls: D1Call[];
-  revocationPuts: KvPutCall[];
-}> {
-  const harness = createRetireHarness({ claims, identities, activeTokens });
+) {
+  const harness = await createRetireHarness({ claims, identities, activeTokens });
   const response = await requestLifecycleRoute(
     harness.app,
     "POST",
@@ -376,10 +107,8 @@ async function postRetireIdentity(
 
   return {
     response,
-    identityState: harness.identityState,
-    doCalls: harness.doCalls,
-    d1Calls: harness.d1Calls,
-    revocationPuts: harness.revocationPuts,
+    app: harness.app,
+    authHeaders: harness.authHeaders,
   };
 }
 
@@ -391,7 +120,7 @@ test("POST /v1/identities/:id/retire returns 200 with the updated identity", asy
     updatedAt: "2026-03-24T09:00:00.000Z",
   });
 
-  const { response, doCalls } = await postRetireIdentity(identity.id, undefined, {
+  const { response } = await postRetireIdentity(identity.id, undefined, {
     claims: { org: identity.orgId },
     identities: [identity],
   });
@@ -402,7 +131,6 @@ test("POST /v1/identities/:id/retire returns 200 with the updated identity", asy
   assert.equal(body.name, identity.name);
   assert.equal(body.type, identity.type);
   assert.equal(body.orgId, identity.orgId);
-  assert.equal(doCalls.some(({ method, path }) => method === "POST" && path === "/internal/retire"), true);
 });
 
 test('POST /v1/identities/:id/retire sets status to "retired" permanently', async () => {
@@ -413,17 +141,18 @@ test('POST /v1/identities/:id/retire sets status to "retired" permanently', asyn
     updatedAt: "2026-03-24T09:10:00.000Z",
   });
 
-  const { response, identityState } = await postRetireIdentity(identity.id, undefined, {
+  const { response, app } = await postRetireIdentity(identity.id, undefined, {
     claims: { org: identity.orgId },
     identities: [identity],
   });
 
   const body = await assertJsonResponse<StoredIdentity>(response, 200);
+  const stored = await app.storage.identities.get(identity.id);
 
   assert.equal(body.status, "retired");
   assertIsoTimestamp(body.updatedAt, "updatedAt");
   assert.notEqual(body.updatedAt, identity.updatedAt);
-  assert.equal(identityState.get(identity.id)?.status, "retired");
+  assert.equal(stored?.status, "retired");
 });
 
 test("POST /v1/identities/:id/retire accepts an optional reason in the body", async () => {
@@ -442,7 +171,6 @@ test("POST /v1/identities/:id/retire accepts an optional reason in the body", as
   const responseBody = await assertJsonResponse<StoredIdentity>(result.response, 200);
 
   assert.equal(responseBody.status, "retired");
-  assert.equal(result.doCalls.some(({ method, path }) => method === "POST" && path === "/internal/retire"), true);
 });
 
 test("POST /v1/identities/:id/retire returns 404 for a non-existent identity", async () => {
@@ -477,7 +205,7 @@ test("POST /v1/identities/:id/retire can retire an active identity directly", as
     status: "active",
   });
 
-  const { response, identityState } = await postRetireIdentity(identity.id, undefined, {
+  const { response, app } = await postRetireIdentity(identity.id, undefined, {
     claims: { org: identity.orgId },
     identities: [identity],
   });
@@ -485,7 +213,7 @@ test("POST /v1/identities/:id/retire can retire an active identity directly", as
   const body = await assertJsonResponse<StoredIdentity>(response, 200);
 
   assert.equal(body.status, "retired");
-  assert.equal(identityState.get(identity.id)?.status, "retired");
+  assert.equal((await app.storage.identities.get(identity.id))?.status, "retired");
 });
 
 test("POST /v1/identities/:id/retire can retire a suspended identity", async () => {
@@ -497,19 +225,20 @@ test("POST /v1/identities/:id/retire can retire a suspended identity", async () 
     suspendReason: "manual_review",
   });
 
-  const { response, identityState } = await postRetireIdentity(identity.id, undefined, {
+  const { response, app } = await postRetireIdentity(identity.id, undefined, {
     claims: { org: identity.orgId },
     identities: [identity],
   });
 
   const body = await assertJsonResponse<StoredIdentity>(response, 200);
+  const stored = await app.storage.identities.get(identity.id);
 
   assert.equal(body.status, "retired");
   assert.equal(body.suspendedAt, undefined);
   assert.equal(body.suspendReason, undefined);
-  assert.equal(identityState.get(identity.id)?.status, "retired");
-  assert.equal(identityState.get(identity.id)?.suspendedAt, undefined);
-  assert.equal(identityState.get(identity.id)?.suspendReason, undefined);
+  assert.equal(stored?.status, "retired");
+  assert.equal(stored?.suspendedAt, undefined);
+  assert.equal(stored?.suspendReason, undefined);
 });
 
 test("POST /v1/identities/:id/retire revokes all active tokens for the identity", async () => {
@@ -524,15 +253,17 @@ test("POST /v1/identities/:id/retire revokes all active tokens for the identity"
     { id: "jti_refresh_3", identityId: identity.id },
   ];
 
-  const { response, d1Calls, revocationPuts } = await postRetireIdentity(identity.id, undefined, {
+  const { response, app } = await postRetireIdentity(identity.id, undefined, {
     claims: { org: identity.orgId },
     identities: [identity],
     activeTokens,
   });
 
   await assertJsonResponse<StoredIdentity>(response, 200);
-  assert.equal(d1Calls.some(({ query }) => /from tokens/.test(query)), true);
-  assertRevocationWrites(revocationPuts, activeTokens);
+  assert.deepEqual(
+    await listRevokedTokenIds(app),
+    activeTokens.map((token) => token.id).sort(),
+  );
 });
 
 test("a retired identity cannot be reactivated after POST /v1/identities/:id/retire", async () => {
@@ -541,7 +272,7 @@ test("a retired identity cannot be reactivated after POST /v1/identities/:id/ret
     orgId: "org_retire_then_reactivate",
     status: "active",
   });
-  const harness = createRetireHarness({
+  const harness = await createRetireHarness({
     claims: { org: identity.orgId },
     identities: [identity],
   });

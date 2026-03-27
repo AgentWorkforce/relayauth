@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import type { AgentIdentity, RelayAuthTokenClaims } from "@relayauth/types";
+import type {
+  AgentIdentity,
+  AuditEntry,
+  RelayAuthTokenClaims,
+} from "@relayauth/types";
 import type { Hono } from "hono";
 import type { AppEnv } from "../env.js";
-import { createCloudflareStorage, type AuthStorage } from "../storage/index.js";
+import type {
+  AuthStorage,
+  AuditWebhookRecord,
+  OrganizationContextRecord,
+  WorkspaceContextRecord,
+} from "../storage/index.js";
 import { createSqliteStorage } from "../storage/sqlite.js";
+import type { IdentityBudget, StoredIdentity } from "../durable-objects/identity-do.js";
 import { createApp } from "../worker.js";
 
-type TestBindings = AppEnv["Bindings"] & {
-  IDENTITY_DO: DurableObjectNamespace;
-  DB: D1Database;
-  REVOCATION_KV: KVNamespace;
-};
+type TestBindings = Pick<AppEnv["Bindings"], "SIGNING_KEY" | "SIGNING_KEY_ID" | "INTERNAL_SECRET">;
 
 type TestStorage = AuthStorage & Partial<ReturnType<typeof createSqliteStorage>>;
 
@@ -20,6 +26,17 @@ type TestApp = Hono<AppEnv> & {
   bindings: TestBindings;
   storage: TestStorage;
   close(): Promise<void> | void;
+};
+
+type SqlTarget = TestApp | TestStorage;
+
+type SeedAuditEntry = AuditEntry & {
+  createdAt?: string;
+};
+
+type SeedAuditWebhook = AuditWebhookRecord & {
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 function base64UrlEncode(value: string | Buffer): string {
@@ -38,93 +55,25 @@ function signHs256(payload: Record<string, unknown>, secret: string): string {
   return `${unsigned}.${signature}`;
 }
 
-export function mockD1(): D1Database {
-  const rows = new Map<string, unknown[]>();
-
-  const createPreparedStatement = (query: string) => {
-    const key = query.trim();
-    return {
-      bind: (...params: unknown[]) => {
-        const boundKey = `${key}::${JSON.stringify(params)}`;
-        return {
-          first: async <T>() => (rows.get(boundKey)?.[0] as T | null) ?? null,
-          run: async () => ({
-            success: true,
-            meta: { changed_db: false, changes: 0, duration: 0, rows_read: 0, rows_written: 0 },
-          }),
-          raw: async <T>() => (rows.get(boundKey) as T[]) ?? [],
-          all: async <T>() => ({
-            results: (rows.get(boundKey) as T[]) ?? [],
-            success: true,
-            meta: { changed_db: false, changes: 0, duration: 0, rows_read: 0, rows_written: 0 },
-          }),
-        };
-      },
-      first: async <T>() => (rows.get(key)?.[0] as T | null) ?? null,
-      run: async () => ({
-        success: true,
-        meta: { changed_db: false, changes: 0, duration: 0, rows_read: 0, rows_written: 0 },
-      }),
-      raw: async <T>() => (rows.get(key) as T[]) ?? [],
-      all: async <T>() => ({
-        results: (rows.get(key) as T[]) ?? [],
-        success: true,
-        meta: { changed_db: false, changes: 0, duration: 0, rows_read: 0, rows_written: 0 },
-      }),
-    };
-  };
-
-  return {
-    prepare: (query: string) => createPreparedStatement(query),
-    batch: async <T>(statements: D1PreparedStatement[]) =>
-      Promise.all(statements.map((statement) => statement.run())) as Awaited<T>,
-    exec: async () => ({
-      count: 0,
-      duration: 0,
-    }),
-    dump: async () => new ArrayBuffer(0),
-    __seed(query: string, result: unknown[]) {
-      rows.set(query.trim(), result);
-    },
-  } as D1Database;
+function resolveStorage(target: SqlTarget): TestStorage {
+  return "storage" in target ? target.storage : target;
 }
 
-export function mockKV(): KVNamespace {
-  const store = new Map<string, string>();
-
-  return {
-    get: async (key: string) => store.get(key) ?? null,
-    put: async (key: string, value: string) => {
-      store.set(key, value);
-    },
-    delete: async (key: string) => {
-      store.delete(key);
-    },
-    list: async () => ({ keys: [], list_complete: true, cacheStatus: null }),
-    getWithMetadata: async (key: string) => ({
-      value: store.get(key) ?? null,
-      metadata: null,
-      cacheStatus: null,
-    }),
-  } as KVNamespace;
+async function runSql(target: SqlTarget, query: string, ...params: unknown[]): Promise<void> {
+  await resolveStorage(target).DB.prepare(query).bind(...params).run();
 }
 
-export function mockDO(
-  response?: Response | ((request: Request) => Response | Promise<Response>),
-): DurableObjectNamespace {
-  const stub = {
-    fetch: async (request: Request) => {
-      if (typeof response === "function") {
-        return response(request);
-      }
-      return response ?? new Response(null, { status: 200 });
-    },
-  };
+async function selectRows<T extends Record<string, unknown>>(
+  target: SqlTarget,
+  query: string,
+  ...params: unknown[]
+): Promise<T[]> {
+  const result = await resolveStorage(target).DB.prepare(query).bind(...params).all<T>();
+  return result.results;
+}
 
-  return {
-    idFromName: (name: string) => `${name}-id`,
-    get: () => stub,
-  } as unknown as DurableObjectNamespace;
+export function createTestStorage(): TestStorage {
+  return createSqliteStorage(":memory:");
 }
 
 export function generateTestToken(
@@ -218,47 +167,198 @@ export function createTestRequest(
 }
 
 export function createTestApp(bindingsOverrides: Partial<TestBindings> = {}): TestApp {
-  const sqliteStorage = createSqliteStorage(":memory:");
+  const storage = createTestStorage();
   const bindings: TestBindings = {
-    IDENTITY_DO: sqliteStorage.IDENTITY_DO,
-    DB: sqliteStorage.DB,
-    REVOCATION_KV: sqliteStorage.REVOCATION_KV,
-    SIGNING_KEY: "dev-secret",
-    SIGNING_KEY_ID: "dev-key",
-    INTERNAL_SECRET: sqliteStorage.INTERNAL_SECRET,
-    ...bindingsOverrides,
+    SIGNING_KEY: bindingsOverrides.SIGNING_KEY ?? "dev-secret",
+    SIGNING_KEY_ID: bindingsOverrides.SIGNING_KEY_ID ?? "dev-key",
+    INTERNAL_SECRET: bindingsOverrides.INTERNAL_SECRET ?? storage.INTERNAL_SECRET,
   };
 
-  const hasCustomCloudflareBindings =
-    bindingsOverrides.DB !== undefined
-    || bindingsOverrides.IDENTITY_DO !== undefined
-    || bindingsOverrides.REVOCATION_KV !== undefined;
-
-  let storage: TestStorage;
-
-  if (hasCustomCloudflareBindings) {
-    storage = createCloudflareStorage({
-      DB: bindings.DB,
-      IDENTITY_DO: bindings.IDENTITY_DO,
-      REVOCATION_KV: bindings.REVOCATION_KV,
-      INTERNAL_SECRET: bindings.INTERNAL_SECRET,
-    });
-  } else {
-    sqliteStorage.SIGNING_KEY = bindings.SIGNING_KEY;
-    sqliteStorage.SIGNING_KEY_ID = bindings.SIGNING_KEY_ID;
-    sqliteStorage.INTERNAL_SECRET = bindings.INTERNAL_SECRET;
-    storage = sqliteStorage;
-  }
+  storage.SIGNING_KEY = bindings.SIGNING_KEY;
+  storage.SIGNING_KEY_ID = bindings.SIGNING_KEY_ID;
+  storage.INTERNAL_SECRET = bindings.INTERNAL_SECRET;
 
   const app = createApp({
-    defaultBindings: bindings,
     storage,
+    defaultBindings: bindings,
   });
 
   const testApp = app as TestApp;
   testApp.app = app;
   testApp.bindings = bindings;
   testApp.storage = storage;
-  testApp.close = () => sqliteStorage.close();
+  testApp.close = () => storage.close();
   return testApp;
+}
+
+export async function seedStoredIdentity(
+  target: SqlTarget,
+  identity: StoredIdentity,
+): Promise<StoredIdentity> {
+  return resolveStorage(target).identities.create(identity);
+}
+
+export async function seedStoredIdentities(
+  target: SqlTarget,
+  identities: StoredIdentity[],
+): Promise<StoredIdentity[]> {
+  const seeded: StoredIdentity[] = [];
+  for (const identity of identities) {
+    seeded.push(await seedStoredIdentity(target, identity));
+  }
+  return seeded;
+}
+
+export async function seedAuditEntries(
+  target: SqlTarget,
+  entries: SeedAuditEntry[],
+): Promise<void> {
+  const storage = resolveStorage(target);
+
+  for (const entry of entries) {
+    await storage.audit.write(entry);
+    if (entry.createdAt) {
+      await runSql(
+        storage,
+        `
+          UPDATE audit_logs
+          SET created_at = ?
+          WHERE id = ?
+        `,
+        entry.createdAt,
+        entry.id,
+      );
+    }
+  }
+}
+
+export async function seedOrgBudget(
+  target: SqlTarget,
+  orgId: string,
+  budget: IdentityBudget,
+): Promise<void> {
+  const budgetJson = JSON.stringify(budget);
+  await runSql(
+    target,
+    `
+      INSERT INTO org_budgets (
+        org_id,
+        budget,
+        budget_json,
+        default_budget,
+        settings_json,
+        data
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    orgId,
+    budgetJson,
+    budgetJson,
+    budgetJson,
+    JSON.stringify({ budget }),
+    budgetJson,
+  );
+}
+
+export async function seedActiveTokens(
+  target: SqlTarget,
+  identityId: string,
+  tokenIds: string[],
+): Promise<void> {
+  const timestamp = new Date().toISOString();
+
+  for (const tokenId of tokenIds) {
+    await runSql(
+      target,
+      `
+        INSERT INTO tokens (id, token_id, jti, identity_id, status, created_at)
+        VALUES (?, ?, ?, ?, 'active', ?)
+      `,
+      tokenId,
+      tokenId,
+      tokenId,
+      identityId,
+      timestamp,
+    );
+  }
+}
+
+export async function listRevokedTokenIds(target: SqlTarget): Promise<string[]> {
+  const rows = await selectRows<{ jti?: string }>(
+    target,
+    `
+      SELECT jti
+      FROM revoked_tokens
+      ORDER BY jti ASC
+    `,
+  );
+
+  return rows
+    .map((row) => row.jti)
+    .filter((tokenId): tokenId is string => typeof tokenId === "string");
+}
+
+export async function seedAuditWebhooks(
+  target: SqlTarget,
+  webhooks: SeedAuditWebhook[],
+): Promise<void> {
+  for (const webhook of webhooks) {
+    await runSql(
+      target,
+      `
+        INSERT INTO audit_webhooks (
+          id,
+          org_id,
+          url,
+          secret,
+          events_json,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      webhook.id,
+      webhook.orgId,
+      webhook.url,
+      webhook.secret,
+      webhook.events ? JSON.stringify(webhook.events) : null,
+      webhook.createdAt ?? new Date().toISOString(),
+      webhook.updatedAt ?? webhook.createdAt ?? new Date().toISOString(),
+    );
+  }
+}
+
+export async function seedOrganizationContext(
+  target: SqlTarget,
+  organization: OrganizationContextRecord,
+): Promise<void> {
+  await runSql(
+    target,
+    `
+      INSERT INTO organizations (id, org_id, scopes_json, roles_json)
+      VALUES (?, ?, ?, ?)
+    `,
+    organization.id,
+    organization.orgId,
+    JSON.stringify(organization.scopes),
+    JSON.stringify(organization.roles),
+  );
+}
+
+export async function seedWorkspaceContext(
+  target: SqlTarget,
+  workspace: WorkspaceContextRecord,
+): Promise<void> {
+  await runSql(
+    target,
+    `
+      INSERT INTO workspaces (id, workspace_id, org_id, scopes_json, roles_json)
+      VALUES (?, ?, ?, ?, ?)
+    `,
+    workspace.id,
+    workspace.workspaceId,
+    workspace.orgId,
+    JSON.stringify(workspace.scopes),
+    JSON.stringify(workspace.roles),
+  );
 }

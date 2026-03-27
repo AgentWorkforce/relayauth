@@ -8,26 +8,8 @@ import {
   createTestRequest,
   generateTestIdentity,
   generateTestToken,
+  seedStoredIdentities,
 } from "./test-helpers.js";
-
-type DurableObjectCall = {
-  identityId: string;
-  method: string;
-  path: string;
-};
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-    },
-  });
-}
-
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
 
 function assertIsoTimestamp(value: string | undefined, fieldName: string): void {
   assert.equal(typeof value, "string", `${fieldName} should be set`);
@@ -48,79 +30,6 @@ function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredId
   };
 }
 
-function createIdentityNamespace(seedIdentities: StoredIdentity[]): {
-  namespace: DurableObjectNamespace;
-  identities: Map<string, StoredIdentity>;
-  calls: DurableObjectCall[];
-} {
-  const identities = new Map(seedIdentities.map((identity) => [identity.id, clone(identity)]));
-  const calls: DurableObjectCall[] = [];
-
-  const applyReactivation = (current: StoredIdentity): StoredIdentity => {
-    if (current.status === "active") {
-      throw new Error("identity_already_active");
-    }
-
-    if (current.status === "retired") {
-      throw new Error("retired_identity_cannot_be_reactivated");
-    }
-
-    const timestamp = new Date().toISOString();
-    const reactivated: StoredIdentity = {
-      ...current,
-      status: "active",
-      suspendedAt: undefined,
-      suspendReason: undefined,
-      updatedAt: timestamp,
-    };
-
-    identities.set(current.id, reactivated);
-    return reactivated;
-  };
-
-  return {
-    identities,
-    calls,
-    namespace: {
-      idFromName: (name: string) => name,
-      get: (id: DurableObjectId) => ({
-        fetch: async (request: Request) => {
-          const identityId = String(id);
-          const current = identities.get(identityId) ?? null;
-          const { pathname } = new URL(request.url);
-
-          calls.push({
-            identityId,
-            method: request.method,
-            path: pathname,
-          });
-
-          if (pathname === "/internal/get" && request.method === "GET") {
-            return current
-              ? jsonResponse(current, 200)
-              : jsonResponse({ error: "identity_not_found" }, 404);
-          }
-
-          if (pathname === "/internal/reactivate" && request.method === "POST") {
-            if (!current) {
-              return jsonResponse({ error: "identity_not_found" }, 404);
-            }
-
-            try {
-              return jsonResponse(applyReactivation(current), 200);
-            } catch (error) {
-              const message = error instanceof Error ? error.message : "unable_to_reactivate_identity";
-              return jsonResponse({ error: message }, 409);
-            }
-          }
-
-          return jsonResponse({ error: `unexpected_do_request:${request.method}:${pathname}` }, 500);
-        },
-      }),
-    } as unknown as DurableObjectNamespace,
-  };
-}
-
 async function postReactivateIdentity(
   identityId: string,
   {
@@ -132,13 +41,10 @@ async function postReactivateIdentity(
   } = {},
 ): Promise<{
   response: Response;
-  identityState: Map<string, StoredIdentity>;
-  doCalls: DurableObjectCall[];
+  app: ReturnType<typeof createTestApp>;
 }> {
-  const identityNamespace = createIdentityNamespace(identities);
-  const app = createTestApp({
-    IDENTITY_DO: identityNamespace.namespace,
-  });
+  const app = createTestApp();
+  await seedStoredIdentities(app, identities);
   const request = createTestRequest(
     "POST",
     `/v1/identities/${identityId}/reactivate`,
@@ -150,8 +56,7 @@ async function postReactivateIdentity(
 
   return {
     response: await app.request(request, undefined, app.bindings),
-    identityState: identityNamespace.identities,
-    doCalls: identityNamespace.calls,
+    app,
   };
 }
 
@@ -165,7 +70,7 @@ test("POST /v1/identities/:id/reactivate returns 200 with the updated identity",
     updatedAt: "2026-03-24T09:00:00.000Z",
   });
 
-  const { response, doCalls } = await postReactivateIdentity(identity.id, {
+  const { response } = await postReactivateIdentity(identity.id, {
     claims: { org: identity.orgId },
     identities: [identity],
   });
@@ -176,7 +81,6 @@ test("POST /v1/identities/:id/reactivate returns 200 with the updated identity",
   assert.equal(body.name, identity.name);
   assert.equal(body.type, identity.type);
   assert.equal(body.orgId, identity.orgId);
-  assert.equal(doCalls.some(({ method, path }) => method === "POST" && path === "/internal/reactivate"), true);
 });
 
 test('POST /v1/identities/:id/reactivate sets status back to "active"', async () => {
@@ -188,15 +92,16 @@ test('POST /v1/identities/:id/reactivate sets status back to "active"', async ()
     suspendReason: "budget_exceeded",
   });
 
-  const { response, identityState } = await postReactivateIdentity(identity.id, {
+  const { response, app } = await postReactivateIdentity(identity.id, {
     claims: { org: identity.orgId },
     identities: [identity],
   });
 
   const body = await assertJsonResponse<StoredIdentity>(response, 200);
+  const stored = await app.storage.identities.get(identity.id);
 
   assert.equal(body.status, "active");
-  assert.equal(identityState.get(identity.id)?.status, "active");
+  assert.equal(stored?.status, "active");
 });
 
 test("POST /v1/identities/:id/reactivate clears suspendReason and suspendedAt", async () => {
@@ -208,17 +113,18 @@ test("POST /v1/identities/:id/reactivate clears suspendReason and suspendedAt", 
     suspendReason: "manual_review",
   });
 
-  const { response, identityState } = await postReactivateIdentity(identity.id, {
+  const { response, app } = await postReactivateIdentity(identity.id, {
     claims: { org: identity.orgId },
     identities: [identity],
   });
 
   const body = await assertJsonResponse<StoredIdentity>(response, 200);
+  const stored = await app.storage.identities.get(identity.id);
 
   assert.equal(body.suspendedAt, undefined);
   assert.equal(body.suspendReason, undefined);
-  assert.equal(identityState.get(identity.id)?.suspendedAt, undefined);
-  assert.equal(identityState.get(identity.id)?.suspendReason, undefined);
+  assert.equal(stored?.suspendedAt, undefined);
+  assert.equal(stored?.suspendReason, undefined);
 });
 
 test("POST /v1/identities/:id/reactivate returns 404 for a non-existent identity", async () => {
@@ -273,15 +179,16 @@ test("POST /v1/identities/:id/reactivate updates the updatedAt timestamp", async
     updatedAt: "2026-03-24T09:30:00.000Z",
   });
 
-  const { response, identityState } = await postReactivateIdentity(identity.id, {
+  const { response, app } = await postReactivateIdentity(identity.id, {
     claims: { org: identity.orgId },
     identities: [identity],
   });
 
   const body = await assertJsonResponse<StoredIdentity>(response, 200);
+  const stored = await app.storage.identities.get(identity.id);
 
   assertIsoTimestamp(body.updatedAt, "updatedAt");
   assert.notEqual(body.updatedAt, identity.updatedAt);
   assert.equal(Date.parse(body.updatedAt) >= Date.parse(identity.updatedAt), true);
-  assert.equal(identityState.get(identity.id)?.updatedAt, body.updatedAt);
+  assert.equal(stored?.updatedAt, body.updatedAt);
 });

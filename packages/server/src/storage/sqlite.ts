@@ -45,6 +45,10 @@ const DEFAULT_DB_PATH = ".relay/relayauth.db";
 const DEFAULT_INTERNAL_SECRET = "internal-test-secret";
 
 export type SqliteStorage = AuthStorage & {
+  revocations: RevocationStorage & {
+    revoke(jti: string, expiresAt: number): Promise<void>;
+    isRevoked(jti: string): Promise<boolean>;
+  };
   DB: D1Database;
   IDENTITY_DO: DurableObjectNamespace;
   REVOCATION_KV: KVNamespace;
@@ -164,15 +168,6 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_tokens_identity_status
     ON tokens (identity_id, status);
-
-  CREATE TABLE IF NOT EXISTS revoked_tokens (
-    token_id TEXT PRIMARY KEY,
-    identity_id TEXT NOT NULL,
-    revoked_at TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_revoked_tokens_identity
-    ON revoked_tokens (identity_id, revoked_at DESC);
 
   CREATE TABLE IF NOT EXISTS org_budgets (
     org_id TEXT PRIMARY KEY,
@@ -314,10 +309,10 @@ const DELETE_IDENTITY_SQL = `
 const INSERT_ROLE_SQL = `
   INSERT INTO roles (
     id,
-    data,
     name,
     description,
     scopes_json,
+    data,
     org_id,
     workspace_id,
     built_in,
@@ -328,33 +323,28 @@ const INSERT_ROLE_SQL = `
 
 const UPDATE_ROLE_SQL = `
   UPDATE roles
-  SET data = ?,
-      name = ?,
+  SET name = ?,
       description = ?,
-      scopes_json = ?,
-      org_id = ?,
-      workspace_id = ?,
-      built_in = ?,
-      created_at = ?
-  WHERE id = ?
+      scopes_json = COALESCE(?, ?)
+  WHERE id = ? AND org_id = ?
 `;
 
 const SELECT_ROLE_SQL = `
-  SELECT data
+  SELECT id, name, description, scopes_json, org_id, workspace_id, built_in, created_at
   FROM roles
   WHERE id = ?
   LIMIT 1
 `;
 
 const LIST_ROLES_SQL = `
-  SELECT data
+  SELECT id, name, description, scopes_json, org_id, workspace_id, built_in, created_at
   FROM roles
   WHERE org_id = ?
   ORDER BY name ASC, id ASC
 `;
 
 const LIST_ROLES_FOR_WORKSPACE_SQL = `
-  SELECT data
+  SELECT id, name, description, scopes_json, org_id, workspace_id, built_in, created_at
   FROM roles
   WHERE org_id = ?
     AND (workspace_id = ? OR workspace_id IS NULL)
@@ -363,16 +353,16 @@ const LIST_ROLES_FOR_WORKSPACE_SQL = `
 
 const DELETE_ROLE_SQL = `
   DELETE FROM roles
-  WHERE id = ?
+  WHERE id = ? AND org_id = ?
 `;
 
 const INSERT_POLICY_SQL = `
   INSERT INTO policies (
     id,
-    data,
     name,
     effect,
     scopes_json,
+    data,
     conditions_json,
     priority,
     org_id,
@@ -380,39 +370,35 @@ const INSERT_POLICY_SQL = `
     created_at,
     deleted_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, COALESCE(?, ?), ?, ?, ?, ?, ?)
 `;
 
 const UPDATE_POLICY_SQL = `
   UPDATE policies
-  SET data = ?,
-      name = ?,
+  SET name = ?,
       effect = ?,
-      scopes_json = ?,
-      conditions_json = ?,
-      priority = ?,
-      org_id = ?,
-      workspace_id = ?,
-      created_at = ?
-  WHERE id = ? AND deleted_at IS NULL
+      scopes_json = COALESCE(?, ?),
+      conditions_json = COALESCE(?, ?),
+      priority = ?
+  WHERE id = ? AND org_id = ? AND deleted_at IS NULL
 `;
 
 const SELECT_POLICY_SQL = `
-  SELECT data
+  SELECT id, name, effect, scopes_json, conditions_json, priority, org_id, workspace_id, created_at, deleted_at
   FROM policies
   WHERE id = ? AND deleted_at IS NULL
   LIMIT 1
 `;
 
 const LIST_POLICIES_SQL = `
-  SELECT data
+  SELECT id, name, effect, scopes_json, conditions_json, priority, org_id, workspace_id, created_at, deleted_at
   FROM policies
   WHERE org_id = ? AND deleted_at IS NULL
   ORDER BY priority DESC, id ASC
 `;
 
 const LIST_POLICIES_FOR_WORKSPACE_SQL = `
-  SELECT data
+  SELECT id, name, effect, scopes_json, conditions_json, priority, org_id, workspace_id, created_at, deleted_at
   FROM policies
   WHERE org_id = ?
     AND deleted_at IS NULL
@@ -423,7 +409,7 @@ const LIST_POLICIES_FOR_WORKSPACE_SQL = `
 const DELETE_POLICY_SQL = `
   UPDATE policies
   SET deleted_at = ?
-  WHERE id = ? AND deleted_at IS NULL
+  WHERE id = ? AND org_id = ? AND deleted_at IS NULL
 `;
 
 const LIST_ACTIVE_TOKENS_SQL = `
@@ -432,16 +418,46 @@ const LIST_ACTIVE_TOKENS_SQL = `
   WHERE identity_id = ? AND status = 'active'
 `;
 
+const CREATE_REVOKED_TOKENS_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS revoked_tokens (
+    jti TEXT PRIMARY KEY,
+    expires_at INTEGER NOT NULL
+  )
+`;
+
+const CREATE_REVOKED_TOKENS_EXPIRES_INDEX_SQL = `
+  CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires_at
+    ON revoked_tokens (expires_at)
+`;
+
 const UPSERT_REVOKED_TOKEN_SQL = `
-  INSERT OR REPLACE INTO revoked_tokens (token_id, identity_id, revoked_at)
-  VALUES (?, ?, ?)
+  INSERT OR REPLACE INTO revoked_tokens (jti, expires_at)
+  VALUES (?, ?)
 `;
 
 const SELECT_REVOKED_TOKEN_SQL = `
-  SELECT 1 AS found
+  SELECT EXISTS(
+    SELECT 1
+    FROM revoked_tokens
+    WHERE jti = ? AND expires_at > ?
+  ) AS found
+`;
+
+const SELECT_REVOKED_TOKEN_RECORD_SQL = `
+  SELECT expires_at
   FROM revoked_tokens
-  WHERE token_id = ?
+  WHERE jti = ?
   LIMIT 1
+`;
+
+const DELETE_REVOKED_TOKEN_SQL = `
+  DELETE FROM revoked_tokens
+  WHERE jti = ?
+`;
+
+const DELETE_EXPIRED_REVOKED_TOKENS_SQL = `
+  DELETE FROM revoked_tokens
+  WHERE expires_at <= ?
 `;
 
 const UPDATE_TOKEN_STATUS_SQL = `
@@ -449,6 +465,12 @@ const UPDATE_TOKEN_STATUS_SQL = `
   SET status = 'revoked'
   WHERE identity_id = ?
     AND (id = ? OR token_id = ? OR jti = ?)
+`;
+
+const UPDATE_TOKEN_STATUS_BY_TOKEN_SQL = `
+  UPDATE tokens
+  SET status = 'revoked'
+  WHERE id = ? OR token_id = ? OR jti = ?
 `;
 
 const INSERT_AUDIT_LOG_SQL = `
@@ -553,6 +575,43 @@ interface SqliteDatabase {
 type SqliteDatabaseConstructor = new (filename: string) => SqliteDatabase;
 
 type DataRow = { data: string };
+type StoredIdentityRow = {
+  data?: string;
+  id?: string;
+  name?: string;
+  type?: string | null;
+  orgId?: string;
+  org_id?: string;
+  status?: string | null;
+  scopes?: unknown;
+  scopes_json?: string | null;
+  roles?: unknown;
+  roles_json?: string | null;
+  metadata?: unknown;
+  metadata_json?: string | null;
+  createdAt?: string;
+  created_at?: string;
+  updatedAt?: string;
+  updated_at?: string;
+  sponsorId?: string;
+  sponsor_id?: string;
+  sponsorChain?: unknown;
+  sponsor_chain?: unknown;
+  sponsor_chain_json?: string | null;
+  workspaceId?: string;
+  workspace_id?: string;
+  budget?: IdentityBudget | null;
+  budget_json?: string | null;
+  budgetUsage?: IdentityBudgetUsage | null;
+  budget_usage?: IdentityBudgetUsage | null;
+  budget_usage_json?: string | null;
+  lastActiveAt?: string | null;
+  last_active_at?: string | null;
+  suspendedAt?: string | null;
+  suspended_at?: string | null;
+  suspendReason?: string | null;
+  suspend_reason?: string | null;
+};
 type DuplicateIdentityRow = { id?: string; name?: string; org_id?: string };
 type ChildIdentityRow = {
   id?: string;
@@ -563,7 +622,34 @@ type ChildIdentityRow = {
 };
 type StatusCountRow = { status?: string | null; count?: number | string | null };
 type ActiveTokenRow = { id?: string; jti?: string; token_id?: string };
-type ExistsRow = { found?: number | null };
+type ExistsRow = { found?: number | string | bigint | null };
+type RevokedTokenRow = { expires_at?: number | string | null };
+type TableInfoRow = { name?: string | null };
+type RoleRow = {
+  id?: string;
+  name?: string;
+  description?: string;
+  scopes?: unknown;
+  scopes_json?: string | null;
+  org_id?: string;
+  workspace_id?: string | null;
+  built_in?: number | boolean | null;
+  created_at?: string;
+};
+type PolicyRow = {
+  id?: string;
+  name?: string;
+  effect?: Policy["effect"] | string;
+  scopes?: unknown;
+  scopes_json?: string | null;
+  conditions?: unknown;
+  conditions_json?: string | null;
+  priority?: number | string | null;
+  org_id?: string;
+  workspace_id?: string | null;
+  created_at?: string;
+  deleted_at?: string | null;
+};
 type AuditRow = {
   id?: string;
   action?: AuditAction | string;
@@ -616,6 +702,11 @@ type WorkspaceRow = {
   roles_json?: string | null;
 };
 
+type BudgetPolicyResult = {
+  identity: StoredIdentity;
+  shouldWriteAuditEvent: boolean;
+};
+
 type MemoryTokenRecord = {
   id: string;
   tokenId?: string;
@@ -623,6 +714,12 @@ type MemoryTokenRecord = {
   identityId: string;
   status: string;
   createdAt: string;
+};
+
+type RevokedTokenRecord = {
+  expiresAt: number;
+  identityId?: string;
+  revokedAt?: string;
 };
 
 type MemoryState = {
@@ -635,7 +732,7 @@ type MemoryState = {
   workspaces: Map<string, WorkspaceContextRecord>;
   orgBudgets: Map<string, IdentityBudget | undefined>;
   tokens: Map<string, MemoryTokenRecord>;
-  revokedTokens: Map<string, { identityId: string; revokedAt: string }>;
+  revokedTokens: Map<string, RevokedTokenRecord>;
 };
 
 type BackendContext =
@@ -643,6 +740,7 @@ type BackendContext =
   | { kind: "memory"; state: MemoryState };
 
 const dynamicImport = Function("specifier", "return import(specifier)") as DynamicImportFunction;
+const MAX_REVOCATION_EXPIRY = 253402300799;
 
 export function createSqliteStorage(dbPath?: string): SqliteStorage {
   const provider = new BackendProvider(dbPath ?? DEFAULT_DB_PATH);
@@ -659,18 +757,35 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
   };
 
   return Object.assign(storage, {
-    revocations: Object.assign(storage.revocations, {
-      revoke: async (tokenId: string, expiresAt: number) => {
-        const normalizedTokenId = requireString(tokenId, "tokenId is required");
+    revocations: Object.assign(revocations, {
+      revoke: async (jti: string, expiresAt: number) => {
+        const normalizedJti = requireString(jti, "jti is required");
+        const normalizedExpiresAt = requireUnixTimestamp(expiresAt, "expiresAt is required");
         const backend = await provider.getBackend();
-        const revokedAt = normalizeTimestamp(new Date(expiresAt).toISOString());
+        pruneExpiredRevocations(backend);
 
-        if (backend.kind === "memory") {
-          backend.state.revokedTokens.set(normalizedTokenId, { identityId: "", revokedAt });
+        if (normalizedExpiresAt <= nowUnixSeconds()) {
+          if (backend.kind === "memory") {
+            backend.state.revokedTokens.delete(normalizedJti);
+            return;
+          }
+
+          backend.db.prepare(DELETE_REVOKED_TOKEN_SQL).run(normalizedJti);
           return;
         }
 
-        backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL).run(normalizedTokenId, "", revokedAt);
+        if (backend.kind === "memory") {
+          backend.state.revokedTokens.set(normalizedJti, { expiresAt: normalizedExpiresAt });
+          for (const token of backend.state.tokens.values()) {
+            if (token.id === normalizedJti || token.jti === normalizedJti || token.tokenId === normalizedJti) {
+              token.status = "revoked";
+            }
+          }
+          return;
+        }
+
+        backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL).run(normalizedJti, normalizedExpiresAt);
+        backend.db.prepare(UPDATE_TOKEN_STATUS_BY_TOKEN_SQL).run(normalizedJti, normalizedJti, normalizedJti);
       },
     }),
     DB: createD1Binding(provider),
@@ -683,6 +798,180 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
     ALLOWED_ORIGINS: undefined,
     close: () => provider.close(),
   });
+}
+
+type DatabaseStorageBindings = {
+  DB: D1Database;
+  IDENTITY_DO?: DurableObjectNamespace;
+  REVOCATION_KV?: KVNamespace;
+  INTERNAL_SECRET?: string;
+  SIGNING_KEY?: string;
+  SIGNING_KEY_ID?: string;
+  BASE_URL?: string;
+  ALLOWED_ORIGINS?: string;
+};
+
+export function createDatabaseStorage(source: D1Database | DatabaseStorageBindings): SqliteStorage {
+  const base = createSqliteStorage(":memory:");
+  const bindings = isDatabaseStorageBindings(source) ? source : { DB: source };
+  const identityLookup = new D1IdentityLookup(bindings.DB);
+  const roleLookup = new D1RoleLookup(bindings.DB);
+  const policyLookup = new D1PolicyLookup(bindings.DB);
+  const contextLookup = new D1ContextLookup(bindings.DB);
+  const baseIdentityGet = base.identities.get.bind(base.identities);
+  const baseRoleGet = base.roles.get.bind(base.roles);
+  const baseRoleList = base.roles.list.bind(base.roles);
+  const baseRoleListByIds = base.roles.listByIds.bind(base.roles);
+  const basePolicyGet = base.policies.get.bind(base.policies);
+  const basePolicyList = base.policies.list.bind(base.policies);
+  const baseGetOrganization = base.contexts.getOrganization.bind(base.contexts);
+  const baseGetWorkspace = base.contexts.getWorkspace.bind(base.contexts);
+
+  return Object.assign(base, {
+    identities: Object.assign(base.identities, {
+      get: async (id: string) => (await baseIdentityGet(id)) ?? identityLookup.get(id),
+    }),
+    roles: Object.assign(base.roles, {
+      get: async (id: string) => (await baseRoleGet(id)) ?? roleLookup.get(id),
+      list: async (orgId: string, workspaceId?: string) =>
+        mergeRecordsById(
+          await roleLookup.list(orgId, workspaceId),
+          await baseRoleList(orgId, workspaceId),
+          compareRoleAsc,
+        ),
+      listByIds: async (roleIds: string[]) =>
+        mergeRecordsById(
+          await roleLookup.listByIds(roleIds),
+          await baseRoleListByIds(roleIds),
+          compareRoleAsc,
+        ),
+    }),
+    policies: Object.assign(base.policies, {
+      get: async (id: string) => (await basePolicyGet(id)) ?? policyLookup.get(id),
+      list: async (orgId: string, workspaceId?: string) =>
+        mergeRecordsById(
+          await policyLookup.list(orgId, workspaceId),
+          await basePolicyList(orgId, workspaceId),
+          comparePolicyDesc,
+        ),
+    }),
+    contexts: Object.assign(base.contexts, {
+      getOrganization: async (orgId: string) =>
+        (await baseGetOrganization(orgId)) ?? contextLookup.getOrganization(orgId),
+      getWorkspace: async (workspaceId: string) =>
+        (await baseGetWorkspace(workspaceId)) ?? contextLookup.getWorkspace(workspaceId),
+    }),
+    audit: new D1AuditStorage(bindings.DB),
+    auditWebhooks: new D1AuditWebhookStorage(bindings.DB),
+    DB: bindings.DB,
+    ...(bindings.IDENTITY_DO ? { IDENTITY_DO: bindings.IDENTITY_DO } : {}),
+    ...(bindings.REVOCATION_KV ? { REVOCATION_KV: bindings.REVOCATION_KV } : {}),
+    ...(bindings.INTERNAL_SECRET ? { INTERNAL_SECRET: bindings.INTERNAL_SECRET } : {}),
+    ...(bindings.SIGNING_KEY !== undefined ? { SIGNING_KEY: bindings.SIGNING_KEY } : {}),
+    ...(bindings.SIGNING_KEY_ID !== undefined ? { SIGNING_KEY_ID: bindings.SIGNING_KEY_ID } : {}),
+    ...(bindings.BASE_URL !== undefined ? { BASE_URL: bindings.BASE_URL } : {}),
+    ...(bindings.ALLOWED_ORIGINS !== undefined ? { ALLOWED_ORIGINS: bindings.ALLOWED_ORIGINS } : {}),
+  });
+}
+
+class D1IdentityLookup {
+  constructor(private readonly db: D1Database) {}
+
+  async get(id: string): Promise<StoredIdentity | null> {
+    const identityId = normalizeOptionalString(id);
+    if (!identityId) {
+      return null;
+    }
+
+    const row = await d1First<StoredIdentityRow>(this.db, SELECT_STORED_IDENTITY_SQL, [identityId]);
+    return hydrateStoredIdentityRow(row);
+  }
+}
+
+class D1RoleLookup {
+  constructor(private readonly db: D1Database) {}
+
+  async get(id: string): Promise<Role | null> {
+    const roleId = normalizeOptionalString(id);
+    if (!roleId) {
+      return null;
+    }
+
+    const row = await d1First<RoleRow>(this.db, SELECT_ROLE_SQL, [roleId]);
+    return hydrateRole(row ?? undefined);
+  }
+
+  async list(orgId: string, workspaceId?: string): Promise<Role[]> {
+    const normalizedOrgId = requireString(orgId, "orgId is required");
+    const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
+    const rows = normalizedWorkspaceId
+      ? await d1All<RoleRow>(this.db, LIST_ROLES_FOR_WORKSPACE_SQL, [normalizedOrgId, normalizedWorkspaceId])
+      : await d1All<RoleRow>(this.db, LIST_ROLES_SQL, [normalizedOrgId]);
+
+    return rows
+      .map((row) => hydrateRole(row))
+      .filter((role): role is Role => role !== null);
+  }
+
+  async listByIds(roleIds: string[]): Promise<Role[]> {
+    const normalizedIds = Array.from(new Set(normalizeStringArray(roleIds)));
+    if (normalizedIds.length === 0) {
+      return [];
+    }
+
+    const roles = await Promise.all(normalizedIds.map((roleId) => this.get(roleId)));
+    return roles.filter((role): role is Role => role !== null);
+  }
+}
+
+class D1PolicyLookup {
+  constructor(private readonly db: D1Database) {}
+
+  async get(id: string): Promise<Policy | null> {
+    const policyId = normalizeOptionalString(id);
+    if (!policyId) {
+      return null;
+    }
+
+    const row = await d1First<PolicyRow>(this.db, SELECT_POLICY_SQL, [policyId]);
+    return hydratePolicy(row ?? undefined);
+  }
+
+  async list(orgId: string, workspaceId?: string): Promise<Policy[]> {
+    const normalizedOrgId = requireString(orgId, "orgId is required");
+    const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
+    const rows = normalizedWorkspaceId
+      ? await d1All<PolicyRow>(this.db, LIST_POLICIES_FOR_WORKSPACE_SQL, [normalizedOrgId, normalizedWorkspaceId])
+      : await d1All<PolicyRow>(this.db, LIST_POLICIES_SQL, [normalizedOrgId]);
+
+    return rows
+      .map((row) => hydratePolicy(row))
+      .filter((policy): policy is Policy => policy !== null);
+  }
+}
+
+class D1ContextLookup implements ContextStorage {
+  constructor(private readonly db: D1Database) {}
+
+  async getOrganization(orgId: string): Promise<OrganizationContextRecord | null> {
+    const normalizedOrgId = normalizeOptionalString(orgId);
+    if (!normalizedOrgId) {
+      return null;
+    }
+
+    const row = await d1First<OrganizationRow>(this.db, SELECT_ORGANIZATION_SQL, [normalizedOrgId]);
+    return hydrateOrganization(row ?? undefined);
+  }
+
+  async getWorkspace(workspaceId: string): Promise<WorkspaceContextRecord | null> {
+    const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
+    if (!normalizedWorkspaceId) {
+      return null;
+    }
+
+    const row = await d1First<WorkspaceRow>(this.db, SELECT_WORKSPACE_SQL, [normalizedWorkspaceId]);
+    return hydrateWorkspace(row ?? undefined);
+  }
 }
 
 function createD1Binding(provider: BackendProvider): D1Database {
@@ -754,68 +1043,72 @@ function createD1Binding(provider: BackendProvider): D1Database {
 function createRevocationKvBinding(provider: BackendProvider): KVNamespace {
   return {
     get: async (key: string) => {
-      const tokenId = normalizeRevocationKey(key);
-      const backend = await provider.getBackend();
-      if (backend.kind === "memory") {
-        const revoked = backend.state.revokedTokens.get(tokenId);
-        return revoked ? JSON.stringify({ tokenId, ...revoked }) : null;
-      }
-
-      const row = backend.db.prepare<{ identity_id?: string | null; revoked_at?: string | null }>(`
-        SELECT identity_id, revoked_at
-        FROM revoked_tokens
-        WHERE token_id = ?
-        LIMIT 1
-      `).get(tokenId);
-
-      return row ? JSON.stringify({ tokenId, identityId: row.identity_id ?? undefined, revokedAt: row.revoked_at ?? undefined }) : null;
+      const jti = normalizeRevocationKey(key);
+      const record = await getRevocationRecord(provider, jti);
+      return record ? JSON.stringify({ tokenId: jti, ...record }) : null;
     },
     put: async (key: string, value: string) => {
-      const tokenId = normalizeRevocationKey(key);
+      const jti = normalizeRevocationKey(key);
       const parsed = parseJsonRecord(value);
-      const identityId = typeof parsed?.identityId === "string" ? parsed.identityId : "";
+      const identityId = typeof parsed?.identityId === "string" ? parsed.identityId : undefined;
       const revokedAt = typeof parsed?.revokedAt === "string" ? parsed.revokedAt : nowIso();
+      const expiresAt = normalizeRevocationExpiry(parsed?.expiresAt, MAX_REVOCATION_EXPIRY) ?? MAX_REVOCATION_EXPIRY;
       const backend = await provider.getBackend();
+      pruneExpiredRevocations(backend);
 
-      if (backend.kind === "memory") {
-        backend.state.revokedTokens.set(tokenId, { identityId, revokedAt });
+      if (expiresAt <= nowUnixSeconds()) {
+        if (backend.kind === "memory") {
+          backend.state.revokedTokens.delete(jti);
+          return;
+        }
+
+        backend.db.prepare(DELETE_REVOKED_TOKEN_SQL).run(jti);
         return;
       }
 
-      backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL).run(tokenId, identityId, revokedAt);
-      backend.db.prepare(UPDATE_TOKEN_STATUS_SQL).run(identityId, tokenId, tokenId, tokenId);
+      if (backend.kind === "memory") {
+        backend.state.revokedTokens.set(jti, {
+          expiresAt,
+          ...(identityId ? { identityId } : {}),
+          revokedAt,
+        });
+        if (identityId) {
+          for (const token of backend.state.tokens.values()) {
+            if (
+              token.identityId === identityId
+              && (token.id === jti || token.jti === jti || token.tokenId === jti)
+            ) {
+              token.status = "revoked";
+            }
+          }
+        }
+        return;
+      }
+
+      backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL).run(jti, expiresAt);
+      if (identityId) {
+        backend.db.prepare(UPDATE_TOKEN_STATUS_SQL).run(identityId, jti, jti, jti);
+      } else {
+        backend.db.prepare(UPDATE_TOKEN_STATUS_BY_TOKEN_SQL).run(jti, jti, jti);
+      }
     },
     delete: async (key: string) => {
-      const tokenId = normalizeRevocationKey(key);
+      const jti = normalizeRevocationKey(key);
       const backend = await provider.getBackend();
 
       if (backend.kind === "memory") {
-        backend.state.revokedTokens.delete(tokenId);
+        backend.state.revokedTokens.delete(jti);
         return;
       }
 
-      backend.db.prepare(`
-        DELETE FROM revoked_tokens
-        WHERE token_id = ?
-      `).run(tokenId);
+      backend.db.prepare(DELETE_REVOKED_TOKEN_SQL).run(jti);
     },
     list: async () => ({ keys: [], list_complete: true, cacheStatus: null }),
     getWithMetadata: async (key: string) => ({
       value: await (async () => {
-        const tokenId = normalizeRevocationKey(key);
-        const backend = await provider.getBackend();
-        if (backend.kind === "memory") {
-          const revoked = backend.state.revokedTokens.get(tokenId);
-          return revoked ? JSON.stringify({ tokenId, ...revoked }) : null;
-        }
-
-        const row = backend.db.prepare<{ identity_id?: string | null; revoked_at?: string | null }>(`
-          SELECT identity_id, revoked_at
-          FROM revoked_tokens
-          WHERE token_id = ?
-          LIMIT 1
-        `).get(tokenId);
-        return row ? JSON.stringify({ tokenId, identityId: row.identity_id ?? undefined, revokedAt: row.revoked_at ?? undefined }) : null;
+        const jti = normalizeRevocationKey(key);
+        const record = await getRevocationRecord(provider, jti);
+        return record ? JSON.stringify({ tokenId: jti, ...record }) : null;
       })(),
       metadata: null,
       cacheStatus: null,
@@ -950,6 +1243,7 @@ class BackendProvider {
       db.pragma("journal_mode = WAL");
       db.pragma("foreign_keys = ON");
       db.exec(SCHEMA_SQL);
+      ensureRevokedTokensSchema(db);
       return { kind: "sqlite", db };
     } catch {
       return createMemoryBackend();
@@ -1014,39 +1308,49 @@ class SqliteIdentityStorage implements IdentityStorage {
   }
 
   async create(identity: StoredIdentity): Promise<StoredIdentity> {
-    const normalized = applyBudgetPolicy(normalizeStoredIdentity(identity), normalizeTimestamp(identity.updatedAt));
+    const normalized = normalizeStoredIdentity(identity, { generateId: true });
+    const budgetResult = applyBudgetPolicy(normalized, normalized, normalizeTimestamp(normalized.updatedAt));
+    const finalIdentity = budgetResult.identity;
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
-      if (backend.state.identities.has(normalized.id)) {
+      if (backend.state.identities.has(finalIdentity.id)) {
         throw new StorageError("identity_already_exists", 409, "identity_already_exists");
       }
 
-      backend.state.identities.set(normalized.id, cloneStoredIdentity(normalized));
-      return cloneStoredIdentity(normalized);
+      backend.state.identities.set(finalIdentity.id, cloneStoredIdentity(finalIdentity));
+      return cloneStoredIdentity(finalIdentity);
     }
 
-    if (await this.get(normalized.id)) {
+    if (await this.get(finalIdentity.id)) {
       throw new StorageError("identity_already_exists", 409, "identity_already_exists");
     }
 
-    backend.db.prepare(INSERT_IDENTITY_SQL).run(...toIdentityParams(normalized));
-    return this.getRequired(normalized.id);
+    backend.db.prepare(INSERT_IDENTITY_SQL).run(...toIdentityParams(finalIdentity));
+    if (budgetResult.shouldWriteAuditEvent) {
+      await this.writeBudgetAuditEvent(backend, finalIdentity);
+    }
+    return this.getRequired(finalIdentity.id);
   }
 
   async update(id: string, patch: Partial<StoredIdentity>): Promise<StoredIdentity> {
     const current = await this.getRequired(id);
-    const merged = mergeStoredIdentity(current, patch);
-    const normalized = applyBudgetPolicy(merged, normalizeTimestamp(merged.updatedAt));
+    const timestamp = nowIso();
+    const merged = mergeStoredIdentity(current, patch, timestamp);
+    const budgetResult = applyBudgetPolicy(current, merged, timestamp);
+    const finalIdentity = budgetResult.identity;
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
-      backend.state.identities.set(normalized.id, cloneStoredIdentity(normalized));
-      return cloneStoredIdentity(normalized);
+      backend.state.identities.set(finalIdentity.id, cloneStoredIdentity(finalIdentity));
+      return cloneStoredIdentity(finalIdentity);
     }
 
-    backend.db.prepare(UPDATE_IDENTITY_SQL).run(...toIdentityUpdateParams(normalized), normalized.id);
-    return this.getRequired(normalized.id);
+    backend.db.prepare(UPDATE_IDENTITY_SQL).run(...toIdentityUpdateParams(finalIdentity), finalIdentity.id);
+    if (budgetResult.shouldWriteAuditEvent) {
+      await this.writeBudgetAuditEvent(backend, finalIdentity);
+    }
+    return this.getRequired(finalIdentity.id);
   }
 
   async delete(id: string): Promise<void> {
@@ -1063,43 +1367,82 @@ class SqliteIdentityStorage implements IdentityStorage {
 
   async suspend(id: string, reason: string): Promise<StoredIdentity> {
     const current = await this.getRequired(id);
+    if (current.status === "suspended") {
+      throw new StorageError("Identity is already suspended", 409, "identity_conflict");
+    }
     if (current.status === "retired") {
       throw new StorageError("Retired identities cannot be suspended", 409, "identity_conflict");
     }
 
-    const timestamp = new Date().toISOString();
-    return this.update(current.id, {
+    const timestamp = nowIso();
+    const suspended = normalizeStoredIdentity({
+      ...current,
       status: "suspended",
       suspendReason: requireString(reason, "reason is required"),
       suspendedAt: timestamp,
       updatedAt: timestamp,
     });
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      backend.state.identities.set(suspended.id, cloneStoredIdentity(suspended));
+      return cloneStoredIdentity(suspended);
+    }
+
+    backend.db.prepare(UPDATE_IDENTITY_SQL).run(...toIdentityUpdateParams(suspended), suspended.id);
+    return this.getRequired(suspended.id);
   }
 
   async retire(id: string, _reason?: string): Promise<StoredIdentity> {
     const current = await this.getRequired(id);
-    const timestamp = new Date().toISOString();
-    return this.update(current.id, {
+    if (current.status === "retired") {
+      throw new StorageError("Identity is already retired", 409, "identity_conflict");
+    }
+    const timestamp = nowIso();
+    const retired = normalizeStoredIdentity({
+      ...current,
       status: "retired",
       suspendedAt: undefined,
       suspendReason: undefined,
       updatedAt: timestamp,
     });
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      backend.state.identities.set(retired.id, cloneStoredIdentity(retired));
+      return cloneStoredIdentity(retired);
+    }
+
+    backend.db.prepare(UPDATE_IDENTITY_SQL).run(...toIdentityUpdateParams(retired), retired.id);
+    return this.getRequired(retired.id);
   }
 
   async reactivate(id: string): Promise<StoredIdentity> {
     const current = await this.getRequired(id);
+    if (current.status === "active") {
+      throw new StorageError("Identity is already active", 409, "identity_conflict");
+    }
     if (current.status === "retired") {
       throw new StorageError("Retired identities cannot be reactivated", 409, "identity_conflict");
     }
 
-    const timestamp = new Date().toISOString();
-    return this.update(current.id, {
+    const timestamp = nowIso();
+    const reactivated = normalizeStoredIdentity({
+      ...current,
       status: "active",
       suspendedAt: undefined,
       suspendReason: undefined,
       updatedAt: timestamp,
     });
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      backend.state.identities.set(reactivated.id, cloneStoredIdentity(reactivated));
+      return cloneStoredIdentity(reactivated);
+    }
+
+    backend.db.prepare(UPDATE_IDENTITY_SQL).run(...toIdentityUpdateParams(reactivated), reactivated.id);
+    return this.getRequired(reactivated.id);
   }
 
   async findDuplicate(orgId: string, name: string): Promise<DuplicateIdentityRecord | null> {
@@ -1225,6 +1568,32 @@ class SqliteIdentityStorage implements IdentityStorage {
 
     return identity;
   }
+
+  private async writeBudgetAuditEvent(backend: Extract<BackendContext, { kind: "sqlite" }>, identity: StoredIdentity): Promise<void> {
+    const payload = JSON.stringify({
+      eventType: "budget.exceeded",
+      status: identity.status,
+      sponsorId: identity.sponsorId,
+      sponsorChain: identity.sponsorChain,
+      budget: identity.budget,
+      budgetUsage: identity.budgetUsage,
+    });
+
+    try {
+      backend.db.prepare(INSERT_AUDIT_EVENT_SQL).run(
+        crypto.randomUUID(),
+        identity.orgId,
+        identity.workspaceId,
+        identity.id,
+        "identity.suspended",
+        "budget_exceeded",
+        payload,
+        identity.updatedAt,
+      );
+    } catch (error) {
+      console.error("Failed to write budget audit event", error);
+    }
+  }
 }
 
 class SqliteTokenStorage implements TokenStorage {
@@ -1261,10 +1630,15 @@ class SqliteRevocationStorage implements RevocationStorage {
 
     const timestamp = normalizeTimestamp(revokedAt);
     const backend = await this.provider.getBackend();
+    pruneExpiredRevocations(backend);
 
     if (backend.kind === "memory") {
       for (const tokenId of normalizedTokenIds) {
-        backend.state.revokedTokens.set(tokenId, { identityId: normalizedIdentityId, revokedAt: timestamp });
+        backend.state.revokedTokens.set(tokenId, {
+          expiresAt: MAX_REVOCATION_EXPIRY,
+          identityId: normalizedIdentityId,
+          revokedAt: timestamp,
+        });
         for (const token of backend.state.tokens.values()) {
           if (
             token.identityId === normalizedIdentityId
@@ -1278,7 +1652,7 @@ class SqliteRevocationStorage implements RevocationStorage {
     }
 
     for (const tokenId of normalizedTokenIds) {
-      backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL).run(tokenId, normalizedIdentityId, timestamp);
+      backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL).run(tokenId, MAX_REVOCATION_EXPIRY);
       backend.db.prepare(UPDATE_TOKEN_STATUS_SQL).run(normalizedIdentityId, tokenId, tokenId, tokenId);
     }
   }
@@ -1291,11 +1665,13 @@ class SqliteRevocationStorage implements RevocationStorage {
 
     const backend = await this.provider.getBackend();
     if (backend.kind === "memory") {
+      pruneExpiredRevocations(backend);
       return backend.state.revokedTokens.has(normalizedTokenId);
     }
 
-    const row = backend.db.prepare<ExistsRow>(SELECT_REVOKED_TOKEN_SQL).get(normalizedTokenId);
-    return Boolean(row?.found);
+    pruneExpiredRevocations(backend);
+    const row = backend.db.prepare<ExistsRow>(SELECT_REVOKED_TOKEN_SQL).get(normalizedTokenId, nowUnixSeconds());
+    return normalizeNumber(row?.found) > 0;
   }
 }
 
@@ -1331,8 +1707,8 @@ class SqliteRoleStorage implements RoleStorage {
       return role ? cloneRole(role) : null;
     }
 
-    const row = backend.db.prepare<DataRow>(SELECT_ROLE_SQL).get(roleId);
-    return row ? parseRole(row.data) : null;
+    const row = backend.db.prepare<RoleRow>(SELECT_ROLE_SQL).get(roleId);
+    return hydrateRole(row);
   }
 
   async list(orgId: string, workspaceId?: string): Promise<Role[]> {
@@ -1349,10 +1725,12 @@ class SqliteRoleStorage implements RoleStorage {
     }
 
     const rows = normalizedWorkspaceId
-      ? backend.db.prepare<DataRow>(LIST_ROLES_FOR_WORKSPACE_SQL).all(normalizedOrgId, normalizedWorkspaceId)
-      : backend.db.prepare<DataRow>(LIST_ROLES_SQL).all(normalizedOrgId);
+      ? backend.db.prepare<RoleRow>(LIST_ROLES_FOR_WORKSPACE_SQL).all(normalizedOrgId, normalizedWorkspaceId)
+      : backend.db.prepare<RoleRow>(LIST_ROLES_SQL).all(normalizedOrgId);
 
-    return rows.map((row) => parseRole(row.data));
+    return rows
+      .map((row) => hydrateRole(row))
+      .filter((role): role is Role => role !== null);
   }
 
   async update(id: string, patch: RoleUpdate): Promise<Role> {
@@ -1370,7 +1748,7 @@ class SqliteRoleStorage implements RoleStorage {
       return cloneRole(next);
     }
 
-    backend.db.prepare(UPDATE_ROLE_SQL).run(...toRoleUpdateParams(next), next.id);
+    backend.db.prepare(UPDATE_ROLE_SQL).run(...toRoleUpdateParams(next));
     return this.getRequired(next.id);
   }
 
@@ -1383,7 +1761,7 @@ class SqliteRoleStorage implements RoleStorage {
       return;
     }
 
-    backend.db.prepare(DELETE_ROLE_SQL).run(role.id);
+    backend.db.prepare(DELETE_ROLE_SQL).run(role.id, role.orgId);
   }
 
   async listByIds(roleIds: string[]): Promise<Role[]> {
@@ -1446,8 +1824,8 @@ class SqlitePolicyStorage implements PolicyStorage {
       return policy ? clonePolicy(policy) : null;
     }
 
-    const row = backend.db.prepare<DataRow>(SELECT_POLICY_SQL).get(policyId);
-    return row ? parsePolicy(row.data) : null;
+    const row = backend.db.prepare<PolicyRow>(SELECT_POLICY_SQL).get(policyId);
+    return hydratePolicy(row);
   }
 
   async list(orgId: string, workspaceId?: string): Promise<Policy[]> {
@@ -1464,10 +1842,12 @@ class SqlitePolicyStorage implements PolicyStorage {
     }
 
     const rows = normalizedWorkspaceId
-      ? backend.db.prepare<DataRow>(LIST_POLICIES_FOR_WORKSPACE_SQL).all(normalizedOrgId, normalizedWorkspaceId)
-      : backend.db.prepare<DataRow>(LIST_POLICIES_SQL).all(normalizedOrgId);
+      ? backend.db.prepare<PolicyRow>(LIST_POLICIES_FOR_WORKSPACE_SQL).all(normalizedOrgId, normalizedWorkspaceId)
+      : backend.db.prepare<PolicyRow>(LIST_POLICIES_SQL).all(normalizedOrgId);
 
-    return rows.map((row) => parsePolicy(row.data));
+    return rows
+      .map((row) => hydratePolicy(row))
+      .filter((policy): policy is Policy => policy !== null);
   }
 
   async update(id: string, patch: PolicyUpdate): Promise<Policy> {
@@ -1487,7 +1867,7 @@ class SqlitePolicyStorage implements PolicyStorage {
       return clonePolicy(next);
     }
 
-    backend.db.prepare(UPDATE_POLICY_SQL).run(...toPolicyUpdateParams(next), next.id);
+    backend.db.prepare(UPDATE_POLICY_SQL).run(...toPolicyUpdateParams(next));
     return this.getRequired(next.id);
   }
 
@@ -1500,7 +1880,7 @@ class SqlitePolicyStorage implements PolicyStorage {
       return;
     }
 
-    backend.db.prepare(DELETE_POLICY_SQL).run(new Date().toISOString(), policy.id);
+    backend.db.prepare(DELETE_POLICY_SQL).run(new Date().toISOString(), policy.id, policy.orgId);
   }
 
   private async getRequired(id: string): Promise<Policy> {
@@ -1616,6 +1996,82 @@ class SqliteAuditStorage implements AuditStorage {
   }
 }
 
+class D1AuditStorage implements AuditStorage {
+  constructor(private readonly db: D1Database) {}
+
+  async write(entry: AuditLogWriteEntry): Promise<void> {
+    const normalized = normalizeAuditWriteEntry(entry);
+    await d1Run(this.db, INSERT_AUDIT_LOG_SQL, toAuditParams(normalized));
+  }
+
+  async writeBatch(entries: AuditLogWriteEntry[]): Promise<void> {
+    if (entries.length === 0) {
+      return;
+    }
+
+    await this.db.batch(
+      entries.map((entry) => {
+        const normalized = normalizeAuditWriteEntry(entry);
+        return this.db.prepare(INSERT_AUDIT_LOG_SQL).bind(...toAuditParams(normalized));
+      }),
+    );
+  }
+
+  async query(query: AuditQueryInput, options: AuditQueryOptions = {}): Promise<AuditEntryRecord[]> {
+    const normalized = normalizeAuditQuery(query);
+    const limitWithOverflow = normalized.limit + (options.includeOverflowRow ?? true ? 1 : 0);
+    const statement = buildAuditQuerySql(normalized, limitWithOverflow);
+    const rows = await d1All<AuditRow>(this.db, statement.sql, statement.params);
+
+    return rows
+      .map((row) => hydrateAuditEntryRecord(row))
+      .filter((entry): entry is AuditEntryRecord => entry !== null);
+  }
+
+  async getActionCounts(orgId: string, query: DashboardAuditQuery): Promise<DashboardAuditCounts> {
+    const normalizedOrgId = requireString(orgId, "orgId is required");
+    const from = normalizeOptionalString(query.from);
+    const to = normalizeOptionalString(query.to);
+    const statement = buildAuditCountsSql(normalizedOrgId, { from, to });
+    const row = await d1First<AuditCountRow>(this.db, statement.sql, statement.params);
+
+    return {
+      tokensIssued: normalizeNumber(row?.tokensIssued),
+      tokensRevoked: normalizeNumber(row?.tokensRevoked),
+      tokensRefreshed: normalizeNumber(row?.tokensRefreshed),
+      scopeChecks: normalizeNumber(row?.scopeChecks),
+      scopeDenials: normalizeNumber(row?.scopeDenials),
+    };
+  }
+
+  async writeIdentitySuspendedEvent(identity: StoredIdentity, reason: string, actorId: string): Promise<void> {
+    const normalizedReason = requireString(reason, "reason is required");
+    const payload = JSON.stringify({
+      eventType: "identity.suspended",
+      status: identity.status,
+      sponsorId: identity.sponsorId,
+      sponsorChain: identity.sponsorChain,
+      actorId,
+      reason: normalizedReason,
+    });
+
+    try {
+      await d1Run(this.db, INSERT_AUDIT_EVENT_SQL, [
+        crypto.randomUUID(),
+        identity.orgId,
+        identity.workspaceId,
+        identity.id,
+        "identity.suspended",
+        normalizedReason,
+        payload,
+        identity.updatedAt,
+      ]);
+    } catch (error) {
+      console.error("Failed to write identity suspended audit event", error);
+    }
+  }
+}
+
 class SqliteAuditWebhookStorage implements AuditWebhookStorage {
   constructor(private readonly provider: BackendProvider) {}
 
@@ -1673,6 +2129,40 @@ class SqliteAuditWebhookStorage implements AuditWebhookStorage {
     }
 
     backend.db.prepare(DELETE_AUDIT_WEBHOOK_SQL).run(normalizedOrgId, normalizedId);
+  }
+}
+
+class D1AuditWebhookStorage implements AuditWebhookStorage {
+  constructor(private readonly db: D1Database) {}
+
+  async create(input: CreateAuditWebhookInput): Promise<AuditWebhookRecord> {
+    const normalized = normalizeAuditWebhook(input);
+    await d1Run(this.db, INSERT_AUDIT_WEBHOOK_SQL, [
+      normalized.id,
+      normalized.orgId,
+      normalized.url,
+      normalized.secret,
+      normalized.events ? JSON.stringify(normalized.events) : null,
+      normalized.createdAt,
+      normalized.updatedAt,
+    ]);
+
+    return cloneAuditWebhook(normalized);
+  }
+
+  async list(orgId: string): Promise<AuditWebhookRecord[]> {
+    const normalizedOrgId = requireString(orgId, "orgId is required");
+    const rows = await d1All<AuditWebhookRow>(this.db, LIST_AUDIT_WEBHOOKS_SQL, [normalizedOrgId]);
+
+    return rows
+      .map((row) => hydrateAuditWebhook(row))
+      .filter((webhook): webhook is AuditWebhookRecord => webhook !== null);
+  }
+
+  async delete(orgId: string, id: string): Promise<void> {
+    const normalizedOrgId = requireString(orgId, "orgId is required");
+    const normalizedId = requireString(id, "id is required");
+    await d1Run(this.db, DELETE_AUDIT_WEBHOOK_SQL, [normalizedOrgId, normalizedId]);
   }
 }
 
@@ -1806,33 +2296,146 @@ function createMemoryBackend(): BackendContext {
       workspaces: new Map<string, WorkspaceContextRecord>(),
       orgBudgets: new Map<string, IdentityBudget | undefined>(),
       tokens: new Map<string, MemoryTokenRecord>(),
-      revokedTokens: new Map<string, { identityId: string; revokedAt: string }>(),
+      revokedTokens: new Map<string, RevokedTokenRecord>(),
     },
   };
 }
 
-function normalizeStoredIdentity(identity: StoredIdentity): StoredIdentity {
+async function getRevocationRecord(
+  provider: BackendProvider,
+  jti: string,
+): Promise<Pick<RevokedTokenRecord, "expiresAt" | "identityId" | "revokedAt"> | null> {
+  const normalizedJti = normalizeOptionalString(jti);
+  if (!normalizedJti) {
+    return null;
+  }
+
+  const backend = await provider.getBackend();
+  pruneExpiredRevocations(backend);
+
+  if (backend.kind === "memory") {
+    const record = backend.state.revokedTokens.get(normalizedJti);
+    if (!record) {
+      return null;
+    }
+
+    return {
+      expiresAt: record.expiresAt,
+      ...(record.identityId ? { identityId: record.identityId } : {}),
+      ...(record.revokedAt ? { revokedAt: record.revokedAt } : {}),
+    };
+  }
+
+  const row = backend.db.prepare<RevokedTokenRow>(SELECT_REVOKED_TOKEN_RECORD_SQL).get(normalizedJti);
+  const expiresAt = normalizeRevocationExpiry(row?.expires_at, undefined);
+  if (expiresAt === undefined || expiresAt <= nowUnixSeconds()) {
+    if (row) {
+      backend.db.prepare(DELETE_REVOKED_TOKEN_SQL).run(normalizedJti);
+    }
+    return null;
+  }
+
+  return { expiresAt };
+}
+
+function ensureRevokedTokensSchema(db: SqliteDatabase): void {
+  const revokedTokensTable = db.prepare<TableInfoRow>(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'revoked_tokens'
+    LIMIT 1
+  `).get();
+
+  if (!normalizeOptionalString(revokedTokensTable?.name)) {
+    db.exec(CREATE_REVOKED_TOKENS_TABLE_SQL);
+    db.exec(CREATE_REVOKED_TOKENS_EXPIRES_INDEX_SQL);
+    return;
+  }
+
+  const columns = new Set(
+    db.prepare<TableInfoRow>("PRAGMA table_info(revoked_tokens)")
+      .all()
+      .map((row) => normalizeOptionalString(row.name))
+      .filter((name): name is string => Boolean(name)),
+  );
+
+  if (columns.has("jti") && columns.has("expires_at")) {
+    db.exec(CREATE_REVOKED_TOKENS_EXPIRES_INDEX_SQL);
+    return;
+  }
+
+  db.exec("DROP TABLE IF EXISTS revoked_tokens__legacy");
+  db.exec("ALTER TABLE revoked_tokens RENAME TO revoked_tokens__legacy");
+  db.exec(CREATE_REVOKED_TOKENS_TABLE_SQL);
+  db.exec(CREATE_REVOKED_TOKENS_EXPIRES_INDEX_SQL);
+
+  const sourceTokenColumn = columns.has("jti") ? "jti" : columns.has("token_id") ? "token_id" : null;
+  const sourceExpirySql = columns.has("expires_at") ? `COALESCE(expires_at, ${MAX_REVOCATION_EXPIRY})` : `${MAX_REVOCATION_EXPIRY}`;
+
+  if (sourceTokenColumn) {
+    db.exec(`
+      INSERT OR IGNORE INTO revoked_tokens (jti, expires_at)
+      SELECT ${sourceTokenColumn}, ${sourceExpirySql}
+      FROM revoked_tokens__legacy
+      WHERE ${sourceTokenColumn} IS NOT NULL AND TRIM(${sourceTokenColumn}) <> ''
+    `);
+  }
+
+  db.exec("DROP TABLE revoked_tokens__legacy");
+}
+
+function pruneExpiredRevocations(backend: BackendContext): void {
+  const now = nowUnixSeconds();
+
+  if (backend.kind === "memory") {
+    for (const [jti, record] of backend.state.revokedTokens.entries()) {
+      if (record.expiresAt <= now) {
+        backend.state.revokedTokens.delete(jti);
+      }
+    }
+    return;
+  }
+
+  backend.db.prepare(DELETE_EXPIRED_REVOKED_TOKENS_SQL).run(now);
+}
+
+function normalizeStoredIdentity(
+  identity: StoredIdentity,
+  options: { generateId?: boolean } = {},
+): StoredIdentity {
+  const providedId = normalizeOptionalString(identity.id);
+  const id = providedId ?? (options.generateId ? createGeneratedIdentityId() : undefined);
+  if (!id) {
+    throw new StorageError("id is required", 400, "invalid_input");
+  }
+
   const sponsorChain = normalizeStringArray(identity.sponsorChain);
   if (sponsorChain.length === 0) {
     throw new StorageError("sponsorChain is required", 400, "invalid_identity");
   }
 
+  const normalizedSponsorChain = !providedId && options.generateId && sponsorChain.at(-1) !== id
+    ? [...sponsorChain, id]
+    : sponsorChain;
+
   return {
     ...identity,
-    id: requireString(identity.id, "id is required"),
+    id,
     name: requireString(identity.name, "name is required"),
+    type: normalizeIdentityType(identity.type),
     orgId: requireString(identity.orgId, "orgId is required"),
     workspaceId: requireString(identity.workspaceId, "workspaceId is required"),
     sponsorId: requireString(identity.sponsorId, "sponsorId is required"),
-    sponsorChain,
+    sponsorChain: normalizedSponsorChain,
+    status: normalizeIdentityStatus(identity.status) ?? "active",
     scopes: normalizeStringArray(identity.scopes),
     roles: normalizeStringArray(identity.roles),
     metadata: normalizeRecord(identity.metadata),
     createdAt: normalizeTimestamp(identity.createdAt),
     updatedAt: normalizeTimestamp(identity.updatedAt),
-    ...(normalizeOptionalString(identity.lastActiveAt) ? { lastActiveAt: identity.lastActiveAt } : {}),
-    ...(normalizeOptionalString(identity.suspendedAt) ? { suspendedAt: identity.suspendedAt } : {}),
-    ...(normalizeOptionalString(identity.suspendReason) ? { suspendReason: identity.suspendReason } : {}),
+    ...(normalizeOptionalString(identity.lastActiveAt) ? { lastActiveAt: normalizeOptionalString(identity.lastActiveAt) } : {}),
+    ...(normalizeOptionalString(identity.suspendedAt) ? { suspendedAt: normalizeOptionalString(identity.suspendedAt) } : {}),
+    ...(normalizeOptionalString(identity.suspendReason) ? { suspendReason: normalizeOptionalString(identity.suspendReason) } : {}),
     ...(identity.budget ? { budget: cloneOptionalJson(identity.budget)! } : {}),
     ...(identity.budgetUsage ? { budgetUsage: cloneOptionalJson(identity.budgetUsage)! } : {}),
   };
@@ -1842,8 +2445,73 @@ function parseStoredIdentity(data: string): StoredIdentity {
   return normalizeStoredIdentity(JSON.parse(data) as StoredIdentity);
 }
 
-function mergeStoredIdentity(current: StoredIdentity, patch: Partial<StoredIdentity>): StoredIdentity {
-  const updatedAt = normalizeTimestamp(patch.updatedAt ?? new Date().toISOString());
+function hydrateStoredIdentityRow(row: StoredIdentityRow | undefined): StoredIdentity | null {
+  if (!row) {
+    return null;
+  }
+
+  const serialized = normalizeOptionalString(row.data);
+  if (serialized) {
+    try {
+      return parseStoredIdentity(serialized);
+    } catch {
+      // Fall back to column-based hydration for D1 test doubles that omit the serialized blob.
+    }
+  }
+
+  const id = normalizeOptionalString(row.id);
+  const name = normalizeOptionalString(row.name);
+  const orgId = normalizeOptionalString(row.org_id ?? row.orgId);
+  const workspaceId = normalizeOptionalString(row.workspace_id ?? row.workspaceId);
+  const sponsorId = normalizeOptionalString(row.sponsor_id ?? row.sponsorId);
+  const createdAt = normalizeOptionalString(row.created_at ?? row.createdAt);
+  const updatedAt = normalizeOptionalString(row.updated_at ?? row.updatedAt);
+  const sponsorChain = parseStringArrayField(
+    row.sponsorChain ?? row.sponsor_chain,
+    typeof row.sponsor_chain === "string" ? row.sponsor_chain : row.sponsor_chain_json,
+  );
+  if (!id || !name || !orgId || !workspaceId || !sponsorId || !createdAt || !updatedAt || sponsorChain.length === 0) {
+    return null;
+  }
+
+  const metadata = normalizeRecord(parseJsonObjectField(row.metadata, row.metadata_json) ?? {});
+  const budget = row.budget ?? parseIdentityBudget(row.budget_json);
+  const budgetUsage = parseJsonObjectField<IdentityBudgetUsage>(
+    row.budgetUsage ?? row.budget_usage,
+    row.budget_usage_json,
+  );
+  const lastActiveAt = normalizeOptionalString(row.last_active_at ?? row.lastActiveAt);
+  const suspendedAt = normalizeOptionalString(row.suspended_at ?? row.suspendedAt);
+  const suspendReason = normalizeOptionalString(row.suspend_reason ?? row.suspendReason);
+
+  return normalizeStoredIdentity({
+    id,
+    name,
+    type: normalizeOptionalString(row.type) ?? "agent",
+    orgId,
+    workspaceId,
+    sponsorId,
+    sponsorChain,
+    status: normalizeIdentityStatus(row.status) ?? "active",
+    scopes: parseStringArrayField(row.scopes, row.scopes_json),
+    roles: parseStringArrayField(row.roles, row.roles_json),
+    metadata,
+    createdAt,
+    updatedAt,
+    ...(lastActiveAt ? { lastActiveAt } : {}),
+    ...(suspendedAt ? { suspendedAt } : {}),
+    ...(suspendReason ? { suspendReason } : {}),
+    ...(budget ? { budget: cloneOptionalJson(budget)! } : {}),
+    ...(budgetUsage ? { budgetUsage } : {}),
+  });
+}
+
+function mergeStoredIdentity(
+  current: StoredIdentity,
+  patch: Partial<StoredIdentity>,
+  timestamp: string,
+): StoredIdentity {
+  const updatedAt = normalizeTimestamp(timestamp);
 
   return normalizeStoredIdentity({
     ...cloneStoredIdentity(current),
@@ -1854,24 +2522,30 @@ function mergeStoredIdentity(current: StoredIdentity, patch: Partial<StoredIdent
     metadata: patch.metadata ? { ...current.metadata, ...normalizeRecord(patch.metadata) } : current.metadata,
     scopes: patch.scopes ?? current.scopes,
     roles: patch.roles ?? current.roles,
-    sponsorChain: patch.sponsorChain ? normalizeStringArray(patch.sponsorChain) : current.sponsorChain,
-    budget: "budget" in patch ? cloneOptionalJson(patch.budget) : current.budget,
-    budgetUsage: "budgetUsage" in patch ? cloneOptionalJson(patch.budgetUsage) : current.budgetUsage,
+    sponsorChain: "sponsorChain" in patch ? normalizeStringArray(patch.sponsorChain) : current.sponsorChain,
+    budget: patch.budget ?? current.budget,
+    budgetUsage: patch.budgetUsage ?? current.budgetUsage,
     updatedAt,
   });
 }
 
-function applyBudgetPolicy(identity: StoredIdentity, timestamp: string): StoredIdentity {
+function applyBudgetPolicy(previous: StoredIdentity, identity: StoredIdentity, timestamp: string): BudgetPolicyResult {
   if (identity.status === "retired" || !identity.budget?.autoSuspend || !isBudgetExceeded(identity)) {
-    return identity;
+    return {
+      identity,
+      shouldWriteAuditEvent: false,
+    };
   }
 
   return {
-    ...identity,
-    status: "suspended",
-    suspendReason: "budget_exceeded",
-    suspendedAt: identity.suspendedAt ?? timestamp,
-    updatedAt: timestamp,
+    identity: {
+      ...identity,
+      status: "suspended",
+      suspendReason: "budget_exceeded",
+      suspendedAt: identity.suspendedAt ?? timestamp,
+      updatedAt: timestamp,
+    },
+    shouldWriteAuditEvent: previous.status !== "suspended" || previous.suspendReason !== "budget_exceeded",
   };
 }
 
@@ -2002,17 +2676,36 @@ function normalizeRole(role: Role): Role {
   };
 }
 
-function parseRole(data: string): Role {
-  return normalizeRole(JSON.parse(data) as Role);
+function hydrateRole(row: RoleRow | undefined): Role | null {
+  const id = normalizeOptionalString(row?.id);
+  const name = normalizeOptionalString(row?.name);
+  const description = normalizeOptionalString(row?.description);
+  const orgId = normalizeOptionalString(row?.org_id);
+  const createdAt = normalizeOptionalString(row?.created_at);
+  const workspaceId = normalizeOptionalString(row?.workspace_id);
+  if (!id || !name || !description || !orgId || !createdAt) {
+    return null;
+  }
+
+  return normalizeRole({
+    id,
+    name,
+    description,
+    scopes: parseStringArrayField(row?.scopes, row?.scopes_json),
+    orgId,
+    builtIn: row?.built_in === true || row?.built_in === 1,
+    createdAt,
+    ...(workspaceId ? { workspaceId } : {}),
+  });
 }
 
 function toRoleParams(role: Role): unknown[] {
   return [
     role.id,
-    JSON.stringify(role),
     role.name,
     role.description,
     JSON.stringify(role.scopes),
+    JSON.stringify(role),
     role.orgId,
     role.workspaceId ?? null,
     role.builtIn ? 1 : 0,
@@ -2021,7 +2714,14 @@ function toRoleParams(role: Role): unknown[] {
 }
 
 function toRoleUpdateParams(role: Role): unknown[] {
-  return toRoleParams(role).slice(1);
+  return [
+    role.name,
+    role.description,
+    JSON.stringify(role.scopes),
+    JSON.stringify(role),
+    role.id,
+    role.orgId,
+  ];
 }
 
 function compareRoleAsc(left: Role, right: Role): number {
@@ -2029,31 +2729,58 @@ function compareRoleAsc(left: Role, right: Role): number {
 }
 
 function normalizePolicy(policy: Policy): Policy {
+  const effect = normalizePolicyEffect(policy.effect);
+  if (!effect) {
+    throw new StorageError("policy effect is required", 400, "invalid_input");
+  }
+
   return {
     ...policy,
     id: requireString(policy.id, "policy id is required"),
     name: requireString(policy.name, "policy name is required"),
+    effect,
     orgId: requireString(policy.orgId, "policy orgId is required"),
     scopes: normalizeStringArray(policy.scopes),
-    conditions: cloneJsonArray(policy.conditions),
+    conditions: normalizePolicyConditions(policy.conditions),
     priority: Number.isInteger(policy.priority) ? policy.priority : 0,
     createdAt: normalizeTimestamp(policy.createdAt),
     ...(normalizeOptionalString(policy.workspaceId) ? { workspaceId: policy.workspaceId } : {}),
   };
 }
 
-function parsePolicy(data: string): Policy {
-  return normalizePolicy(JSON.parse(data) as Policy);
+function hydratePolicy(row: PolicyRow | undefined): Policy | null {
+  const id = normalizeOptionalString(row?.id);
+  const name = normalizeOptionalString(row?.name);
+  const effect = normalizePolicyEffect(row?.effect);
+  const orgId = normalizeOptionalString(row?.org_id);
+  const createdAt = normalizeOptionalString(row?.created_at);
+  const workspaceId = normalizeOptionalString(row?.workspace_id);
+  if (!id || !name || !effect || !orgId || !createdAt) {
+    return null;
+  }
+
+  return normalizePolicy({
+    id,
+    name,
+    effect,
+    scopes: parseStringArrayField(row?.scopes, row?.scopes_json),
+    conditions: parsePolicyConditionsField(row?.conditions, row?.conditions_json),
+    priority: normalizeNumber(row?.priority),
+    orgId,
+    createdAt,
+    ...(workspaceId ? { workspaceId } : {}),
+  });
 }
 
 function toPolicyParams(policy: Policy): unknown[] {
   return [
     policy.id,
-    JSON.stringify(policy),
     policy.name,
     policy.effect,
     JSON.stringify(policy.scopes),
+    JSON.stringify(policy),
     JSON.stringify(policy.conditions),
+    JSON.stringify(policy),
     policy.priority,
     policy.orgId,
     policy.workspaceId ?? null,
@@ -2063,17 +2790,16 @@ function toPolicyParams(policy: Policy): unknown[] {
 }
 
 function toPolicyUpdateParams(policy: Policy): unknown[] {
-  const params = toPolicyParams(policy);
   return [
-    params[1],
-    params[2],
-    params[3],
-    params[4],
-    params[5],
-    params[6],
-    params[7],
-    params[8],
-    params[9],
+    policy.name,
+    policy.effect,
+    JSON.stringify(policy.scopes),
+    JSON.stringify(policy),
+    JSON.stringify(policy.conditions),
+    JSON.stringify(policy),
+    policy.priority,
+    policy.id,
+    policy.orgId,
   ];
 }
 
@@ -2105,7 +2831,7 @@ function normalizeAuditQuery(query: AuditQueryInput): AuditQueryInput {
   return {
     ...query,
     orgId: requireString(query.orgId, "orgId is required"),
-    limit: normalizeLimit(query.limit),
+    limit: normalizeAuditLimit(query.limit),
   };
 }
 
@@ -2155,7 +2881,7 @@ function buildAuditQuerySql(query: AuditQueryInput, limit: number): { sql: strin
     params.push(query.from);
   }
   if (query.to) {
-    clauses.push("timestamp < ?");
+    clauses.push("(timestamp < ?)");
     params.push(query.to);
   }
   if (query.cursor) {
@@ -2212,7 +2938,7 @@ function buildAuditCountsSql(
         SUM(CASE WHEN action = 'token.issued' THEN 1 ELSE 0 END) AS tokensIssued,
         SUM(CASE WHEN action = 'token.revoked' THEN 1 ELSE 0 END) AS tokensRevoked,
         SUM(CASE WHEN action = 'token.refreshed' THEN 1 ELSE 0 END) AS tokensRefreshed,
-        SUM(CASE WHEN action = 'scope.checked' THEN 1 ELSE 0 END) AS scopeChecks,
+        SUM(CASE WHEN action = 'scope.checked' AND result IN ('allowed', 'denied') THEN 1 ELSE 0 END) AS scopeChecks,
         SUM(CASE WHEN action = 'scope.denied' THEN 1 ELSE 0 END) AS scopeDenials
       FROM audit_logs
       WHERE ${clauses.join(" AND ")}
@@ -2304,7 +3030,9 @@ function summarizeAuditCounts(entries: AuditEntryRecord[]): DashboardAuditCounts
         tokensRefreshed++;
         break;
       case "scope.checked":
-        scopeChecks++;
+        if (entry.result === "allowed" || entry.result === "denied") {
+          scopeChecks++;
+        }
         break;
       case "scope.denied":
         scopeDenials++;
@@ -2420,8 +3148,45 @@ function isIdentityBudget(value: unknown): value is IdentityBudget {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function normalizeIdentityType(value: unknown): IdentityType {
+  return value === "human" || value === "service" ? value : "agent";
+}
+
 function normalizeIdentityStatus(value: unknown): IdentityStatus | undefined {
   return value === "active" || value === "suspended" || value === "retired" ? value : undefined;
+}
+
+function normalizePolicyEffect(value: unknown): Policy["effect"] | undefined {
+  return value === "allow" || value === "deny" ? value : undefined;
+}
+
+function isDatabaseStorageBindings(
+  value: D1Database | DatabaseStorageBindings,
+): value is DatabaseStorageBindings {
+  return typeof value === "object" && value !== null && "DB" in value;
+}
+
+async function d1All<Row>(db: D1Database, sql: string, params: unknown[] = []): Promise<Row[]> {
+  const statement = db.prepare(sql);
+  const bound = params.length > 0 ? statement.bind(...params) : statement;
+  const result = await bound.all<Row>();
+  return result.results ?? [];
+}
+
+async function d1First<Row>(
+  db: D1Database,
+  sql: string,
+  params: unknown[] = [],
+): Promise<Row | null> {
+  const statement = db.prepare(sql);
+  const bound = params.length > 0 ? statement.bind(...params) : statement;
+  return (await bound.first<Row>()) ?? null;
+}
+
+async function d1Run(db: D1Database, sql: string, params: unknown[] = []): Promise<void> {
+  const statement = db.prepare(sql);
+  const bound = params.length > 0 ? statement.bind(...params) : statement;
+  await bound.run();
 }
 
 function normalizeStringArray(value: unknown): string[] {
@@ -2430,6 +3195,39 @@ function normalizeStringArray(value: unknown): string[] {
   }
 
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function parseStringArrayField(value: unknown, jsonValue?: string | null): string[] {
+  if (Array.isArray(value)) {
+    return normalizeStringArray(value);
+  }
+
+  return normalizeStringArray(parseJson<unknown[]>(jsonValue ?? undefined, []));
+}
+
+function normalizePolicyConditions(value: unknown): Policy["conditions"] {
+  return Array.isArray(value) ? cloneJsonArray(value as Policy["conditions"]) : [];
+}
+
+function parsePolicyConditionsField(value: unknown, jsonValue?: string | null): Policy["conditions"] {
+  if (Array.isArray(value)) {
+    return normalizePolicyConditions(value);
+  }
+
+  return normalizePolicyConditions(parseJson<unknown[]>(jsonValue ?? undefined, []));
+}
+
+function parseJsonObjectField<T extends object>(value: unknown, jsonValue?: string | null): T | undefined {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return cloneOptionalJson(value as T);
+  }
+
+  const parsed = parseJson<unknown>(jsonValue ?? undefined, undefined);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return cloneOptionalJson(parsed as T);
+  }
+
+  return undefined;
 }
 
 function normalizeRecord(value: unknown): Record<string, string> {
@@ -2447,7 +3245,16 @@ function normalizeLimit(value: number | undefined): number {
     return 50;
   }
 
-  return Math.min(value, 100);
+  // Identity listing fetches limit + 1 internally so callers can detect whether another page exists.
+  return Math.min(value, 101);
+}
+
+function normalizeAuditLimit(value: number | undefined): number {
+  if (!Number.isInteger(value) || !value || value < 1) {
+    return 50;
+  }
+
+  return Math.min(value, 10_000);
 }
 
 function normalizeTimestamp(value: string | undefined): string {
@@ -2485,6 +3292,10 @@ function parseJson<T>(value: string | undefined | null, fallback: T): T {
 }
 
 function normalizeNumber(value: unknown): number {
+  if (typeof value === "bigint") {
+    return Number(value);
+  }
+
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
@@ -2495,6 +3306,58 @@ function normalizeNumber(value: unknown): number {
   }
 
   return 0;
+}
+
+function mergeRecordsById<T extends { id: string }>(
+  remote: T[],
+  local: T[],
+  compare: (left: T, right: T) => number,
+): T[] {
+  const merged = new Map<string, T>();
+
+  for (const record of remote) {
+    merged.set(record.id, record);
+  }
+
+  for (const record of local) {
+    merged.set(record.id, record);
+  }
+
+  return [...merged.values()].sort(compare);
+}
+
+function normalizeRevocationExpiry(value: unknown, fallback: number | undefined): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (!normalized) {
+      return fallback;
+    }
+
+    const parsedNumber = Number(normalized);
+    if (Number.isFinite(parsedNumber)) {
+      return Math.max(0, Math.floor(parsedNumber));
+    }
+
+    const parsedDate = Date.parse(normalized);
+    if (Number.isFinite(parsedDate)) {
+      return Math.max(0, Math.floor(parsedDate / 1000));
+    }
+  }
+
+  return fallback;
+}
+
+function requireUnixTimestamp(value: unknown, message: string): number {
+  const normalized = normalizeRevocationExpiry(value, undefined);
+  if (normalized === undefined) {
+    throw new StorageError(message, 400, "invalid_input");
+  }
+
+  return normalized;
 }
 
 function cloneStoredIdentity(identity: StoredIdentity): StoredIdentity {
@@ -2550,4 +3413,12 @@ function parseJsonRecord(value: string): Record<string, unknown> | null {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function nowUnixSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function createGeneratedIdentityId(): string {
+  return `agent_${crypto.randomUUID().replace(/-/g, "")}`;
 }

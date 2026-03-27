@@ -6,27 +6,12 @@ import {
   createTestApp,
   createTestRequest,
   generateTestToken,
+  seedAuditEntries,
 } from "./test-helpers.js";
 
 type AuditQueryResponse = {
   entries: Array<AuditEntry & { createdAt?: string }>;
   nextCursor: string | null;
-};
-
-type AuditLogRow = {
-  id: string;
-  action: AuditAction;
-  identity_id: string;
-  org_id: string;
-  workspace_id: string | null;
-  plane: string | null;
-  resource: string | null;
-  result: AuditEntry["result"];
-  metadata_json: string | null;
-  ip: string | null;
-  user_agent: string | null;
-  timestamp: string;
-  created_at: string;
 };
 
 function createAuditEntry(
@@ -55,175 +40,6 @@ function createAuditEntry(
   };
 }
 
-function toAuditRow(entry: AuditEntry & { createdAt?: string }): AuditLogRow {
-  return {
-    id: entry.id,
-    action: entry.action,
-    identity_id: entry.identityId,
-    org_id: entry.orgId,
-    workspace_id: entry.workspaceId ?? null,
-    plane: entry.plane ?? null,
-    resource: entry.resource ?? null,
-    result: entry.result,
-    metadata_json: entry.metadata ? JSON.stringify(entry.metadata) : null,
-    ip: entry.ip ?? null,
-    user_agent: entry.userAgent ?? null,
-    timestamp: entry.timestamp,
-    created_at: entry.createdAt ?? entry.timestamp,
-  };
-}
-
-function compareAuditRowsDesc(left: AuditLogRow, right: AuditLogRow): number {
-  if (left.timestamp !== right.timestamp) {
-    return right.timestamp.localeCompare(left.timestamp);
-  }
-
-  return right.id.localeCompare(left.id);
-}
-
-function normalizeSql(query: string): string {
-  return query.replace(/\s+/g, " ").trim().toLowerCase();
-}
-
-function createAuditQueryD1(entries: Array<AuditEntry & { createdAt?: string }>): D1Database {
-  const rows = entries.map(toAuditRow).sort(compareAuditRowsDesc);
-  const meta = {
-    changed_db: false,
-    changes: 0,
-    duration: 0,
-    rows_read: 0,
-    rows_written: 0,
-  };
-
-  const resolveRows = (query: string, params: unknown[]): AuditLogRow[] => {
-    const normalized = normalizeSql(query);
-    if (!/\bfrom audit_logs\b/.test(normalized)) {
-      return [];
-    }
-
-    let filtered = [...rows];
-    let limit: number | undefined;
-    let boundParams = [...params];
-
-    const lastParam = boundParams.at(-1);
-    if (typeof lastParam === "number" && Number.isFinite(lastParam)) {
-      limit = lastParam;
-      boundParams = boundParams.slice(0, -1);
-    } else {
-      const limitMatch = normalized.match(/\blimit\s+(\d+)\b/);
-      if (limitMatch?.[1]) {
-        limit = Number.parseInt(limitMatch[1], 10);
-      }
-    }
-
-    const clausePositions = [
-      { type: "orgId", index: normalized.search(/\borg_id\s*=\s*\?/i), arity: 1 },
-      { type: "identityId", index: normalized.search(/\bidentity_id\s*=\s*\?/i), arity: 1 },
-      { type: "action", index: normalized.search(/\baction\s*=\s*\?/i), arity: 1 },
-      { type: "workspaceId", index: normalized.search(/\bworkspace_id\s*=\s*\?/i), arity: 1 },
-      { type: "plane", index: normalized.search(/\bplane\s*=\s*\?/i), arity: 1 },
-      { type: "result", index: normalized.search(/\bresult\s*=\s*\?/i), arity: 1 },
-      { type: "from", index: normalized.search(/\btimestamp\s*>=\s*\?/i), arity: 1 },
-      { type: "to", index: normalized.search(/\btimestamp\s*<\s*\?(?!\s*or)/i), arity: 1 },
-      {
-        type: "cursor",
-        index: normalized.search(
-          /\(\s*timestamp\s*<\s*\?\s+or\s+\(\s*timestamp\s*=\s*\?\s+and\s+id\s*<\s*\?\s*\)\s*\)/i,
-        ),
-        arity: 3,
-      },
-    ]
-      .filter((clause) => clause.index >= 0)
-      .sort((left, right) => left.index - right.index);
-
-    const values = new Map<string, unknown[]>();
-    let offset = 0;
-    for (const clause of clausePositions) {
-      values.set(clause.type, boundParams.slice(offset, offset + clause.arity));
-      offset += clause.arity;
-    }
-
-    const orgId = values.get("orgId")?.[0];
-    if (typeof orgId === "string") {
-      filtered = filtered.filter((row) => row.org_id === orgId);
-    }
-
-    const identityId = values.get("identityId")?.[0];
-    if (typeof identityId === "string") {
-      filtered = filtered.filter((row) => row.identity_id === identityId);
-    }
-
-    const action = values.get("action")?.[0];
-    if (typeof action === "string") {
-      filtered = filtered.filter((row) => row.action === action);
-    }
-
-    const workspaceId = values.get("workspaceId")?.[0];
-    if (typeof workspaceId === "string") {
-      filtered = filtered.filter((row) => row.workspace_id === workspaceId);
-    }
-
-    const plane = values.get("plane")?.[0];
-    if (typeof plane === "string") {
-      filtered = filtered.filter((row) => row.plane === plane);
-    }
-
-    const result = values.get("result")?.[0];
-    if (typeof result === "string") {
-      filtered = filtered.filter((row) => row.result === result);
-    }
-
-    const from = values.get("from")?.[0];
-    if (typeof from === "string") {
-      filtered = filtered.filter((row) => row.timestamp >= from);
-    }
-
-    const to = values.get("to")?.[0];
-    if (typeof to === "string") {
-      filtered = filtered.filter((row) => row.timestamp < to);
-    }
-
-    const cursor = values.get("cursor");
-    if (cursor && typeof cursor[0] === "string" && typeof cursor[2] === "string") {
-      const [cursorTimestamp, , cursorId] = cursor;
-      filtered = filtered.filter(
-        (row) =>
-          row.timestamp < cursorTimestamp ||
-          (row.timestamp === cursorTimestamp && row.id < cursorId),
-      );
-    }
-
-    filtered.sort(compareAuditRowsDesc);
-
-    if (typeof limit === "number" && Number.isFinite(limit)) {
-      filtered = filtered.slice(0, limit);
-    }
-
-    return filtered;
-  };
-
-  const createPreparedStatement = (query: string) => ({
-    bind: (...params: unknown[]) => ({
-      first: async <T>() => (resolveRows(query, params)[0] as T | null) ?? null,
-      run: async () => ({ success: true, meta }),
-      raw: async <T>() => resolveRows(query, params) as T[],
-      all: async <T>() => ({ results: resolveRows(query, params) as T[], success: true, meta }),
-    }),
-    first: async <T>() => (resolveRows(query, [])[0] as T | null) ?? null,
-    run: async () => ({ success: true, meta }),
-    raw: async <T>() => resolveRows(query, []) as T[],
-    all: async <T>() => ({ results: resolveRows(query, []) as T[], success: true, meta }),
-  });
-
-  return {
-    prepare: (query: string) => createPreparedStatement(query),
-    batch: async <T>(statements: D1PreparedStatement[]) =>
-      Promise.all(statements.map((statement) => statement.run())) as Awaited<T>,
-    exec: async () => ({ count: 0, duration: 0 }),
-    dump: async () => new ArrayBuffer(0),
-  } as D1Database;
-}
-
 function createAuditSearch(params: Record<string, string | number | undefined>): string {
   const search = new URLSearchParams();
 
@@ -249,9 +65,8 @@ async function queryAudit(
     authorization?: string;
   } = {},
 ): Promise<Response> {
-  const app = createTestApp({
-    DB: createAuditQueryD1(entries),
-  });
+  const app = createTestApp();
+  await seedAuditEntries(app, entries);
   const token = authorization ?? `Bearer ${generateTestToken(claims)}`;
   const request = createTestRequest("GET", `/v1/audit${search}`, undefined, {
     Authorization: token,

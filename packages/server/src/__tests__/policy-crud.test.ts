@@ -505,9 +505,10 @@ async function requestPoliciesApi(
   } = {},
 ): Promise<{ response: Response; scenario: PolicyScenario }> {
   const activeScenario = scenario ?? createPolicyScenario();
-  const app = createTestApp({
-    DB: activeScenario.db,
-  });
+  const app = createTestApp();
+  for (const policy of activeScenario.policies.values()) {
+    await app.storage.policies.create(JSON.parse(JSON.stringify(policy)));
+  }
   const token = generateTestToken({
     org: "org_test",
     wks: "ws_test",
@@ -524,6 +525,24 @@ async function requestPoliciesApi(
   );
 
   const response = await app.request(request, undefined, app.bindings);
+  const rows = await app.storage.DB.prepare(`
+    SELECT data, deleted_at
+    FROM policies
+  `).all<{ data?: string; deleted_at?: string | null }>();
+  activeScenario.policies = new Map(
+    rows.results
+      .map((row) => {
+        if (typeof row.data !== "string") {
+          return null;
+        }
+        const policy = JSON.parse(row.data) as StoredPolicy;
+        if (typeof row.deleted_at === "string") {
+          policy.deletedAt = row.deleted_at;
+        }
+        return [policy.id, policy] as const;
+      })
+      .filter((entry): entry is readonly [string, StoredPolicy] => entry !== null),
+  );
   return { response, scenario: activeScenario };
 }
 
