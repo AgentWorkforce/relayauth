@@ -1,0 +1,202 @@
+name: Publish Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package to publish"
+        required: true
+        type: choice
+        options:
+          - all
+          - core
+          - sdk
+          - types
+          - cli
+        default: "all"
+      version:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prepatch
+          - preminor
+          - premajor
+          - prerelease
+        default: "patch"
+      custom_version:
+        description: "Custom version (optional, overrides version type)"
+        required: false
+        type: string
+      preid:
+        description: "Prerelease identifier"
+        required: false
+        type: choice
+        options:
+          - beta
+          - alpha
+          - rc
+        default: "beta"
+      dry_run:
+        description: "Dry run (do not actually publish)"
+        required: false
+        type: boolean
+        default: false
+      tag:
+        description: "NPM dist-tag"
+        required: false
+        type: choice
+        options:
+          - latest
+          - next
+          - beta
+        default: "latest"
+
+concurrency:
+  group: publish-package
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    name: Build & Version
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.version.outputs.new_version }}
+      packages: ${{ steps.packages.outputs.list }}
+      matrix: ${{ steps.packages.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - run: npm ci
+      - run: npx turbo build
+
+      - name: Determine packages to publish
+        id: packages
+        run: |
+          INPUT="${{ github.event.inputs.package }}"
+          if [ "$INPUT" = "all" ]; then
+            echo "list=types,core,sdk,cli" >> "$GITHUB_OUTPUT"
+            echo 'matrix=["types","core","sdk","cli"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "list=$INPUT" >> "$GITHUB_OUTPUT"
+            echo "matrix=[\"$INPUT\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump versions
+        id: version
+        run: |
+          CUSTOM="${{ github.event.inputs.custom_version }}"
+          BUMP="${{ github.event.inputs.version }}"
+          PREID="${{ github.event.inputs.preid }}"
+          PACKAGES="${{ steps.packages.outputs.list }}"
+
+          # Determine new version from core package (source of truth)
+          cd packages/core
+          if [ -n "$CUSTOM" ]; then
+            npm version "$CUSTOM" --no-git-tag-version
+          elif [[ "$BUMP" == pre* ]]; then
+            npm version "$BUMP" --preid="$PREID" --no-git-tag-version
+          else
+            npm version "$BUMP" --no-git-tag-version
+          fi
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "new_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          cd ../..
+
+          # Sync version across all packages being published
+          IFS=',' read -ra PKGS <<< "$PACKAGES"
+          for pkg in "${PKGS[@]}"; do
+            if [ "$pkg" != "core" ]; then
+              cd "packages/$pkg"
+              npm version "$NEW_VERSION" --no-git-tag-version
+              cd ../..
+            fi
+          done
+
+      - name: Commit version bump
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: bump version to v${{ steps.version.outputs.new_version }}" || echo "No changes"
+          git push
+
+      - name: Create tag
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}"
+          git push origin "v${NEW_VERSION}"
+
+  publish:
+    name: Publish ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      max-parallel: 1
+      matrix:
+        package: ${{ fromJson(needs.build.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Update npm to latest (required for provenance)
+        run: npm install -g npm@latest
+
+      - run: npm ci
+      - run: npx turbo build
+
+      - name: Publish ${{ matrix.package == 'cli' && 'relayauth' || format('@relayauth/{0}', matrix.package) }}
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        working-directory: packages/${{ matrix.package }}
+        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry run publish
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        working-directory: packages/${{ matrix.package }}
+        run: npm publish --access public --dry-run --ignore-scripts
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build, publish]
+    if: ${{ github.event.inputs.dry_run != 'true' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.build.outputs.new_version }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build.outputs.new_version }}
+          name: v${{ needs.build.outputs.new_version }}
+          generate_release_notes: true

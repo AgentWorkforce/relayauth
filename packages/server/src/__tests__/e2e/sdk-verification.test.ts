@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import { createSign, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import test from "node:test";
 import type { AgentIdentity, CreateIdentityInput, JWKSResponse, RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
@@ -12,6 +10,7 @@ import { relayAuth, requireScope } from "../../../../sdk/src/middleware/hono.js"
 import { relayAuthExpress, requireScopeExpress } from "../../../../sdk/src/middleware/express.js";
 import { ScopeChecker } from "../../../../sdk/src/scopes.js";
 import { TokenVerifier } from "../../../../sdk/src/verify.js";
+import { createFetchDispatchHarness } from "./helpers.js";
 import { createTestApp, generateTestToken, mockKV } from "../test-helpers.js";
 
 type StoredIdentityRecord = AgentIdentity & {
@@ -327,24 +326,7 @@ async function createSdkVerificationHarness() {
     IDENTITY_DO: createIdentityNamespace(identities),
     REVOCATION_KV: revocationKv,
   });
-
-  const server = createServer(async (incoming, outgoing) => {
-    try {
-      const request = await toFetchRequest(incoming, `http://${incoming.headers.host ?? "127.0.0.1"}`);
-      const response = await dispatch(request);
-      await writeFetchResponse(outgoing, response);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await writeFetchResponse(outgoing, jsonResponse({ error: message }, 500));
-    }
-  });
-
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
-
-  const address = server.address() as AddressInfo;
-  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const baseUrl = `http://relayauth-sdk-verification.${randomUUID()}.local`;
   const jwksUrl = `${baseUrl}/.well-known/jwks.json`;
   const revocationUrl = `${baseUrl}/v1/tokens/revocation`;
   const adminToken = generateTestToken(
@@ -358,6 +340,7 @@ async function createSdkVerificationHarness() {
     },
     SIGNING_KEY,
   );
+  const fetchHarness = createFetchDispatchHarness(baseUrl, dispatch);
 
   async function dispatch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -543,16 +526,7 @@ async function createSdkVerificationHarness() {
     jwksUrl,
     revocationUrl,
     close: async () => {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-
-          resolve();
-        });
-      });
+      await fetchHarness.close();
     },
   };
 }
@@ -839,52 +813,6 @@ function jsonResponse(body: unknown, status = 200): Response {
       "content-type": "application/json",
     },
   });
-}
-
-async function toFetchRequest(incoming: IncomingMessage, origin: string): Promise<Request> {
-  const url = new URL(incoming.url ?? "/", origin);
-  const headers = new Headers();
-
-  for (const [name, value] of Object.entries(incoming.headers)) {
-    if (Array.isArray(value)) {
-      for (const entry of value) {
-        headers.append(name, entry);
-      }
-      continue;
-    }
-
-    if (typeof value === "string") {
-      headers.set(name, value);
-    }
-  }
-
-  const hasBody = incoming.method !== "GET" && incoming.method !== "HEAD";
-  const chunks: Buffer[] = [];
-  if (hasBody) {
-    for await (const chunk of incoming) {
-      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-    }
-  }
-
-  return new Request(url, {
-    method: incoming.method,
-    headers,
-    body: hasBody && chunks.length > 0 ? Buffer.concat(chunks) : undefined,
-  });
-}
-
-async function writeFetchResponse(
-  outgoing: ServerResponse,
-  response: Response,
-): Promise<void> {
-  outgoing.statusCode = response.status;
-
-  for (const [name, value] of response.headers.entries()) {
-    outgoing.setHeader(name, value);
-  }
-
-  const body = Buffer.from(await response.arrayBuffer());
-  outgoing.end(body);
 }
 
 async function assertJsonResponse<T>(

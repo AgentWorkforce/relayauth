@@ -1,0 +1,20 @@
+1. [HIGH] packages/core/src/token-verify.ts — packages/core/src/token-verify.ts
+2. [HIGH] packages/core/src/token-verify.ts vs packages/server/src/lib/auth.ts — packages/core/src/token-verify.ts vs packages/server/src/lib/auth.ts
+3. [HIGH] packages/core/src/config.ts — packages/core/src/config.ts
+4. [HIGH] packages/core/src/file-acl.ts — packages/core/src/file-acl.ts
+5. [HIGH] scripts/relay/relay.sh — scripts/relay/relay.sh
+6. [MEDIUM] packages/core/src/token-verify.ts — packages/core/src/token-verify.ts
+7. [MEDIUM] packages/core/src/token-verify.ts — packages/core/src/token-verify.ts
+8. [MEDIUM] packages/core/src/file-acl.ts — packages/core/src/file-acl.ts
+9. [MEDIUM] scripts/relay/relay.sh — scripts/relay/relay.sh
+10. [MEDIUM] scripts/relay/relay.sh — scripts/relay/relay.sh
+11. [MEDIUM] scripts/relay/relay.sh — scripts/relay/relay.sh
+12. [MEDIUM] packages/core/src/__tests__/config.test.ts — packages/core/src/__tests__/config.test.ts
+13. [MEDIUM] packages/core/src/scope-parser.ts — packages/core/src/scope-parser.ts
+14. [MEDIUM] packages/core/package.json — packages/core/package.json
+15. [LOW] scripts/relay/relay.sh — scripts/relay/relay.sh
+16. [LOW] packages/core/src/errors.ts — packages/core/src/errors.ts
+17. [LOW] scripts/relay/dotfile-compiler.ts — scripts/relay/dotfile-compiler.ts
+18. [LOW] scripts/generate-dev-token.sh — scripts/generate-dev-token.sh
+19. [LOW] packages/core/src/index.ts — packages/core/src/index.ts
+20. [LOW] packages/types/src/token.ts — packages/types/src/token.ts

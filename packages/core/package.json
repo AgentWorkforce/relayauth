@@ -1,0 +1,38 @@
+{
+  "name": "@relayauth/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test --import tsx src/__tests__/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@relayauth/sdk": "^0.1.0",
+    "yaml": "^2.8.3"
+  },
+  "peerDependencies": {
+    "@relayauth/types": "*"
+  },
+  "devDependencies": {
+    "@relayauth/types": "*",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AgentWorkforce/relayauth",
+    "directory": "packages/core"
+  }
+}

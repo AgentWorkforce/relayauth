@@ -1,7 +1,6 @@
-1. [CRITICAL] packages/server/src/worker.ts — packages/server/src/worker.ts
-2. [CRITICAL] packages/server/src/worker.ts — packages/server/src/worker.ts
-3. [CRITICAL] packages/server/src/worker.ts — packages/server/src/worker.ts
-4. [CRITICAL] packages/server/src/durable-objects/identity-do.ts — packages/server/src/durable-objects/identity-do.ts
-5. [CRITICAL] packages/ai/src/adapter.ts — packages/ai/src/adapter.ts
-6. [CRITICAL] packages/server/src/routes/discovery.ts — packages/server/src/routes/discovery.ts
-7. [CRITICAL] packages/server/src/routes/discovery.ts — packages/server/src/routes/discovery.ts
+1. [MEDIUM] scripts/relay/e2e-dotfiles.sh:179 — <!-- devin-review-comment {"id": "BUG_pr-review-job-568cd49ce0ab440c91f4a7261873a5ba_0004", "file_path": "scripts/relay/
+2. [MEDIUM] scripts/relay/e2e-dotfiles.sh:225 — <!-- devin-review-comment {"id": "BUG_pr-review-job-568cd49ce0ab440c91f4a7261873a5ba_0003", "file_path": "scripts/relay/
+3. [MEDIUM] scripts/relay/e2e-dotfiles.sh:225 — <!-- devin-review-comment {"id": "BUG_pr-review-job-8b67ef4e2b4747f8976424d9c1bddc4e_0003", "file_path": "scripts/relay/
+4. [MEDIUM] scripts/relay/e2e-dotfiles.sh:227 — <!-- devin-review-comment {"id": "BUG_pr-review-job-568cd49ce0ab440c91f4a7261873a5ba_0005", "file_path": "scripts/relay/
+5. [MEDIUM] .github/workflows/publish.yml:151 — <!-- devin-review-comment {"id": "BUG_pr-review-job-8b67ef4e2b4747f8976424d9c1bddc4e_0005", "file_path": ".github/workfl
+6. [MEDIUM] scripts/relay/install.sh:2 — <!-- devin-review-comment {"id": "BUG_pr-review-job-568cd49ce0ab440c91f4a7261873a5ba_0002", "file_path": "scripts/relay/

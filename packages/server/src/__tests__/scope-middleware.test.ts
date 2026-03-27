@@ -296,6 +296,7 @@ test("middleware sets c.var.identity with the verified token claims", async () =
   const claims: Partial<RelayAuthTokenClaims> = {
     sub: "agent_scope_identity",
     org: "org_scope_identity",
+    wks: "ws_scope_identity",
     scopes: ["relaycast:channel:read:*"],
   };
 
@@ -305,6 +306,10 @@ test("middleware sets c.var.identity with the verified token claims", async () =
     return c.json({
       sub: identity?.sub,
       org: identity?.org,
+      wks: identity?.wks,
+      workspace_id: identity?.workspace_id,
+      agent_name: identity?.agent_name,
+      aud: identity?.aud,
       scopes: identity?.scopes,
     });
   });
@@ -317,10 +322,18 @@ test("middleware sets c.var.identity with the verified token claims", async () =
   await assertJsonResponse<{
     sub?: string;
     org?: string;
+    wks?: string;
+    workspace_id?: string;
+    agent_name?: string;
+    aud?: string[];
     scopes?: string[];
   }>(response, 200, (body) => {
     assert.equal(body.sub, claims.sub);
     assert.equal(body.org, claims.org);
+    assert.equal(body.wks, claims.wks);
+    assert.equal(body.workspace_id, claims.workspace_id ?? claims.wks);
+    assert.equal(body.agent_name, claims.agent_name ?? claims.sub);
+    assert.deepEqual(body.aud, claims.aud ?? ["relayauth", "relayfile"]);
     assert.deepEqual(body.scopes, claims.scopes);
   });
 });

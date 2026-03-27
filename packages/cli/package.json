@@ -1,8 +1,13 @@
 {
-  "name": "relayauth-cli",
-  "version": "0.0.0",
-  "private": true,
+  "name": "relayauth",
+  "version": "0.1.0",
+  "description": "CLI for relayauth",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "bin": {
     "relayauth": "./dist/index.js"
   },
@@ -10,6 +15,7 @@
     "build": "tsc",
     "test": "node --test --import tsx src/__tests__/*.test.ts",
     "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build",
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
@@ -19,5 +25,13 @@
   "devDependencies": {
     "tsx": "^4.19.2",
     "typescript": "^5.9.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AgentWorkforce/relayauth",
+    "directory": "packages/cli"
   }
 }

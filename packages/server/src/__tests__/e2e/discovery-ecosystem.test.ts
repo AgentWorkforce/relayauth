@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import { createSign, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import test from "node:test";
 import type {
@@ -17,10 +15,11 @@ import {
   configurationToAgentCard,
   type A2aAgentCard,
 } from "../../../../sdk/src/a2a-bridge.js";
-import type { OpenAPISpec, ScopeDefinition as GeneratedScopeDefinition } from "../../../../sdk/src/openapi-scopes.js";
+import type { OpenAPISpec } from "../../../../sdk/src/openapi-scopes.js";
 import { generateScopes } from "../../../../sdk/src/openapi-scopes.js";
 import { ScopeChecker } from "../../../../sdk/src/scopes.js";
 import { TokenVerifier } from "../../../../sdk/src/verify.js";
+import { createFetchDispatchHarness } from "./helpers.js";
 import { createTestApp } from "../test-helpers.js";
 
 type StoredIdentityRecord = AgentIdentity & {
@@ -272,6 +271,7 @@ async function createDiscoveryEcosystemHarness() {
   publicJwk.alg = "RS256";
   publicJwk.kid = keyId;
   publicJwk.use = "sig";
+  const baseUrl = `http://relayauth-discovery-e2e.${randomUUID()}.local`;
 
   const adminIdentity: StoredIdentityRecord = {
     id: "agent_discovery_admin",
@@ -292,29 +292,6 @@ async function createDiscoveryEcosystemHarness() {
   };
   identities.set(adminIdentity.id, adminIdentity);
 
-  const server = createServer(async (incoming, outgoing) => {
-    try {
-      const request = await toFetchRequest(
-        incoming,
-        `http://${incoming.headers.host ?? "127.0.0.1"}`,
-      );
-      const response = await dispatch(request);
-      await writeFetchResponse(outgoing, response);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await writeFetchResponse(
-        outgoing,
-        jsonResponse({ error: "internal_error", message }, 500),
-      );
-    }
-  });
-
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
-
-  const address = server.address() as AddressInfo;
-  const baseUrl = `http://127.0.0.1:${address.port}`;
   let verifier: TokenVerifier | undefined;
 
   const adminToken = signRs256Jwt(
@@ -348,6 +325,8 @@ async function createDiscoveryEcosystemHarness() {
     });
     return verifier;
   }
+
+  const fetchHarness = createFetchDispatchHarness(baseUrl, dispatch);
 
   async function dispatch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -483,16 +462,7 @@ async function createDiscoveryEcosystemHarness() {
     baseUrl,
     identities,
     close: async () => {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-
-          resolve();
-        });
-      });
+      await fetchHarness.close();
     },
   };
 }
@@ -619,59 +589,4 @@ function jsonResponse(body: unknown, status = 200): Response {
       "content-type": "application/json",
     },
   });
-}
-
-async function toFetchRequest(
-  incoming: IncomingMessage,
-  baseUrl: string,
-): Promise<Request> {
-  const url = new URL(incoming.url ?? "/", baseUrl);
-  const headers = new Headers();
-
-  for (const [key, value] of Object.entries(incoming.headers)) {
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        headers.append(key, item);
-      }
-      continue;
-    }
-
-    if (value !== undefined) {
-      headers.set(key, value);
-    }
-  }
-
-  const body = await readIncomingBody(incoming);
-  return new Request(url, {
-    method: incoming.method,
-    headers,
-    body: body.length > 0 ? body : undefined,
-    duplex: body.length > 0 ? "half" : undefined,
-  });
-}
-
-function readIncomingBody(incoming: IncomingMessage): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    incoming.on("data", (chunk: Buffer | string) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
-    incoming.on("end", () => {
-      resolve(Buffer.concat(chunks));
-    });
-    incoming.on("error", reject);
-  });
-}
-
-async function writeFetchResponse(
-  outgoing: ServerResponse,
-  response: Response,
-): Promise<void> {
-  outgoing.statusCode = response.status;
-  response.headers.forEach((value, key) => {
-    outgoing.setHeader(key, value);
-  });
-
-  const body = Buffer.from(await response.arrayBuffer());
-  outgoing.end(body);
 }

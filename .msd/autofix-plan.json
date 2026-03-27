@@ -1,0 +1,79 @@
+{
+  "groups": [
+    {
+      "id": "group-1",
+      "label": "Token verification & auth deduplication",
+      "domain": "security",
+      "findings": [
+        "packages/core/src/token-verify.ts-Hardcoded `notBeforeLeeway = 30` seconds is not configurable-developer-review-f730b854-high",
+        "packages/core/src/token-verify.ts vs packages/server/src/lib/auth.ts-**Code duplication: two independent JWT verification impleme-historian-review-f730b854-high",
+        "packages/core/src/token-verify.ts-Inconsistent private member conventions. Methods use `_prefi-developer-review-f730b854-medium",
+        "packages/core/src/token-verify.ts-**Asymmetric leeway on exp creates 30s window where expired -historian-review-f730b854-medium"
+      ],
+      "files": [
+        "packages/core/src/token-verify.ts",
+        "packages/server/src/lib/auth.ts"
+      ],
+      "rationale": "All four findings target token-verify.ts (hardcoded leeway, naming conventions, expiry window) plus the duplication between token-verify.ts and auth.ts. Must be one worker to avoid conflicts."
+    },
+    {
+      "id": "group-2",
+      "label": "Core security: config, ACL, and scope parsing",
+      "domain": "security",
+      "findings": [
+        "packages/core/src/config.ts-Wildcard scope normalization inconsistency. `normalizeScope(-developer-review-f730b854-high",
+        "packages/core/src/file-acl.ts-Default-open ACL model is security-sensitive. `checkPermissi-developer-review-f730b854-high",
+        "packages/core/src/file-acl.ts-**Default-open ACL model: no permissions = full access**-historian-review-f730b854-medium",
+        "packages/core/src/scope-parser.ts-**Scope parser rejects `*` (universal wildcard) in colon-seg-historian-review-f730b854-medium",
+        "packages/core/src/__tests__/config.test.ts-Test coverage gaps. Only 4 tests covering the happy path, ro-developer-review-f730b854-medium"
+      ],
+      "files": [
+        "packages/core/src/config.ts",
+        "packages/core/src/file-acl.ts",
+        "packages/core/src/scope-parser.ts",
+        "packages/core/src/__tests__/config.test.ts"
+      ],
+      "rationale": "Config normalization, ACL defaults, and scope parsing are tightly coupled core security modules in the same directory. Config test coverage finding naturally belongs with the config fix."
+    },
+    {
+      "id": "group-3",
+      "label": "Shell scripts: relay.sh security and structure",
+      "domain": "security",
+      "findings": [
+        "scripts/relay/relay.sh-**Shell code injection via `json_eval` and `config_value`**-historian-review-f730b854-high",
+        "scripts/relay/relay.sh-Hardcoded default secrets: `secret=\"${SIGNING_KEY:-dev-secre-developer-review-f730b854-medium",
+        "scripts/relay/relay.sh-**Dual scope format is a compatibility shim that will rot**-historian-review-f730b854-medium",
+        "scripts/relay/relay.sh-Large inline Node.js scripts embedded in bash heredocs (35+ -developer-review-f730b854-medium",
+        "scripts/relay/relay.sh-**1246-line bash script as critical infrastructure**-historian-review-f730b854-low",
+        "scripts/relay/dotfile-compiler.ts-CLI argument parsing uses bare `args.shift() ?? \"\"` without -developer-review-f730b854-low"
+      ],
+      "files": [
+        "scripts/relay/relay.sh",
+        "scripts/relay/dotfile-compiler.ts"
+      ],
+      "rationale": "All relay.sh findings (injection, hardcoded secrets, dual scope format, inline scripts, size) belong together since they touch the same file. dotfile-compiler.ts is in the same scripts/relay directory."
+    },
+    {
+      "id": "group-4",
+      "label": "Misc code quality: types, errors, exports, deps",
+      "domain": "code-quality",
+      "findings": [
+        "packages/core/package.json-Wildcard dependency `\"@relayauth/sdk\": \"*\"`. Should pin to a-developer-review-f730b854-medium",
+        "packages/core/src/errors.ts-`this.name = new.target.name` dynamically sets error name fr-developer-review-f730b854-low",
+        "scripts/generate-dev-token.sh-**JWT claims `workspace_id` and `agent_name` duplicate exist-historian-review-f730b854-low",
+        "packages/core/src/index.ts-Comment `// added by core-impl worker` is an artifact from t-developer-review-f730b854-low",
+        "packages/types/src/token.ts-`workspace_id` and `agent_name` are optional in `RelayAuthTo-developer-review-f730b854-low"
+      ],
+      "files": [
+        "packages/core/package.json",
+        "packages/core/src/errors.ts",
+        "scripts/generate-dev-token.sh",
+        "packages/core/src/index.ts",
+        "packages/types/src/token.ts"
+      ],
+      "rationale": "Remaining low-severity findings across independent files with no overlap to other groups. Package pinning, error naming, stale comments, and type consistency are all small isolated fixes."
+    }
+  ],
+  "totalGroups": 4,
+  "conflictCheck": "no file appears in multiple groups"
+}
