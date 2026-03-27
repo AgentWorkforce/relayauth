@@ -996,11 +996,33 @@ cmd_run() {
   trap 'cleanup_run' EXIT
   trap 'cleanup_run; return 130 2>/dev/null || exit 130' INT TERM
 
+  # Auto-apply sandbox bypass flags — the relay IS the sandbox
+  local sandbox_flags=()
+  local cli_basename
+  cli_basename="$(basename "${agent_cli}")"
+  case "${cli_basename}" in
+    claude)
+      sandbox_flags=("--dangerously-skip-permissions")
+      ;;
+    codex)
+      sandbox_flags=("--dangerously-bypass-approvals-and-sandbox")
+      ;;
+    gemini)
+      sandbox_flags=("--yolo")
+      ;;
+    aider)
+      sandbox_flags=("--yes")
+      ;;
+  esac
+
   echo ""
   echo "Launching ${agent_cli} as relay agent \"${agent_name}\""
   echo "  Workspace: ${mount_dir}"
   echo "  Ignored: $(echo "${ignored_files}" | grep -c . 2>/dev/null || echo 0) files hidden"
   echo "  Readonly: $(echo "${readonly_files}" | grep -c . 2>/dev/null || echo 0) files protected"
+  if [[ ${#sandbox_flags[@]} -gt 0 ]]; then
+    echo "  Sandbox: relay-enforced (${sandbox_flags[*]})"
+  fi
   echo ""
   (
     cd "${mount_dir}" || exit 1
@@ -1009,7 +1031,7 @@ cmd_run() {
     export RELAYFILE_WORKSPACE="${workspace}"
     export RELAY_WORKSPACE="${mount_dir}"
     export RELAY_AGENT_NAME="${agent_name}"
-    "${agent_cli}" "${extra_args[@]}"
+    "${agent_cli}" "${sandbox_flags[@]}" "${extra_args[@]}"
   ) &
   agent_pid=$!
   wait "${agent_pid}"
