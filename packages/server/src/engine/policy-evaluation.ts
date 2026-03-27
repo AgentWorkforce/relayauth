@@ -1,5 +1,5 @@
 import type { Action, Policy, PolicyCondition } from "@relayauth/types";
-import { parseScope } from "@relayauth/sdk/src/scope-parser.js";
+import { parseScope } from "@relayauth/sdk";
 
 import { writeAuditEntry } from "./audit-logger.js";
 import { listPolicies } from "./policies.js";

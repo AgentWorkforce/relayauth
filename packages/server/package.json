@@ -1,23 +1,39 @@
 {
-  "name": "relayauth-server",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@relayauth/server",
+  "version": "0.1.0",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx src/__tests__/*.test.ts"
+  },
   "dependencies": {
     "hono": "^4",
-    "@relayauth/sdk": "0.1.0",
-    "@relayauth/types": "0.1.0"
+    "@relayauth/sdk": "*",
+    "@relayauth/types": "*"
+  },
+  "peerDependencies": {
+    "@cloudflare/workers-types": "^4"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4",
     "wrangler": "^4"
   },
-  "scripts": {
-    "dev": "wrangler dev --config ../../wrangler.toml --local --persist-to ../../.wrangler/state --ip 127.0.0.1 --port 8787",
-    "build": "tsc -b",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test --import tsx src/__tests__/*.test.ts src/__tests__/e2e/*.test.ts"
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AgentWorkforce/relayauth",
+    "directory": "packages/server"
   }
 }

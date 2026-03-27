@@ -1,5 +1,5 @@
 import type { Role } from "@relayauth/types";
-import { parseScope } from "@relayauth/sdk/src/scope-parser.js";
+import { parseScope } from "@relayauth/sdk";
 
 type RoleRow = {
   id?: string;

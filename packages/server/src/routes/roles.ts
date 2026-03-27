@@ -1,5 +1,5 @@
 import type { Role } from "@relayauth/types";
-import { matchScope } from "@relayauth/sdk/src/scope-matcher.js";
+import { matchScope } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import {

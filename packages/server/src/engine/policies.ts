@@ -1,5 +1,5 @@
 import type { Policy, PolicyCondition, PolicyEffect } from "@relayauth/types";
-import { parseScope } from "@relayauth/sdk/src/scope-parser.js";
+import { parseScope } from "@relayauth/sdk";
 
 type PolicyRow = {
   id?: string;

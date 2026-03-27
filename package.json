@@ -28,6 +28,6 @@
     "packages/*"
   ],
   "dependencies": {
-    "@agent-relay/sdk": "^3.2.15"
+    "@agent-relay/sdk": "3.2.21"
   }
 }

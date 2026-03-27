@@ -3,12 +3,11 @@ import type {
   DiscoveryEndpoint,
   ScopeDefinition,
 } from "@relayauth/types";
-// TODO: Replace deep import with @relayauth/sdk once SDK is rebuilt with a2a-bridge exports
 import {
   agentCardToConfiguration,
   assertValidA2aAgentCard,
   configurationToAgentCard,
-} from "@relayauth/sdk/src/a2a-bridge.js";
+} from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import { requireScope } from "../middleware/scope.js";

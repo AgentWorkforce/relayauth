@@ -4,10 +4,10 @@ import type {
   IdentityStatus,
   IdentityType,
 } from "@relayauth/types";
+import { matchScope } from "@relayauth/sdk";
 import { Hono } from "hono";
 import type { IdentityBudget, StoredIdentity } from "../durable-objects/identity-do.js";
 import type { AppEnv } from "../env.js";
-import { matchScope } from "@relayauth/sdk/src/scope-matcher.js";
 import { authenticateAndAuthorize, decodeBase64UrlJson } from "../lib/auth.js";
 
 type CreateIdentityRequest = CreateIdentityInput & {
