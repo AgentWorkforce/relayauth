@@ -3,11 +3,25 @@
 # Only set strict mode when executed directly, not when sourced.
 # When sourced, set -euo pipefail would apply to the user's shell
 # and kill it on any unset variable (e.g. from shell prompt scripts).
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# Detect if sourced vs executed — works in both bash and zsh
+_relay_is_sourced=0
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  [[ "${BASH_SOURCE[0]}" != "${0}" ]] && _relay_is_sourced=1
+elif [[ -n "${ZSH_VERSION:-}" ]]; then
+  [[ "${ZSH_EVAL_CONTEXT}" == *:file:* ]] && _relay_is_sourced=1
+fi
+if [[ ${_relay_is_sourced} -eq 0 ]]; then
   set -euo pipefail
 fi
 
-SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve script directory — works in both bash and zsh
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+elif [[ -n "${(%):-%x}" ]]; then
+  SCRIPT_SOURCE_DIR="$(cd "$(dirname "${(%):-%x}")" && pwd)"
+else
+  SCRIPT_SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
+fi
 RELAYAUTH_ROOT="${RELAYAUTH_ROOT:-$(cd "${SCRIPT_SOURCE_DIR}/../.." && pwd)}"
 RELAYFILE_ROOT="${RELAYFILE_ROOT:-$(cd "${RELAYAUTH_ROOT}/../relayfile" 2>/dev/null && pwd || true)}"
 SCRIPT_DIR="${RELAYAUTH_ROOT}/scripts/relay"
@@ -1299,7 +1313,7 @@ main() {
 
 # When sourced, define the `relay` function for interactive use.
 # When executed directly, run main immediately.
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ ${_relay_is_sourced} -eq 0 ]]; then
   main "$@"
 else
   relay() { main "$@"; }
