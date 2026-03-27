@@ -611,25 +611,16 @@ cmd_provision() {
 
     # Mint token locally using generate-dev-token.sh (no API call needed —
     # signs JWT directly with the shared secret, same key relayfile validates against)
-    # Include both relayauth-format scopes AND relayfile short scopes (fs:read, fs:write)
-    # so the token works with both systems.
-    local merged_scopes
-    merged_scopes="$(SCOPES="${scopes_json}" node -e '
-      const scopes = JSON.parse(process.env.SCOPES);
-      const short = new Set(["fs:read", "fs:write"]);
-      for (const s of scopes) {
-        if (s.startsWith("relayfile:fs:read")) short.add("fs:read");
-        if (s.startsWith("relayfile:fs:write")) short.add("fs:write");
-      }
-      console.log(JSON.stringify([...scopes, ...short]));
-    ')"
+    # Use per-file relayauth scopes only — no blanket fs:read/fs:write.
+    # The relayfile server's scopeMatches() understands relayauth format.
+    # The mount client's canWritePath() also understands relayauth format.
     token="$(
       SIGNING_KEY="${secret}" \
       RELAYAUTH_SUB="agent_${agent_name}" \
       RELAYAUTH_AGENT_NAME="${agent_name}" \
       RELAYAUTH_ORG="org_relay" \
       RELAYAUTH_WORKSPACE="${workspace}" \
-      RELAYAUTH_SCOPES_JSON="${merged_scopes}" \
+      RELAYAUTH_SCOPES_JSON="${scopes_json}" \
       RELAYAUTH_AUDIENCE_JSON='["relayauth","relayfile"]' \
       bash "${DEV_TOKEN_SH}"
     )" || error "failed to generate token for ${agent_name}"
@@ -638,14 +629,20 @@ cmd_provision() {
     provisioned=$((provisioned + 1))
   done < <(config_agent_lines "${config_json}")
 
-  # Seed local project files into relayfile workspace
+  # Seed local project files into relayfile workspace (exclude .relay/, .git/, node_modules/)
   echo "Seeding local files into workspace ${workspace}…"
   "${RELAYFILE_ROOT}/bin/relayfile-cli" workspace create "${workspace}" 2>/dev/null || true
+  local seed_tmp
+  seed_tmp="$(mktemp -d)"
+  # Copy project files excluding internal dirs
+  rsync -a --exclude='.relay' --exclude='.git' --exclude='node_modules' --exclude='.relayfile-mount-state.json' . "${seed_tmp}/" 2>/dev/null || \
+    find . -not -path './.relay/*' -not -path './.git/*' -not -path './node_modules/*' -type f -exec sh -c 'mkdir -p "'"${seed_tmp}"'/$(dirname "{}")" && cp "{}" "'"${seed_tmp}"'/{}"' \;
   RELAYFILE_BASE_URL="${DEFAULT_RELAYFILE_URL}" \
   RELAYFILE_TOKEN="${admin_token}" \
-    "${RELAYFILE_ROOT}/bin/relayfile-cli" seed "${workspace}" "." 2>&1 | tail -3 || {
+    "${RELAYFILE_ROOT}/bin/relayfile-cli" seed "${workspace}" "${seed_tmp}" 2>&1 | tail -3 || {
     echo "  ⚠ File seeding failed (non-fatal)"
   }
+  rm -rf "${seed_tmp}"
   echo "  ✓ Local files seeded"
 
   # Seed ACL rules
