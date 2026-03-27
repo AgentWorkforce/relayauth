@@ -908,17 +908,20 @@ cmd_run() {
   done
 
   local agent_name
+  resolve_effective_config_path
+  local config_json workspace token mount_dir agent_json
+  config_json="$(parse_config_json_for_path "${EFFECTIVE_CONFIG_PATH}")"
+  write_config_cache "${config_json}"
+
   if [[ -n "${requested_agent_name}" ]]; then
     agent_name="${requested_agent_name}"
   else
-    agent_name="$(basename "${agent_cli}")"
+    # Use the first (or only) agent from the config — the CLI name is which
+    # binary to run, not which agent identity to use
+    agent_name="$(config_value "${config_json}" 'data.agents[0].name' 2>/dev/null)" || agent_name="default-agent"
   fi
 
-  resolve_effective_config_path
-  local config_json workspace token mount_dir mount_state_file mount_log agent_json
-  config_json="$(parse_config_json_for_path "${EFFECTIVE_CONFIG_PATH}")"
-  write_config_cache "${config_json}"
-  agent_json="$(config_agent_json "${config_json}" "${agent_name}")" || error "unknown agent: ${agent_name}"
+  agent_json="$(config_agent_json "${config_json}" "${agent_name}" 2>/dev/null)" || true
   workspace="$(config_value "${config_json}" 'data.workspace')"
 
   if [[ "$(http_status "${DEFAULT_RELAYAUTH_URL}/health")" != "healthy" ]] || [[ "$(http_status "${DEFAULT_RELAYFILE_URL}/health")" != "healthy" ]]; then
