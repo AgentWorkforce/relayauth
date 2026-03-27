@@ -14,16 +14,23 @@ if [[ ${_relay_is_sourced} -eq 0 ]]; then
   set -euo pipefail
 fi
 
-# Resolve script directory — works in both bash and zsh
-if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
-  SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-elif [[ -n "${(%):-%x}" ]]; then
-  SCRIPT_SOURCE_DIR="$(cd "$(dirname "${(%):-%x}")" && pwd)"
-else
-  SCRIPT_SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve script directory — hardcoded to avoid shell escape code issues
+# when sourced from zsh with terminal title-setting prompts.
+SCRIPT_SOURCE_DIR="${SCRIPT_SOURCE_DIR:-$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}" 2>/dev/null)}"
+# If dirname failed or returned garbage, fall back to a hardcoded default
+if [[ ! -d "${SCRIPT_SOURCE_DIR}" ]]; then
+  # Try to find relay.sh relative to known paths
+  for _candidate in \
+    "${HOME}/Projects/AgentWorkforce/relayauth/scripts/relay" \
+    "/Users/khaliqgant/Projects/AgentWorkforce/relayauth/scripts/relay"; do
+    if [[ -f "${_candidate}/relay.sh" ]]; then
+      SCRIPT_SOURCE_DIR="${_candidate}"
+      break
+    fi
+  done
 fi
-RELAYAUTH_ROOT="${RELAYAUTH_ROOT:-$(cd "${SCRIPT_SOURCE_DIR}/../.." && pwd)}"
-RELAYFILE_ROOT="${RELAYFILE_ROOT:-$(cd "${RELAYAUTH_ROOT}/../relayfile" 2>/dev/null && pwd || true)}"
+RELAYAUTH_ROOT="${RELAYAUTH_ROOT:-$(dirname "$(dirname "${SCRIPT_SOURCE_DIR}")")}"
+RELAYFILE_ROOT="${RELAYFILE_ROOT:-$(dirname "${RELAYAUTH_ROOT}")/relayfile}"
 SCRIPT_DIR="${RELAYAUTH_ROOT}/scripts/relay"
 PARSE_CONFIG_TS="${SCRIPT_DIR}/parse-config.ts"
 SEED_ACL_TS="${SCRIPT_DIR}/seed-acl.ts"
