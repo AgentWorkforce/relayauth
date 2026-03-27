@@ -1,10 +1,23 @@
 {
-  "name": "relayauth-server",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@relayauth/server",
+  "version": "0.1.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    },
+    "./durable-objects": {
+      "types": "./dist/durable-objects/index.d.ts",
+      "import": "./dist/durable-objects/index.js"
+    }
+  },
   "dependencies": {
     "hono": "^4",
     "@relayauth/sdk": "0.1.0",

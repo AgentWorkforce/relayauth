@@ -452,7 +452,7 @@ identities.post("/", async (c) => {
     createdAt: timestamp,
     updatedAt: timestamp,
     sponsorId,
-    sponsorChain: [...auth.claims.sponsorChain, auth.claims.sub],
+    sponsorChain: [...auth.claims.sponsorChain, id],
     workspaceId: normalizeWorkspaceId(body.workspaceId, auth.claims.wks),
     ...(budget ? { budget } : {}),
   };
