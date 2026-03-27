@@ -5,10 +5,11 @@
 # and kill it on any unset variable (e.g. from shell prompt scripts).
 # Detect if sourced vs executed — works in both bash and zsh
 _relay_is_sourced=0
-if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  # In zsh, ZSH_EVAL_CONTEXT contains "file" when sourced
+  [[ "${ZSH_EVAL_CONTEXT:-}" == *file* ]] && _relay_is_sourced=1
+elif [[ -n "${BASH_SOURCE[0]:-}" ]]; then
   [[ "${BASH_SOURCE[0]}" != "${0}" ]] && _relay_is_sourced=1
-elif [[ -n "${ZSH_VERSION:-}" ]]; then
-  [[ "${ZSH_EVAL_CONTEXT}" == *:file:* ]] && _relay_is_sourced=1
 fi
 if [[ ${_relay_is_sourced} -eq 0 ]]; then
   set -euo pipefail
