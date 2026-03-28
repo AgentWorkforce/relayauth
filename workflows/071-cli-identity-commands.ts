@@ -57,7 +57,7 @@ const result = await workflow('071-cli-identity-commands')
 
   .step('read-sdk-identities', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/client.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/client.ts`,
     captureOutput: true,
   })
 

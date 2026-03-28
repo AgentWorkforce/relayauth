@@ -69,19 +69,19 @@ const result = await workflow('076-relaycast-integration')
 
   .step('read-sdk-verify', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/verify.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/verify.ts`,
     captureOutput: true,
   })
 
   .step('read-sdk-middleware', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/middleware.ts 2>/dev/null || cat ${ROOT}/packages/server/src/middleware/auth.ts 2>/dev/null || echo "FILE NOT FOUND"`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/middleware.ts 2>/dev/null || cat ${ROOT}/packages/server/src/middleware/auth.ts 2>/dev/null || echo "FILE NOT FOUND"`,
     captureOutput: true,
   })
 
   .step('read-scope-checker', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/scopes.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/scopes.ts`,
     captureOutput: true,
   })
 
@@ -174,18 +174,18 @@ SDK verifier:
 Scope checker:
 {{steps.read-scope-checker.output}}
 
-Create ${ROOT}/packages/sdk/src/integrations/relaycast.ts:
+Create ${ROOT}/packages/sdk/typescript/src/integrations/relaycast.ts:
 1. createRelaycastVerifier(opts) — pre-configured TokenVerifier for relaycast
 2. RELAYCAST_SCOPES — constants for relaycast scope patterns
 3. relaycastScopeCheck(token, action, resource) — check relaycast-specific scopes
-Export from ${ROOT}/packages/sdk/src/index.ts.`,
+Export from ${ROOT}/packages/sdk/typescript/src/index.ts.`,
     verification: { type: 'exit_code' },
   })
 
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['write-tests', 'implement-relaycast-middleware', 'implement-sdk-adapter'],
-    command: `test -f ${ROOT}/packages/server/src/__tests__/integration/relaycast.test.ts && echo "test OK" || echo "test MISSING"; test -f ${ROOT}/packages/sdk/src/integrations/relaycast.ts && echo "sdk-adapter OK" || echo "sdk-adapter MISSING"`,
+    command: `test -f ${ROOT}/packages/server/src/__tests__/integration/relaycast.test.ts && echo "test OK" || echo "test MISSING"; test -f ${ROOT}/packages/sdk/typescript/src/integrations/relaycast.ts && echo "sdk-adapter OK" || echo "sdk-adapter MISSING"`,
     captureOutput: true,
     failOnError: false,
   })

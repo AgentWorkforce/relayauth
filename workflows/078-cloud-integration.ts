@@ -70,7 +70,7 @@ const result = await workflow('078-cloud-integration')
 
   .step('read-sdk-client', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/client.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/client.ts`,
     captureOutput: true,
   })
 
@@ -172,19 +172,19 @@ SDK client:
 Token types:
 {{steps.read-token-types.output}}
 
-Create ${ROOT}/packages/sdk/src/integrations/cloud.ts:
+Create ${ROOT}/packages/sdk/typescript/src/integrations/cloud.ts:
 1. createWorkflowToken(client, workflowDef) — mint a scoped short-lived token
 2. revokeWorkflowToken(client, tokenId) — revoke on completion
 3. CLOUD_SCOPES — constants for cloud scope patterns
 4. deriveWorkflowScopes(workflowDef) — extract required scopes
-Export from ${ROOT}/packages/sdk/src/index.ts.`,
+Export from ${ROOT}/packages/sdk/typescript/src/index.ts.`,
     verification: { type: 'exit_code' },
   })
 
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['write-tests', 'implement-cloud-launcher', 'implement-sdk-adapter'],
-    command: `test -f ${ROOT}/packages/server/src/__tests__/integration/cloud.test.ts && echo "test OK" || echo "test MISSING"; test -f ${ROOT}/packages/sdk/src/integrations/cloud.ts && echo "sdk-adapter OK" || echo "sdk-adapter MISSING"`,
+    command: `test -f ${ROOT}/packages/server/src/__tests__/integration/cloud.test.ts && echo "test OK" || echo "test MISSING"; test -f ${ROOT}/packages/sdk/typescript/src/integrations/cloud.ts && echo "sdk-adapter OK" || echo "sdk-adapter MISSING"`,
     captureOutput: true,
     failOnError: false,
   })

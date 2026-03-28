@@ -63,7 +63,7 @@ const result = await workflow('100-landing-page')
 
   .step('read-sdk-exports', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/index.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/index.ts`,
     captureOutput: true,
   })
 

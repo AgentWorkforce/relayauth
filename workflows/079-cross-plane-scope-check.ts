@@ -51,19 +51,19 @@ const result = await workflow('079-cross-plane-scope-check')
 
   .step('read-relaycast-integration', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/integrations/relaycast.ts 2>/dev/null || echo "FILE NOT FOUND"`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/integrations/relaycast.ts 2>/dev/null || echo "FILE NOT FOUND"`,
     captureOutput: true,
   })
 
   .step('read-relayfile-integration', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/integrations/relayfile.ts 2>/dev/null || echo "FILE NOT FOUND"`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/integrations/relayfile.ts 2>/dev/null || echo "FILE NOT FOUND"`,
     captureOutput: true,
   })
 
   .step('read-scope-checker', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/scopes.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/scopes.ts`,
     captureOutput: true,
   })
 
@@ -143,19 +143,19 @@ Scope checker:
 Scope types:
 {{steps.read-scope-types.output}}
 
-Create ${ROOT}/packages/sdk/src/integrations/cross-plane.ts:
+Create ${ROOT}/packages/sdk/typescript/src/integrations/cross-plane.ts:
 1. validatePlaneScope(token, plane) — checks token has any scope for given plane
 2. enforcePlaneIsolation(token, plane, action, resource) — strict per-plane check
 3. getEffectiveScopesForPlane(token, plane) — extract scopes for a specific plane
 4. PLANE_REGISTRY — map of plane names to their scope prefixes
-Export from ${ROOT}/packages/sdk/src/index.ts.`,
+Export from ${ROOT}/packages/sdk/typescript/src/index.ts.`,
     verification: { type: 'exit_code' },
   })
 
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['write-tests', 'implement-validator'],
-    command: `test -f ${ROOT}/packages/server/src/__tests__/integration/cross-plane-scope.test.ts && echo "test OK" || echo "test MISSING"; test -f ${ROOT}/packages/sdk/src/integrations/cross-plane.ts && echo "impl OK" || echo "impl MISSING"`,
+    command: `test -f ${ROOT}/packages/server/src/__tests__/integration/cross-plane-scope.test.ts && echo "test OK" || echo "test MISSING"; test -f ${ROOT}/packages/sdk/typescript/src/integrations/cross-plane.ts && echo "impl OK" || echo "impl MISSING"`,
     captureOutput: true,
     failOnError: false,
   })

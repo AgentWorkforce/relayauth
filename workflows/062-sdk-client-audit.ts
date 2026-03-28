@@ -51,7 +51,7 @@ const result = await workflow('062-sdk-client-audit')
 
   .step('read-client', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/client.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/client.ts`,
     captureOutput: true,
   })
 
@@ -63,7 +63,7 @@ const result = await workflow('062-sdk-client-audit')
 
   .step('read-errors', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/errors.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/errors.ts`,
     captureOutput: true,
   })
 
@@ -81,7 +81,7 @@ Audit types:
 Errors:
 {{steps.read-errors.output}}
 
-Write failing tests to ${ROOT}/packages/sdk/src/__tests__/client-audit.test.ts.
+Write failing tests to ${ROOT}/packages/sdk/typescript/src/__tests__/client-audit.test.ts.
 Use node:test + node:assert/strict.
 
 Test these methods on RelayAuthClient:
@@ -101,7 +101,7 @@ Test filter combinations: by action, identityId, date range.`,
   .step('verify-tests-exist', {
     type: 'deterministic',
     dependsOn: ['write-tests'],
-    command: `test -f ${ROOT}/packages/sdk/src/__tests__/client-audit.test.ts && echo "OK" || echo "MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/__tests__/client-audit.test.ts && echo "OK" || echo "MISSING"`,
     captureOutput: true,
   })
 
@@ -124,7 +124,7 @@ Errors:
 Tests to pass:
 {{steps.write-tests.output}}
 
-Add these methods to RelayAuthClient in ${ROOT}/packages/sdk/src/client.ts:
+Add these methods to RelayAuthClient in ${ROOT}/packages/sdk/typescript/src/client.ts:
 - queryAudit(query: AuditQuery): Promise<{ entries: AuditEntry[]; cursor?: string }>
 - getIdentityActivity(identityId: string, options?: { limit?: number; cursor?: string; from?: string; to?: string }): Promise<{ entries: AuditEntry[]; cursor?: string }>
 - exportAudit(query: AuditQuery, format: 'json' | 'csv'): Promise<string>
@@ -138,7 +138,7 @@ Use existing _request helper. Export AuditQuery, AuditEntry from package index.`
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['implement'],
-    command: `test -f ${ROOT}/packages/sdk/src/client.ts && echo "client.ts OK" || echo "client.ts MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/client.ts && echo "client.ts OK" || echo "client.ts MISSING"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -148,7 +148,7 @@ Use existing _request helper. Export AuditQuery, AuditEntry from package index.`
   .step('run-tests', {
     type: 'deterministic',
     dependsOn: ['verify-files'],
-    command: `cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/client-audit.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
+    command: `cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/client-audit.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -172,7 +172,7 @@ Test results:
 Typecheck results:
 {{steps.typecheck.output}}
 
-Read ${ROOT}/packages/sdk/src/client.ts and the test file. Check:
+Read ${ROOT}/packages/sdk/typescript/src/client.ts and the test file. Check:
 1. All 3 audit methods implemented correctly
 2. Query params properly serialized (no undefined values sent)
 3. Pagination cursor passed through correctly
@@ -197,7 +197,7 @@ Typecheck results:
 {{steps.typecheck.output}}
 
 Fix all issues. Then run:
-cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/client-audit.test.ts && npx turbo typecheck`,
+cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/client-audit.test.ts && npx turbo typecheck`,
     verification: { type: 'exit_code' },
   })
 

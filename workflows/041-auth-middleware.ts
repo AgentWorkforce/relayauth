@@ -51,7 +51,7 @@ const result = await workflow('041-auth-middleware')
 
   .step('read-token-verify', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/verify.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/verify.ts`,
     captureOutput: true,
   })
 

@@ -217,7 +217,7 @@ packages/types/src/
 
 TypeScript SDK for token verification and identity management. The verification module is zero-dependency (can run at the edge).
 
-### packages/sdk/package.json
+### packages/sdk/typescript/package.json
 
 ```json
 {
@@ -258,7 +258,7 @@ TypeScript SDK for token verification and identity management. The verification 
 }
 ```
 
-### packages/sdk/tsconfig.json
+### packages/sdk/typescript/tsconfig.json
 
 ```json
 {
@@ -277,7 +277,7 @@ TypeScript SDK for token verification and identity management. The verification 
 ### Source files
 
 ```
-packages/sdk/src/
+packages/sdk/typescript/src/
 ├── index.ts          # Public API: RelayAuthClient, verify, ScopeChecker
 ├── client.ts         # RelayAuthClient — HTTP client for all /v1 endpoints
 ├── verify.ts         # Zero-dep JWT verification (Web Crypto API)

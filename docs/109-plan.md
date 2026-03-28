@@ -9,7 +9,7 @@ Bridge Google's A2A (Agent-to-Agent) protocol agent cards with relayauth's `Agen
 - **relayauth discovery** serves `AgentConfiguration` at `GET /.well-known/agent-configuration` (see `packages/server/src/routes/discovery.ts`)
 - **A2A protocol** uses agent cards served at `GET /.well-known/agent.json` (or `/.well-known/agent-card.json`)
 - **relaycast** already has an `a2a_agents` table tracking external A2A agents with `agentCard` JSON, `externalUrl`, auth info, and health status
-- No `packages/sdk/src/integrations/relaycast.ts` exists yet — the bridge will be a new SDK module
+- No `packages/sdk/typescript/src/integrations/relaycast.ts` exists yet — the bridge will be a new SDK module
 
 ## A2A Agent Card Shape
 
@@ -46,7 +46,7 @@ export interface A2aAgentCard {
 }
 ```
 
-This type goes in `packages/sdk/src/a2a-bridge.ts` alongside the bridge functions.
+This type goes in `packages/sdk/typescript/src/a2a-bridge.ts` alongside the bridge functions.
 
 ---
 
@@ -186,9 +186,9 @@ A relayauth client can `POST /v1/discovery/bridge` with an external agent's URL.
 
 | File | Purpose |
 |---|---|
-| `packages/sdk/src/a2a-bridge.ts` | `A2aAgentCard` type, `agentCardToConfiguration()`, `configurationToAgentCard()` |
-| `packages/sdk/src/index.ts` | Re-export bridge functions |
-| `packages/sdk/src/__tests__/a2a-bridge.test.ts` | Unit tests for bridge functions |
+| `packages/sdk/typescript/src/a2a-bridge.ts` | `A2aAgentCard` type, `agentCardToConfiguration()`, `configurationToAgentCard()` |
+| `packages/sdk/typescript/src/index.ts` | Re-export bridge functions |
+| `packages/sdk/typescript/src/__tests__/a2a-bridge.test.ts` | Unit tests for bridge functions |
 | `packages/server/src/routes/discovery.ts` | Add `GET /v1/discovery/agent-card` and `POST /v1/discovery/bridge` |
 
 ## Security considerations

@@ -57,19 +57,19 @@ const result = await workflow('104-framework-adapter-types')
 
   .step('read-sdk-client', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/client.ts 2>/dev/null || echo "FILE NOT FOUND"`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/client.ts 2>/dev/null || echo "FILE NOT FOUND"`,
     captureOutput: true,
   })
 
   .step('read-sdk-verify', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/verify.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/verify.ts`,
     captureOutput: true,
   })
 
   .step('read-scope-checker', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/scopes.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/scopes.ts`,
     captureOutput: true,
   })
 

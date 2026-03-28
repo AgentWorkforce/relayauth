@@ -51,7 +51,7 @@ const result = await workflow('064-sdk-middleware-hono')
 
   .step('read-verify', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/verify.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/verify.ts`,
     captureOutput: true,
   })
 
@@ -63,19 +63,19 @@ const result = await workflow('064-sdk-middleware-hono')
 
   .step('read-errors', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/errors.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/errors.ts`,
     captureOutput: true,
   })
 
   .step('read-scopes', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/scopes.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/scopes.ts`,
     captureOutput: true,
   })
 
   .step('read-sdk-index', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/index.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/index.ts`,
     captureOutput: true,
   })
 
@@ -93,7 +93,7 @@ Token types:
 Errors:
 {{steps.read-errors.output}}
 
-Write tests to ${ROOT}/packages/sdk/src/__tests__/middleware-hono.test.ts.
+Write tests to ${ROOT}/packages/sdk/typescript/src/__tests__/middleware-hono.test.ts.
 Use node:test + node:assert/strict.
 
 Test these behaviors:
@@ -116,7 +116,7 @@ Create a test Hono app with the middleware and make requests against it.`,
   .step('verify-tests-exist', {
     type: 'deterministic',
     dependsOn: ['write-tests'],
-    command: `test -f ${ROOT}/packages/sdk/src/__tests__/middleware-hono.test.ts && echo "OK" || echo "MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/__tests__/middleware-hono.test.ts && echo "OK" || echo "MISSING"`,
     captureOutput: true,
   })
 
@@ -139,7 +139,7 @@ Errors:
 Tests to pass:
 {{steps.write-tests.output}}
 
-Create ${ROOT}/packages/sdk/src/middleware/hono.ts:
+Create ${ROOT}/packages/sdk/typescript/src/middleware/hono.ts:
 
 import { MiddlewareHandler } from 'hono';
 import { TokenVerifier, VerifyOptions } from '../verify.js';
@@ -160,14 +160,14 @@ export function requireScope(scope: string): MiddlewareHandler
   - Check scope using ScopeChecker
   - On failure: return c.json({ error, code: 'insufficient_scope' }, 403)
 
-Export from ${ROOT}/packages/sdk/src/index.ts.`,
+Export from ${ROOT}/packages/sdk/typescript/src/index.ts.`,
     verification: { type: 'exit_code' },
   })
 
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['implement'],
-    command: `test -f ${ROOT}/packages/sdk/src/middleware/hono.ts && echo "hono.ts OK" || echo "hono.ts MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/middleware/hono.ts && echo "hono.ts OK" || echo "hono.ts MISSING"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -177,7 +177,7 @@ Export from ${ROOT}/packages/sdk/src/index.ts.`,
   .step('run-tests', {
     type: 'deterministic',
     dependsOn: ['verify-files'],
-    command: `cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/middleware-hono.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
+    command: `cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/middleware-hono.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -201,7 +201,7 @@ Test results:
 Typecheck results:
 {{steps.typecheck.output}}
 
-Read ${ROOT}/packages/sdk/src/middleware/hono.ts and the test file. Check:
+Read ${ROOT}/packages/sdk/typescript/src/middleware/hono.ts and the test file. Check:
 1. Middleware signature matches Hono's MiddlewareHandler type
 2. Token extraction handles "Bearer " prefix correctly
 3. Claims stored on context via c.set() with proper typing
@@ -228,7 +228,7 @@ Typecheck results:
 {{steps.typecheck.output}}
 
 Fix all issues. Then run:
-cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/middleware-hono.test.ts && npx turbo typecheck`,
+cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/middleware-hono.test.ts && npx turbo typecheck`,
     verification: { type: 'exit_code' },
   })
 

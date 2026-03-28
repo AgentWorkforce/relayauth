@@ -57,7 +57,7 @@ const result = await workflow('095-publish-npm-workflow')
 
   .step('read-sdk-pkg', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/package.json`,
+    command: `cat ${ROOT}/packages/sdk/typescript/package.json`,
     captureOutput: true,
   })
 

@@ -75,7 +75,7 @@ const result = await workflow('077-relayfile-integration')
 
   .step('read-sdk-verify', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/verify.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/verify.ts`,
     captureOutput: true,
   })
 
@@ -165,18 +165,18 @@ Plan:
 SDK verifier:
 {{steps.read-sdk-verify.output}}
 
-Create ${ROOT}/packages/sdk/src/integrations/relayfile.ts:
+Create ${ROOT}/packages/sdk/typescript/src/integrations/relayfile.ts:
 1. createRelayfileVerifier(opts) — pre-configured TokenVerifier
 2. RELAYFILE_SCOPES — constants for relayfile scope patterns
 3. relayfileScopeCheck(token, action, path) — check fs scopes with path matching
-Export from ${ROOT}/packages/sdk/src/index.ts.`,
+Export from ${ROOT}/packages/sdk/typescript/src/index.ts.`,
     verification: { type: 'exit_code' },
   })
 
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['write-tests', 'implement-relayfile-auth', 'implement-sdk-adapter'],
-    command: `test -f ${ROOT}/packages/server/src/__tests__/integration/relayfile.test.ts && echo "test OK" || echo "test MISSING"; test -f ${ROOT}/packages/sdk/src/integrations/relayfile.ts && echo "sdk-adapter OK" || echo "sdk-adapter MISSING"`,
+    command: `test -f ${ROOT}/packages/server/src/__tests__/integration/relayfile.test.ts && echo "test OK" || echo "test MISSING"; test -f ${ROOT}/packages/sdk/typescript/src/integrations/relayfile.ts && echo "sdk-adapter OK" || echo "sdk-adapter MISSING"`,
     captureOutput: true,
     failOnError: false,
   })

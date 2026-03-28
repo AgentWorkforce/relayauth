@@ -51,7 +51,7 @@ const result = await workflow('063-sdk-verify-complete')
 
   .step('read-verify', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/verify.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/verify.ts`,
     captureOutput: true,
   })
 
@@ -63,19 +63,19 @@ const result = await workflow('063-sdk-verify-complete')
 
   .step('read-errors', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/errors.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/errors.ts`,
     captureOutput: true,
   })
 
   .step('read-scopes', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/scopes.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/scopes.ts`,
     captureOutput: true,
   })
 
   .step('read-existing-tests', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/__tests__/verify.test.ts 2>/dev/null || echo "no existing tests"`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/__tests__/verify.test.ts 2>/dev/null || echo "no existing tests"`,
     captureOutput: true,
   })
 
@@ -96,7 +96,7 @@ Errors:
 Scopes:
 {{steps.read-scopes.output}}
 
-Write tests to ${ROOT}/packages/sdk/src/__tests__/verify-complete.test.ts.
+Write tests to ${ROOT}/packages/sdk/typescript/src/__tests__/verify-complete.test.ts.
 Use node:test + node:assert/strict.
 
 Test these behaviors:
@@ -118,7 +118,7 @@ Use a mock JWKS server (mock global fetch). Create test JWTs with known keys.`,
   .step('verify-tests-exist', {
     type: 'deterministic',
     dependsOn: ['write-tests'],
-    command: `test -f ${ROOT}/packages/sdk/src/__tests__/verify-complete.test.ts && echo "OK" || echo "MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/__tests__/verify-complete.test.ts && echo "OK" || echo "MISSING"`,
     captureOutput: true,
   })
 
@@ -127,7 +127,7 @@ Use a mock JWKS server (mock global fetch). Create test JWTs with known keys.`,
   .step('implement', {
     agent: 'implementer',
     dependsOn: ['verify-tests-exist', 'read-verify', 'read-token-types', 'read-errors', 'read-scopes'],
-    task: `Implement the complete TokenVerifier in ${ROOT}/packages/sdk/src/verify.ts.
+    task: `Implement the complete TokenVerifier in ${ROOT}/packages/sdk/typescript/src/verify.ts.
 
 Existing scaffold:
 {{steps.read-verify.output}}
@@ -164,7 +164,7 @@ Zero external dependencies. Export from package index.`,
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['implement'],
-    command: `test -f ${ROOT}/packages/sdk/src/verify.ts && echo "verify.ts OK" || echo "verify.ts MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/verify.ts && echo "verify.ts OK" || echo "verify.ts MISSING"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -174,7 +174,7 @@ Zero external dependencies. Export from package index.`,
   .step('run-tests', {
     type: 'deterministic',
     dependsOn: ['verify-files'],
-    command: `cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/verify-complete.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
+    command: `cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/verify-complete.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -198,7 +198,7 @@ Test results:
 Typecheck results:
 {{steps.typecheck.output}}
 
-Read ${ROOT}/packages/sdk/src/verify.ts and the test file. Check:
+Read ${ROOT}/packages/sdk/typescript/src/verify.ts and the test file. Check:
 1. JWT verification uses Web Crypto API correctly
 2. JWKS caching works with TTL
 3. Key selection by kid is correct
@@ -226,7 +226,7 @@ Typecheck results:
 {{steps.typecheck.output}}
 
 Fix all issues. Then run:
-cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/verify-complete.test.ts && npx turbo typecheck`,
+cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/verify-complete.test.ts && npx turbo typecheck`,
     verification: { type: 'exit_code' },
   })
 

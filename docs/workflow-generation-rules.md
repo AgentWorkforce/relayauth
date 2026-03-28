@@ -253,7 +253,7 @@ Write the implementation to ${ROOT}/{path}.`,
 | Type | Path |
 |---|---|
 | Server unit tests | `packages/server/src/__tests__/{feature}.test.ts` |
-| SDK unit tests | `packages/sdk/src/__tests__/{feature}.test.ts` |
+| SDK unit tests | `packages/sdk/typescript/src/__tests__/{feature}.test.ts` |
 | Types tests | `packages/types/src/__tests__/{feature}.test.ts` |
 | E2E tests | `scripts/e2e.ts` or `packages/server/src/__tests__/e2e/{domain}.test.ts` |
 

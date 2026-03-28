@@ -131,7 +131,7 @@ check_prereqs() {
   fi
 
   # Build relayauth packages if dist is missing (needed for config parser)
-  if [[ ! -f "${RELAYAUTH_ROOT}/packages/sdk/dist/index.js" ]]; then
+  if [[ ! -f "${RELAYAUTH_ROOT}/packages/sdk/typescript/dist/index.js" ]]; then
     echo "  Building relayauth packages…"
     (cd "${RELAYAUTH_ROOT}" && npx turbo build 2>/dev/null) || {
       echo "  ✗ failed to build relayauth packages" >&2

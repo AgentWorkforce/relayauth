@@ -81,7 +81,7 @@ const result = await workflow('038-policy-evaluation')
 
   .step('read-scope-matcher', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/scope-matcher.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/scope-matcher.ts`,
     captureOutput: true,
   })
 

@@ -63,7 +63,7 @@ const result = await workflow('108-init-wizard')
 
   .step('read-openapi-scopes', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/openapi-scopes.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/openapi-scopes.ts`,
     captureOutput: true,
   })
 
@@ -75,7 +75,7 @@ const result = await workflow('108-init-wizard')
 
   .step('read-sdk-client', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/client.ts 2>/dev/null || echo "FILE NOT FOUND"`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/client.ts 2>/dev/null || echo "FILE NOT FOUND"`,
     captureOutput: true,
   })
 

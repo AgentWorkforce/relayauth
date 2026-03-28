@@ -57,7 +57,7 @@ const result = await workflow('097-readme')
 
   .step('read-sdk-index', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/index.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/index.ts`,
     captureOutput: true,
   })
 

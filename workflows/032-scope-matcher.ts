@@ -57,7 +57,7 @@ const result = await workflow('032-scope-matcher')
 
   .step('read-scope-parser', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/scope-parser.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/scope-parser.ts`,
     captureOutput: true,
   })
 
@@ -84,7 +84,7 @@ Scope parser (already implemented):
 Scope types:
 {{steps.read-scope-types.output}}
 
-Write failing tests to ${ROOT}/packages/sdk/src/__tests__/scope-matcher.test.ts.
+Write failing tests to ${ROOT}/packages/sdk/typescript/src/__tests__/scope-matcher.test.ts.
     - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
     - Scope escalation detection: if requested scope is broader than parent → error
 
@@ -107,7 +107,7 @@ Test these behaviors:
   .step('verify-tests-exist', {
     type: 'deterministic',
     dependsOn: ['write-tests'],
-    command: `test -f ${ROOT}/packages/sdk/src/__tests__/scope-matcher.test.ts && echo "OK" || echo "MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/__tests__/scope-matcher.test.ts && echo "OK" || echo "MISSING"`,
     captureOutput: true,
   })
 
@@ -130,7 +130,7 @@ Scope types:
 Tests to pass:
 {{steps.write-tests.output}}
 
-Write to ${ROOT}/packages/sdk/src/scope-matcher.ts:
+Write to ${ROOT}/packages/sdk/typescript/src/scope-matcher.ts:
     - intersect(parentScopes, requestedScopes): return narrowed scopes for sub-agent
     - Scope escalation detection: if requested scope is broader than parent → error
 
@@ -142,14 +142,14 @@ Write to ${ROOT}/packages/sdk/src/scope-matcher.ts:
 - "manage" action implies read+write+create+delete
 - Use parseScope from scope-parser.ts
 
-Export from ${ROOT}/packages/sdk/src/index.ts.`,
+Export from ${ROOT}/packages/sdk/typescript/src/index.ts.`,
     verification: { type: 'exit_code' },
   })
 
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['implement'],
-    command: `test -f ${ROOT}/packages/sdk/src/scope-matcher.ts && echo "impl OK" || echo "impl MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/scope-matcher.ts && echo "impl OK" || echo "impl MISSING"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -159,7 +159,7 @@ Export from ${ROOT}/packages/sdk/src/index.ts.`,
   .step('run-tests', {
     type: 'deterministic',
     dependsOn: ['verify-files'],
-    command: `cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/scope-matcher.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
+    command: `cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/scope-matcher.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -215,7 +215,7 @@ Typecheck results:
 {{steps.typecheck.output}}
 
 Fix all issues. Then run:
-cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/scope-matcher.test.ts && npx turbo typecheck`,
+cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/scope-matcher.test.ts && npx turbo typecheck`,
     verification: { type: 'exit_code' },
   })
 

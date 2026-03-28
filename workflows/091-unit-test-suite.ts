@@ -63,7 +63,7 @@ const result = await workflow('091-unit-test-suite')
 
   .step('read-sdk-files', {
     type: 'deterministic',
-    command: `find ${ROOT}/packages/sdk/src -name "*.ts" -not -name "*.test.ts" -not -path "*/__tests__/*" | head -20 | xargs -I{} sh -c 'echo "=== {} ===" && head -50 {}'`,
+    command: `find ${ROOT}/packages/sdk/typescript/src -name "*.ts" -not -name "*.test.ts" -not -path "*/__tests__/*" | head -20 | xargs -I{} sh -c 'echo "=== {} ===" && head -50 {}'`,
     captureOutput: true,
   })
 
@@ -145,7 +145,7 @@ Plan:
 SDK code:
 {{steps.read-sdk-files.output}}
 
-Write tests to ${ROOT}/packages/sdk/src/__tests__/sdk.test.ts.
+Write tests to ${ROOT}/packages/sdk/typescript/src/__tests__/sdk.test.ts.
 Use node:test + node:assert/strict.
 Test: TokenVerifier, RelayAuthClient methods, ScopeChecker, error classes.
 Each method gets at least 2 test cases (happy path + error).`,
@@ -173,7 +173,7 @@ Each validator gets at least 2 test cases.`,
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['write-engine-tests', 'write-sdk-tests', 'write-types-tests'],
-    command: `test -f ${ROOT}/packages/server/src/__tests__/engine.test.ts && echo "engine.test.ts OK" || echo "engine.test.ts MISSING"; test -f ${ROOT}/packages/sdk/src/__tests__/sdk.test.ts && echo "sdk.test.ts OK" || echo "sdk.test.ts MISSING"; test -f ${ROOT}/packages/types/src/__tests__/types.test.ts && echo "types.test.ts OK" || echo "types.test.ts MISSING"`,
+    command: `test -f ${ROOT}/packages/server/src/__tests__/engine.test.ts && echo "engine.test.ts OK" || echo "engine.test.ts MISSING"; test -f ${ROOT}/packages/sdk/typescript/src/__tests__/sdk.test.ts && echo "sdk.test.ts OK" || echo "sdk.test.ts MISSING"; test -f ${ROOT}/packages/types/src/__tests__/types.test.ts && echo "types.test.ts OK" || echo "types.test.ts MISSING"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -183,7 +183,7 @@ Each validator gets at least 2 test cases.`,
   .step('run-tests', {
     type: 'deterministic',
     dependsOn: ['verify-files'],
-    command: `cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/engine.test.ts packages/sdk/src/__tests__/sdk.test.ts packages/types/src/__tests__/types.test.ts 2>&1 | tail -50; echo "EXIT: $?"`,
+    command: `cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/engine.test.ts packages/sdk/typescript/src/__tests__/sdk.test.ts packages/types/src/__tests__/types.test.ts 2>&1 | tail -50; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -232,7 +232,7 @@ Typecheck results:
 {{steps.typecheck.output}}
 
 Fix all failing tests and coverage gaps. Then run:
-cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/engine.test.ts packages/sdk/src/__tests__/sdk.test.ts packages/types/src/__tests__/types.test.ts && npx turbo typecheck`,
+cd ${ROOT} && node --test --import tsx packages/server/src/__tests__/engine.test.ts packages/sdk/typescript/src/__tests__/sdk.test.ts packages/types/src/__tests__/types.test.ts && npx turbo typecheck`,
     verification: { type: 'exit_code' },
   })
 

@@ -24,7 +24,7 @@
 
 **Verdict: PASS**
 
-`parse-config.ts` imports `parseScope` from `packages/sdk/src/scope-parser.ts` and validates every scope in `relay.yaml` against the canonical `plane:resource:action:path` format. The `normalizeScope` function (line 60) canonicalizes wildcards to `*:*:*:*`.
+`parse-config.ts` imports `parseScope` from `packages/sdk/typescript/src/scope-parser.ts` and validates every scope in `relay.yaml` against the canonical `plane:resource:action:path` format. The `normalizeScope` function (line 60) canonicalizes wildcards to `*:*:*:*`.
 
 The scope parser validates planes (`relaycast`, `relayfile`, `cloud`, `relayauth`), actions, and filesystem path rules (POSIX paths, trailing `/*` wildcards only, no `..`). This is the same parser used server-side, so relay.yaml scopes are guaranteed to be valid relayauth scopes.
 

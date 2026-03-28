@@ -63,13 +63,13 @@ const result = await workflow('013-token-verification')
 
   .step('read-sdk-verify', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/verify.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/verify.ts`,
     captureOutput: true,
   })
 
   .step('read-sdk-errors', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/errors.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/errors.ts`,
     captureOutput: true,
   })
 
@@ -99,7 +99,7 @@ SDK errors:
 Token types:
 {{steps.read-types.output}}
 
-Write failing tests to ${ROOT}/packages/sdk/src/__tests__/verify.test.ts.
+Write failing tests to ${ROOT}/packages/sdk/typescript/src/__tests__/verify.test.ts.
 Use node:test + node:assert/strict.
 
 Test these behaviors:
@@ -120,7 +120,7 @@ Test these behaviors:
   .step('verify-tests-exist', {
     type: 'deterministic',
     dependsOn: ['write-tests'],
-    command: `test -f ${ROOT}/packages/sdk/src/__tests__/verify.test.ts && echo "OK" || echo "MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/__tests__/verify.test.ts && echo "OK" || echo "MISSING"`,
     captureOutput: true,
   })
 
@@ -146,7 +146,7 @@ Token types:
 Tests to pass:
 {{steps.write-tests.output}}
 
-Replace ${ROOT}/packages/sdk/src/verify.ts with full implementation:
+Replace ${ROOT}/packages/sdk/typescript/src/verify.ts with full implementation:
 
 1. TokenVerifier class with options: { jwksUrl, issuer, audience, maxAge }
 2. verify(token: string): Promise<RelayAuthTokenClaims>
@@ -171,7 +171,7 @@ Export TokenVerifier and VerifyOptions from SDK index.`,
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['implement-verify'],
-    command: `test -f ${ROOT}/packages/sdk/src/verify.ts && echo "impl OK" || echo "impl MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/verify.ts && echo "impl OK" || echo "impl MISSING"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -181,7 +181,7 @@ Export TokenVerifier and VerifyOptions from SDK index.`,
   .step('run-tests', {
     type: 'deterministic',
     dependsOn: ['verify-files'],
-    command: `cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/verify.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
+    command: `cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/verify.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -234,7 +234,7 @@ Typecheck results:
 {{steps.typecheck.output}}
 
 Fix all issues. Then run:
-cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/verify.test.ts && npx turbo typecheck`,
+cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/verify.test.ts && npx turbo typecheck`,
     verification: { type: 'exit_code' },
   })
 
