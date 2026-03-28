@@ -44,11 +44,28 @@ import { StorageError } from "./interface.js";
 const DEFAULT_DB_PATH = ".relay/relayauth.db";
 const DEFAULT_INTERNAL_SECRET = "internal-test-secret";
 
+/**
+ * D1-compatible shim for test helpers that access .DB.prepare().
+ * Wraps better-sqlite3's synchronous API in D1's async interface.
+ */
+export interface D1Shim {
+  prepare(sql: string): {
+    bind(...params: unknown[]): {
+      all(): Promise<{ results: unknown[] }>;
+      run(): Promise<{ success: boolean }>;
+      first(): Promise<unknown>;
+    };
+  };
+  exec(sql: string): Promise<void>;
+}
+
 export type SqliteStorage = AuthStorage & {
   revocations: RevocationStorage & {
     revoke(jti: string, expiresAt: number): Promise<void>;
     isRevoked(jti: string): Promise<boolean>;
   };
+  /** D1-compatible shim for test helpers — wraps better-sqlite3 in D1's async API */
+  DB: D1Shim;
   INTERNAL_SECRET: string;
   SIGNING_KEY?: string;
   SIGNING_KEY_ID?: string;
@@ -753,6 +770,41 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
     contexts: new SqliteContextStorage(provider),
   };
 
+  // D1-compatible shim so test helpers that access .DB.prepare() still work
+  const DB: D1Shim = {
+    prepare(sql: string) {
+      return {
+        bind(...params: unknown[]) {
+          return {
+            async all() {
+              const backend = await provider.getBackend();
+              if (backend.kind !== "sqlite") return { results: [] };
+              const stmt = backend.db.prepare(sql);
+              return { results: params.length ? stmt.all(...params) : stmt.all() };
+            },
+            async run() {
+              const backend = await provider.getBackend();
+              if (backend.kind !== "sqlite") return { success: true };
+              const stmt = backend.db.prepare(sql);
+              params.length ? stmt.run(...params) : stmt.run();
+              return { success: true };
+            },
+            async first() {
+              const backend = await provider.getBackend();
+              if (backend.kind !== "sqlite") return null;
+              const stmt = backend.db.prepare(sql);
+              return params.length ? stmt.get(...params) : stmt.get();
+            },
+          };
+        },
+      };
+    },
+    async exec(sql: string) {
+      const backend = await provider.getBackend();
+      if (backend.kind === "sqlite") backend.db.exec(sql);
+    },
+  };
+
   return Object.assign(storage, {
     revocations: Object.assign(revocations, {
       revoke: async (jti: string, expiresAt: number) => {
@@ -785,6 +837,7 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
         backend.db.prepare(UPDATE_TOKEN_STATUS_BY_TOKEN_SQL).run(normalizedJti, normalizedJti, normalizedJti);
       },
     }),
+    DB,
     INTERNAL_SECRET: DEFAULT_INTERNAL_SECRET,
     SIGNING_KEY: undefined,
     SIGNING_KEY_ID: undefined,
