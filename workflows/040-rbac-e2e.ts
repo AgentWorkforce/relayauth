@@ -45,7 +45,7 @@ const result = await workflow('040-rbac-e2e')
 
   .step('read-implementations', {
     type: 'deterministic',
-    command: `echo "=== SCOPE PARSER ===" && cat ${ROOT}/packages/sdk/src/scope-parser.ts && echo "=== SCOPE MATCHER ===" && cat ${ROOT}/packages/sdk/src/scope-matcher.ts && echo "=== SCOPE CHECKER ===" && cat ${ROOT}/packages/sdk/src/scopes.ts && echo "=== SCOPE MIDDLEWARE ===" && cat ${ROOT}/packages/server/src/middleware/scope.ts && echo "=== ROLE ENGINE ===" && cat ${ROOT}/packages/server/src/engine/roles.ts && echo "=== ROLE ASSIGNMENTS ===" && cat ${ROOT}/packages/server/src/engine/role-assignments.ts && echo "=== POLICY ENGINE ===" && cat ${ROOT}/packages/server/src/engine/policies.ts && echo "=== POLICY EVALUATION ===" && cat ${ROOT}/packages/server/src/engine/policy-evaluation.ts && echo "=== SCOPE INHERITANCE ===" && cat ${ROOT}/packages/server/src/engine/scope-inheritance.ts`,
+    command: `echo "=== SCOPE PARSER ===" && cat ${ROOT}/packages/sdk/typescript/src/scope-parser.ts && echo "=== SCOPE MATCHER ===" && cat ${ROOT}/packages/sdk/typescript/src/scope-matcher.ts && echo "=== SCOPE CHECKER ===" && cat ${ROOT}/packages/sdk/typescript/src/scopes.ts && echo "=== SCOPE MIDDLEWARE ===" && cat ${ROOT}/packages/server/src/middleware/scope.ts && echo "=== ROLE ENGINE ===" && cat ${ROOT}/packages/server/src/engine/roles.ts && echo "=== ROLE ASSIGNMENTS ===" && cat ${ROOT}/packages/server/src/engine/role-assignments.ts && echo "=== POLICY ENGINE ===" && cat ${ROOT}/packages/server/src/engine/policies.ts && echo "=== POLICY EVALUATION ===" && cat ${ROOT}/packages/server/src/engine/policy-evaluation.ts && echo "=== SCOPE INHERITANCE ===" && cat ${ROOT}/packages/server/src/engine/scope-inheritance.ts`,
     captureOutput: true,
   })
 

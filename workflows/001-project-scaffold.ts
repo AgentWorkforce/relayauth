@@ -580,7 +580,7 @@ Create:
    - Placeholder test: "scope types are exported correctly"
    - Uses node:test
 
-3. ${ROOT}/packages/sdk/src/__tests__/verify.test.ts:
+3. ${ROOT}/packages/sdk/typescript/src/__tests__/verify.test.ts:
    - Placeholder test: "TokenVerifier can be instantiated"
 
 4. ${ROOT}/scripts/generate-dev-token.sh:

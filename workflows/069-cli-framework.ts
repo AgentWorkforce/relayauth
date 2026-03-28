@@ -63,7 +63,7 @@ const result = await workflow('069-cli-framework')
 
   .step('read-sdk-client', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/client.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/client.ts`,
     captureOutput: true,
   })
 

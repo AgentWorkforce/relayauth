@@ -75,7 +75,7 @@ const result = await workflow('080-identity-propagation')
 
   .step('read-sdk-client', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/client.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/client.ts`,
     captureOutput: true,
   })
 

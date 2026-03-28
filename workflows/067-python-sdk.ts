@@ -69,13 +69,13 @@ const result = await workflow('067-python-sdk')
 
   .step('read-verify-ts', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/verify.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/verify.ts`,
     captureOutput: true,
   })
 
   .step('read-client-ts', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/client.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/client.ts`,
     captureOutput: true,
   })
 
@@ -99,7 +99,7 @@ TypeScript verify (reference):
 TypeScript client (reference):
 {{steps.read-client-ts.output}}
 
-First create ${ROOT}/packages/python-sdk/pyproject.toml:
+First create ${ROOT}/packages/sdk/python/pyproject.toml:
 [project]
 name = "relayauth"
 version = "0.1.0"
@@ -109,7 +109,7 @@ dependencies = ["httpx>=0.25", "PyJWT>=2.8", "cryptography>=41"]
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-asyncio>=0.21", "respx>=0.20"]
 
-Write Python tests to ${ROOT}/packages/python-sdk/tests/test_relayauth.py using pytest:
+Write Python tests to ${ROOT}/packages/sdk/python/tests/test_relayauth.py using pytest:
 
 1. test_verify_valid_token — verify a valid RS256 JWT
 2. test_verify_expired_token — reject expired token (raises TokenExpiredError)
@@ -123,14 +123,14 @@ Write Python tests to ${ROOT}/packages/python-sdk/tests/test_relayauth.py using 
 10. test_client_revoke_token — POST /v1/tokens/revoke
 
 Use respx to mock httpx requests. Use cryptography to generate test RSA keys.
-Also create ${ROOT}/packages/python-sdk/tests/__init__.py (empty).`,
+Also create ${ROOT}/packages/sdk/python/tests/__init__.py (empty).`,
     verification: { type: 'exit_code' },
   })
 
   .step('verify-tests-exist', {
     type: 'deterministic',
     dependsOn: ['write-tests'],
-    command: `test -f ${ROOT}/packages/python-sdk/tests/test_relayauth.py && echo "OK" || echo "MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/python/tests/test_relayauth.py && echo "OK" || echo "MISSING"`,
     captureOutput: true,
   })
 
@@ -156,32 +156,32 @@ TypeScript client (reference):
 Tests to pass:
 {{steps.write-tests.output}}
 
-Create ${ROOT}/packages/python-sdk/relayauth/__init__.py:
+Create ${ROOT}/packages/sdk/python/relayauth/__init__.py:
 from .verifier import TokenVerifier, VerifyOptions
 from .client import RelayAuthClient
 from .errors import RelayAuthError, TokenExpiredError, TokenRevokedError, InsufficientScopeError
 from .types import Claims, TokenPair, AgentIdentity
 
-Create ${ROOT}/packages/python-sdk/relayauth/types.py:
+Create ${ROOT}/packages/sdk/python/relayauth/types.py:
 - Claims dataclass (matching TS RelayAuthTokenClaims)
 - TokenPair dataclass
 - AgentIdentity dataclass
 
-Create ${ROOT}/packages/python-sdk/relayauth/errors.py:
+Create ${ROOT}/packages/sdk/python/relayauth/errors.py:
 - RelayAuthError(Exception) with code and status_code
 - TokenExpiredError, TokenRevokedError, InsufficientScopeError
 
-Create ${ROOT}/packages/python-sdk/relayauth/verifier.py:
+Create ${ROOT}/packages/sdk/python/relayauth/verifier.py:
 - TokenVerifier class with verify(token) -> Claims
 - JWKS fetching with httpx, caching with TTL
 - Uses PyJWT for JWT decode + cryptography for key handling
 
-Create ${ROOT}/packages/python-sdk/relayauth/client.py:
+Create ${ROOT}/packages/sdk/python/relayauth/client.py:
 - RelayAuthClient class with httpx.AsyncClient
 - create_identity, get_identity, issue_token, revoke_token, query_audit
 - Async methods using httpx
 
-Create ${ROOT}/packages/python-sdk/relayauth/scopes.py:
+Create ${ROOT}/packages/sdk/python/relayauth/scopes.py:
 - match_scope(required, granted) -> bool with wildcard matching`,
     verification: { type: 'exit_code' },
   })
@@ -189,7 +189,7 @@ Create ${ROOT}/packages/python-sdk/relayauth/scopes.py:
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['implement'],
-    command: `test -f ${ROOT}/packages/python-sdk/relayauth/__init__.py && echo "init OK" || echo "init MISSING"; test -f ${ROOT}/packages/python-sdk/relayauth/verifier.py && echo "verifier OK" || echo "verifier MISSING"; test -f ${ROOT}/packages/python-sdk/relayauth/client.py && echo "client OK" || echo "client MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/python/relayauth/__init__.py && echo "init OK" || echo "init MISSING"; test -f ${ROOT}/packages/sdk/python/relayauth/verifier.py && echo "verifier OK" || echo "verifier MISSING"; test -f ${ROOT}/packages/sdk/python/relayauth/client.py && echo "client OK" || echo "client MISSING"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -199,7 +199,7 @@ Create ${ROOT}/packages/python-sdk/relayauth/scopes.py:
   .step('run-tests', {
     type: 'deterministic',
     dependsOn: ['verify-files'],
-    command: `cd ${ROOT}/packages/python-sdk && pip install -e ".[dev]" 2>&1 | tail -5 && python -m pytest tests/ -v 2>&1 | tail -40; echo "EXIT: $?"`,
+    command: `cd ${ROOT}/packages/sdk/python && pip install -e ".[dev]" 2>&1 | tail -5 && python -m pytest tests/ -v 2>&1 | tail -40; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -207,7 +207,7 @@ Create ${ROOT}/packages/python-sdk/relayauth/scopes.py:
   .step('type-check', {
     type: 'deterministic',
     dependsOn: ['run-tests'],
-    command: `cd ${ROOT}/packages/python-sdk && python -m py_compile relayauth/verifier.py && python -m py_compile relayauth/client.py && python -m py_compile relayauth/types.py && echo "compile OK"; echo "EXIT: $?"`,
+    command: `cd ${ROOT}/packages/sdk/python && python -m py_compile relayauth/verifier.py && python -m py_compile relayauth/client.py && python -m py_compile relayauth/types.py && echo "compile OK"; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -223,7 +223,7 @@ Test results:
 Type check results:
 {{steps.type-check.output}}
 
-Read the Python SDK files in ${ROOT}/packages/python-sdk/relayauth/. Check:
+Read the Python SDK files in ${ROOT}/packages/sdk/python/relayauth/. Check:
 1. Token verification uses PyJWT correctly with RS256
 2. JWKS fetching uses httpx with proper caching
 3. Claims dataclass matches TypeScript types
@@ -251,7 +251,7 @@ Type check results:
 {{steps.type-check.output}}
 
 Fix all issues. Then run:
-cd ${ROOT}/packages/python-sdk && python -m pytest tests/ -v`,
+cd ${ROOT}/packages/sdk/python && python -m pytest tests/ -v`,
     verification: { type: 'exit_code' },
   })
 

@@ -51,13 +51,13 @@ const result = await workflow('065-sdk-middleware-express')
 
   .step('read-verify', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/verify.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/verify.ts`,
     captureOutput: true,
   })
 
   .step('read-hono-middleware', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/middleware/hono.ts 2>/dev/null || echo "NOT YET CREATED"`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/middleware/hono.ts 2>/dev/null || echo "NOT YET CREATED"`,
     captureOutput: true,
   })
 
@@ -69,7 +69,7 @@ const result = await workflow('065-sdk-middleware-express')
 
   .step('read-errors', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/errors.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/errors.ts`,
     captureOutput: true,
   })
 
@@ -90,7 +90,7 @@ Token types:
 Errors:
 {{steps.read-errors.output}}
 
-Write tests to ${ROOT}/packages/sdk/src/__tests__/middleware-express.test.ts.
+Write tests to ${ROOT}/packages/sdk/typescript/src/__tests__/middleware-express.test.ts.
 Use node:test + node:assert/strict.
 
 Test these behaviors:
@@ -114,7 +114,7 @@ Create mock req with headers, mock res with status().json() chain.`,
   .step('verify-tests-exist', {
     type: 'deterministic',
     dependsOn: ['write-tests'],
-    command: `test -f ${ROOT}/packages/sdk/src/__tests__/middleware-express.test.ts && echo "OK" || echo "MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/__tests__/middleware-express.test.ts && echo "OK" || echo "MISSING"`,
     captureOutput: true,
   })
 
@@ -134,7 +134,7 @@ Hono middleware (for API parity reference):
 Tests to pass:
 {{steps.write-tests.output}}
 
-Create ${ROOT}/packages/sdk/src/middleware/express.ts:
+Create ${ROOT}/packages/sdk/typescript/src/middleware/express.ts:
 
 import { TokenVerifier, VerifyOptions } from '../verify.js';
 import type { RelayAuthTokenClaims } from '@relayauth/types';
@@ -163,7 +163,7 @@ export function requireScopeExpress(scope: string): (req: any, res: any, next: a
   - Check scope using ScopeChecker
   - On failure: res.status(403).json({ error, code: 'insufficient_scope' })
 
-Export from ${ROOT}/packages/sdk/src/index.ts.
+Export from ${ROOT}/packages/sdk/typescript/src/index.ts.
 Note: Express is NOT a dependency — use generic (req, res, next) typing.`,
     verification: { type: 'exit_code' },
   })
@@ -171,7 +171,7 @@ Note: Express is NOT a dependency — use generic (req, res, next) typing.`,
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['implement'],
-    command: `test -f ${ROOT}/packages/sdk/src/middleware/express.ts && echo "express.ts OK" || echo "express.ts MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/middleware/express.ts && echo "express.ts OK" || echo "express.ts MISSING"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -181,7 +181,7 @@ Note: Express is NOT a dependency — use generic (req, res, next) typing.`,
   .step('run-tests', {
     type: 'deterministic',
     dependsOn: ['verify-files'],
-    command: `cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/middleware-express.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
+    command: `cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/middleware-express.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -205,7 +205,7 @@ Test results:
 Typecheck results:
 {{steps.typecheck.output}}
 
-Read ${ROOT}/packages/sdk/src/middleware/express.ts and the test file. Check:
+Read ${ROOT}/packages/sdk/typescript/src/middleware/express.ts and the test file. Check:
 1. Middleware signature is standard Express (req, res, next)
 2. Express is NOT added as a dependency (generic types used)
 3. Token extraction handles "Bearer " prefix correctly
@@ -233,7 +233,7 @@ Typecheck results:
 {{steps.typecheck.output}}
 
 Fix all issues. Then run:
-cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/middleware-express.test.ts && npx turbo typecheck`,
+cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/middleware-express.test.ts && npx turbo typecheck`,
     verification: { type: 'exit_code' },
   })
 

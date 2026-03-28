@@ -45,7 +45,7 @@ const result = await workflow('068-sdk-e2e')
 
   .step('read-implementations', {
     type: 'deterministic',
-    command: `echo "=== SDK CLIENT ===" && cat ${ROOT}/packages/sdk/src/client.ts && echo "=== VERIFY ===" && cat ${ROOT}/packages/sdk/src/verify.ts && echo "=== HONO MIDDLEWARE ===" && cat ${ROOT}/packages/sdk/src/middleware/hono.ts 2>/dev/null && echo "=== EXPRESS MIDDLEWARE ===" && cat ${ROOT}/packages/sdk/src/middleware/express.ts 2>/dev/null && echo "=== SCOPES ===" && cat ${ROOT}/packages/sdk/src/scopes.ts`,
+    command: `echo "=== SDK CLIENT ===" && cat ${ROOT}/packages/sdk/typescript/src/client.ts && echo "=== VERIFY ===" && cat ${ROOT}/packages/sdk/typescript/src/verify.ts && echo "=== HONO MIDDLEWARE ===" && cat ${ROOT}/packages/sdk/typescript/src/middleware/hono.ts 2>/dev/null && echo "=== EXPRESS MIDDLEWARE ===" && cat ${ROOT}/packages/sdk/typescript/src/middleware/express.ts 2>/dev/null && echo "=== SCOPES ===" && cat ${ROOT}/packages/sdk/typescript/src/scopes.ts`,
     captureOutput: true,
   })
 
@@ -63,7 +63,7 @@ const result = await workflow('068-sdk-e2e')
 
   .step('read-python-sdk', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/python-sdk/relayauth/verifier.py 2>/dev/null || echo "Python SDK not available"`,
+    command: `cat ${ROOT}/packages/sdk/python/relayauth/verifier.py 2>/dev/null || echo "Python SDK not available"`,
     captureOutput: true,
   })
 
@@ -117,7 +117,7 @@ Test the full SDK flow:
    (This step just verifies Go tests pass, since Go runs separately)
 
 5. Python SDK E2E (if available):
-   Run: cd ${ROOT}/packages/python-sdk && python -m pytest tests/ -k e2e 2>&1
+   Run: cd ${ROOT}/packages/sdk/python && python -m pytest tests/ -k e2e 2>&1
    (This step just verifies Python tests pass, since Python runs separately)
 
 6. Cross-language verification:
@@ -157,7 +157,7 @@ Use createTestApp() to spin up a test server for the SDK client calls.`,
   .step('run-python-tests', {
     type: 'deterministic',
     dependsOn: ['verify-e2e-exists'],
-    command: `cd ${ROOT}/packages/python-sdk && python -m pytest tests/ -v 2>&1 | tail -30; echo "EXIT: $?"`,
+    command: `cd ${ROOT}/packages/sdk/python && python -m pytest tests/ -v 2>&1 | tail -30; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -212,7 +212,7 @@ If Go tests failed, also fix and run:
 cd ${ROOT}/packages/go-middleware && go test -v ./...
 
 If Python tests failed, also fix and run:
-cd ${ROOT}/packages/python-sdk && python -m pytest tests/ -v`,
+cd ${ROOT}/packages/sdk/python && python -m pytest tests/ -v`,
     verification: { type: 'exit_code' },
   })
 

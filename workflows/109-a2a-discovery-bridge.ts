@@ -81,7 +81,7 @@ const result = await workflow('109-a2a-discovery-bridge')
 
   .step('read-relaycast-integration', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/integrations/relaycast.ts 2>/dev/null || echo "FILE NOT FOUND"`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/integrations/relaycast.ts 2>/dev/null || echo "FILE NOT FOUND"`,
     captureOutput: true,
   })
 
@@ -132,7 +132,7 @@ Discovery types:
 A2A types:
 {{steps.read-relaycast-a2a-types.output}}
 
-Write to ${ROOT}/packages/sdk/src/__tests__/a2a-bridge.test.ts.
+Write to ${ROOT}/packages/sdk/typescript/src/__tests__/a2a-bridge.test.ts.
 Use node:test + node:assert/strict.
 
 Test:
@@ -163,7 +163,7 @@ A2A types:
 Tests to pass:
 {{steps.write-tests.output}}
 
-Create ${ROOT}/packages/sdk/src/a2a-bridge.ts:
+Create ${ROOT}/packages/sdk/typescript/src/a2a-bridge.ts:
 
 export function agentCardToConfiguration(card: A2aAgentCard): AgentConfiguration
 - Map card.skills to scope definitions
@@ -175,7 +175,7 @@ export function configurationToAgentCard(config: AgentConfiguration, name: strin
 - Set url to config token_endpoint base
 - Include provider metadata
 
-Export from ${ROOT}/packages/sdk/src/index.ts.`,
+Export from ${ROOT}/packages/sdk/typescript/src/index.ts.`,
     verification: { type: 'exit_code' },
   })
 
@@ -209,7 +209,7 @@ Both routes should handle errors (unreachable URL, invalid card).`,
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['write-tests', 'implement-bridge', 'implement-routes'],
-    command: `test -f ${ROOT}/packages/sdk/src/a2a-bridge.ts && echo "bridge OK" || echo "bridge MISSING"; test -f ${ROOT}/packages/sdk/src/__tests__/a2a-bridge.test.ts && echo "tests OK" || echo "tests MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/a2a-bridge.ts && echo "bridge OK" || echo "bridge MISSING"; test -f ${ROOT}/packages/sdk/typescript/src/__tests__/a2a-bridge.test.ts && echo "tests OK" || echo "tests MISSING"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -219,7 +219,7 @@ Both routes should handle errors (unreachable URL, invalid card).`,
   .step('run-tests', {
     type: 'deterministic',
     dependsOn: ['verify-files'],
-    command: `cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/a2a-bridge.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
+    command: `cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/a2a-bridge.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -268,7 +268,7 @@ Typecheck results:
 {{steps.typecheck.output}}
 
 Fix all issues. Then run:
-cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/a2a-bridge.test.ts && npx turbo typecheck`,
+cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/a2a-bridge.test.ts && npx turbo typecheck`,
     verification: { type: 'exit_code' },
   })
 

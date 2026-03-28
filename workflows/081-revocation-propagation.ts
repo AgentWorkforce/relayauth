@@ -69,13 +69,13 @@ const result = await workflow('081-revocation-propagation')
 
   .step('read-relaycast-integration', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/integrations/relaycast.ts 2>/dev/null || echo "FILE NOT FOUND"`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/integrations/relaycast.ts 2>/dev/null || echo "FILE NOT FOUND"`,
     captureOutput: true,
   })
 
   .step('read-relayfile-integration', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/integrations/relayfile.ts 2>/dev/null || echo "FILE NOT FOUND"`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/integrations/relayfile.ts 2>/dev/null || echo "FILE NOT FOUND"`,
     captureOutput: true,
   })
 
@@ -173,9 +173,9 @@ Relayfile integration:
 {{steps.read-relayfile-integration.output}}
 
 Update integration adapters to check revocation:
-1. Update ${ROOT}/packages/sdk/src/integrations/relaycast.ts — add revocation check endpoint
-2. Update ${ROOT}/packages/sdk/src/integrations/relayfile.ts — add revocation check endpoint
-3. Create ${ROOT}/packages/sdk/src/integrations/revocation-webhook.ts:
+1. Update ${ROOT}/packages/sdk/typescript/src/integrations/relaycast.ts — add revocation check endpoint
+2. Update ${ROOT}/packages/sdk/typescript/src/integrations/relayfile.ts — add revocation check endpoint
+3. Create ${ROOT}/packages/sdk/typescript/src/integrations/revocation-webhook.ts:
    - verifyRevocationWebhook(payload, secret) — verify HMAC signature
    - RevocationWebhookHandler — process incoming revocation notifications
    - Add to local revocation cache for fast rejection`,
@@ -185,7 +185,7 @@ Update integration adapters to check revocation:
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['write-tests', 'implement-broadcast', 'implement-plane-checking'],
-    command: `test -f ${ROOT}/packages/server/src/__tests__/integration/revocation-propagation.test.ts && echo "test OK" || echo "test MISSING"; test -f ${ROOT}/packages/server/src/engine/revocation-broadcast.ts && echo "broadcast OK" || echo "broadcast MISSING"; test -f ${ROOT}/packages/sdk/src/integrations/revocation-webhook.ts && echo "webhook OK" || echo "webhook MISSING"`,
+    command: `test -f ${ROOT}/packages/server/src/__tests__/integration/revocation-propagation.test.ts && echo "test OK" || echo "test MISSING"; test -f ${ROOT}/packages/server/src/engine/revocation-broadcast.ts && echo "broadcast OK" || echo "broadcast MISSING"; test -f ${ROOT}/packages/sdk/typescript/src/integrations/revocation-webhook.ts && echo "webhook OK" || echo "webhook MISSING"`,
     captureOutput: true,
     failOnError: false,
   })

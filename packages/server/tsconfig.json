@@ -19,6 +19,6 @@
   ],
   "references": [
     { "path": "../types" },
-    { "path": "../sdk" }
+    { "path": "../sdk/typescript" }
   ]
 }

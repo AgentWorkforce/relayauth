@@ -63,7 +63,7 @@ const result = await workflow('066-go-middleware')
 
   .step('read-verify-ts', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/verify.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/verify.ts`,
     captureOutput: true,
   })
 

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
+
+IdentityStatus = Literal["active", "suspended", "retired"]
+IdentityType = Literal["agent", "human", "service"]
+PolicyEffect = Literal["allow", "deny"]
+PolicyConditionType = Literal["time", "ip", "identity", "workspace"]
 
 
 def _string_list(value: Any) -> list[str]:
@@ -30,6 +35,12 @@ def _optional_number(value: Any) -> int | float | None:
     if isinstance(value, (int, float)):
         return value
     raise TypeError("value must be numeric")
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return int(value)
 
 
 @dataclass(slots=True)
@@ -94,6 +105,9 @@ class Claims:
         )
 
 
+RelayAuthTokenClaims = Claims
+
+
 @dataclass(slots=True)
 class TokenPair:
     accessToken: str
@@ -142,3 +156,135 @@ class AgentIdentity:
             createdAt=str(data["createdAt"]),
             updatedAt=str(data["updatedAt"]),
         )
+
+
+@dataclass(slots=True)
+class CreateIdentityInput:
+    name: str
+    type: IdentityType | None = None
+    scopes: list[str] = field(default_factory=list)
+    roles: list[str] = field(default_factory=list)
+    metadata: dict[str, str] = field(default_factory=dict)
+    workspaceId: str | None = None
+
+    @classmethod
+    def from_dict(cls, value: Any) -> CreateIdentityInput:
+        data = dict(value)
+        return cls(
+            name=str(data["name"]),
+            type=_optional_string(data.get("type")),
+            scopes=_string_list(data.get("scopes")),
+            roles=_string_list(data.get("roles")),
+            metadata=_string_map(data.get("metadata")),
+            workspaceId=_optional_string(data.get("workspaceId")),
+        )
+
+
+@dataclass(slots=True)
+class AuditEntry:
+    id: str
+    action: str
+    identityId: str
+    orgId: str
+    workspaceId: str | None = None
+    plane: str | None = None
+    resource: str | None = None
+    result: str = "allowed"
+    metadata: dict[str, str] = field(default_factory=dict)
+    ip: str | None = None
+    userAgent: str | None = None
+    timestamp: str = ""
+
+    @classmethod
+    def from_dict(cls, value: Any) -> AuditEntry:
+        data = dict(value)
+        return cls(
+            id=str(data["id"]),
+            action=str(data["action"]),
+            identityId=str(data["identityId"]),
+            orgId=str(data["orgId"]),
+            workspaceId=_optional_string(data.get("workspaceId")),
+            plane=_optional_string(data.get("plane")),
+            resource=_optional_string(data.get("resource")),
+            result=str(data.get("result", "allowed")),
+            metadata=_string_map(data.get("metadata")),
+            ip=_optional_string(data.get("ip")),
+            userAgent=_optional_string(data.get("userAgent")),
+            timestamp=str(data["timestamp"]),
+        )
+
+
+@dataclass(slots=True)
+class AuditQuery:
+    identityId: str | None = None
+    action: str | None = None
+    orgId: str | None = None
+    workspaceId: str | None = None
+    plane: str | None = None
+    result: str | None = None
+    from_: str | None = None
+    to: str | None = None
+    cursor: str | None = None
+    limit: int | None = None
+
+
+@dataclass(slots=True)
+class Role:
+    id: str
+    name: str
+    description: str
+    scopes: list[str]
+    orgId: str
+    workspaceId: str | None = None
+    builtIn: bool = False
+    createdAt: str = ""
+
+    @classmethod
+    def from_dict(cls, value: Any) -> Role:
+        data = dict(value)
+        return cls(
+            id=str(data["id"]),
+            name=str(data["name"]),
+            description=str(data["description"]),
+            scopes=_string_list(data.get("scopes")),
+            orgId=str(data["orgId"]),
+            workspaceId=_optional_string(data.get("workspaceId")),
+            builtIn=bool(data.get("builtIn", False)),
+            createdAt=str(data.get("createdAt", "")),
+        )
+
+
+@dataclass(slots=True)
+class PolicyCondition:
+    type: PolicyConditionType
+    operator: str
+    value: str | list[str]
+
+
+@dataclass(slots=True)
+class Policy:
+    id: str
+    name: str
+    effect: PolicyEffect
+    scopes: list[str]
+    conditions: list[PolicyCondition]
+    priority: int
+    orgId: str
+    workspaceId: str | None = None
+    createdAt: str = ""
+
+
+@dataclass(slots=True)
+class ParsedScope:
+    plane: str
+    resource: str
+    action: str
+    path: str
+    raw: str
+
+
+@dataclass(slots=True)
+class ScopeTemplate:
+    name: str
+    description: str
+    scopes: list[str]

@@ -45,7 +45,7 @@ const result = await workflow('110-discovery-ecosystem-e2e')
 
   .step('read-implementations', {
     type: 'deterministic',
-    command: `echo "=== Discovery Route ===" && cat ${ROOT}/packages/server/src/routes/discovery.ts 2>/dev/null | head -40 || echo "NOT FOUND"; echo "=== Adapter Base ===" && cat ${ROOT}/packages/ai/src/adapter.ts 2>/dev/null | head -40 || echo "NOT FOUND"; echo "=== OpenAPI Scopes ===" && cat ${ROOT}/packages/sdk/src/openapi-scopes.ts 2>/dev/null | head -40 || echo "NOT FOUND"; echo "=== A2A Bridge ===" && cat ${ROOT}/packages/sdk/src/a2a-bridge.ts 2>/dev/null | head -40 || echo "NOT FOUND"; echo "=== Vercel Adapter ===" && cat ${ROOT}/packages/ai/src/adapters/vercel.ts 2>/dev/null | head -30 || echo "NOT FOUND"`,
+    command: `echo "=== Discovery Route ===" && cat ${ROOT}/packages/server/src/routes/discovery.ts 2>/dev/null | head -40 || echo "NOT FOUND"; echo "=== Adapter Base ===" && cat ${ROOT}/packages/ai/src/adapter.ts 2>/dev/null | head -40 || echo "NOT FOUND"; echo "=== OpenAPI Scopes ===" && cat ${ROOT}/packages/sdk/typescript/src/openapi-scopes.ts 2>/dev/null | head -40 || echo "NOT FOUND"; echo "=== A2A Bridge ===" && cat ${ROOT}/packages/sdk/typescript/src/a2a-bridge.ts 2>/dev/null | head -40 || echo "NOT FOUND"; echo "=== Vercel Adapter ===" && cat ${ROOT}/packages/ai/src/adapters/vercel.ts 2>/dev/null | head -30 || echo "NOT FOUND"`,
     captureOutput: true,
   })
 

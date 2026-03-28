@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .errors import InsufficientScopeError, InvalidScopeError
+from .types import ParsedScope, RelayAuthTokenClaims
 
 _MANAGE_IMPLIES = frozenset({"read", "write", "create", "delete"})
 
@@ -117,3 +119,67 @@ def match_scope(required: str, granted: list[str]) -> bool:
         if parsed is not None and _match_parsed_scope(requested, parsed):
             return True
     return False
+
+
+def validate_scope(raw: str) -> bool:
+    return _parse_scope(raw) is not None
+
+
+def parse_scope(raw: str) -> ParsedScope:
+    parsed = _parse_scope(raw)
+    if parsed is None:
+        raise InvalidScopeError(raw)
+
+    plane, resource, action, path = parsed
+    return ParsedScope(plane=plane, resource=resource, action=action, path=path, raw=raw)
+
+
+def parse_scopes(scopes: list[str]) -> list[ParsedScope]:
+    parsed_scopes: list[ParsedScope] = []
+    for scope in scopes:
+        parsed = _parse_scope(scope)
+        if parsed is not None:
+            plane, resource, action, path = parsed
+            parsed_scopes.append(
+                ParsedScope(plane=plane, resource=resource, action=action, path=path, raw=scope)
+            )
+    return parsed_scopes
+
+
+class ScopeChecker:
+    def __init__(self, granted_scopes: list[str]) -> None:
+        self.granted_scopes = list(granted_scopes)
+        self.parsed_scopes = parse_scopes(self.granted_scopes)
+
+    def check(self, scope: str) -> bool:
+        return match_scope(scope, self.granted_scopes)
+
+    def require(self, scope: str) -> None:
+        if not self.check(scope):
+            raise InsufficientScopeError(scope, self.granted_scopes)
+
+    def check_all(self, scopes: list[str]) -> bool:
+        return all(self.check(scope) for scope in scopes)
+
+    def check_any(self, scopes: list[str]) -> bool:
+        return any(self.check(scope) for scope in scopes)
+
+    def effective_scopes(self) -> list[ParsedScope]:
+        return [
+            ParsedScope(
+                plane=scope.plane,
+                resource=scope.resource,
+                action=scope.action,
+                path=scope.path,
+                raw=scope.raw,
+            )
+            for scope in self.parsed_scopes
+        ]
+
+    @classmethod
+    def from_token(cls, claims: RelayAuthTokenClaims | dict[str, object]) -> ScopeChecker:
+        if isinstance(claims, dict):
+            scopes = claims.get("scopes", [])
+        else:
+            scopes = claims.scopes
+        return cls([str(scope) for scope in scopes])

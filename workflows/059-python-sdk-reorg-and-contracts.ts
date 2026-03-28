@@ -4,7 +4,7 @@
  * Reorganize relayauth's Python SDK to match relayfile's structure
  * and add contract surface checks for TS ↔ Python parity.
  *
- * Current: packages/python-sdk/relayauth/
+ * Current: packages/sdk/python/relayauth/
  * Target:  packages/sdk/python/src/relayauth/
  *
  * Also:
@@ -39,15 +39,15 @@ async function main() {
       task: `Plan the SDK reorganization for relayauth.
 
 Read the current layout:
-- ${ROOT}/packages/sdk/package.json — TS SDK (@relayauth/sdk)
-- ${ROOT}/packages/sdk/src/index.ts — TS exports
-- ${ROOT}/packages/sdk/src/client.ts — RelayAuthClient
+- ${ROOT}/packages/sdk/typescript/package.json — TS SDK (@relayauth/sdk)
+- ${ROOT}/packages/sdk/typescript/src/index.ts — TS exports
+- ${ROOT}/packages/sdk/typescript/src/client.ts — RelayAuthClient
 - ${ROOT}/packages/types/src/ — shared types (@relayauth/types)
-- ${ROOT}/packages/python-sdk/relayauth/ — Python SDK
-- ${ROOT}/packages/python-sdk/relayauth/types.py — Python types
-- ${ROOT}/packages/python-sdk/relayauth/client.py — Python client
-- ${ROOT}/packages/python-sdk/relayauth/verifier.py — token verifier
-- ${ROOT}/packages/python-sdk/relayauth/scopes.py — scope checker
+- ${ROOT}/packages/sdk/python/relayauth/ — Python SDK
+- ${ROOT}/packages/sdk/python/relayauth/types.py — Python types
+- ${ROOT}/packages/sdk/python/relayauth/client.py — Python client
+- ${ROOT}/packages/sdk/python/relayauth/verifier.py — token verifier
+- ${ROOT}/packages/sdk/python/relayauth/scopes.py — scope checker
 
 Read relayfile's structure for reference:
 - ${RELAYFILE}/packages/sdk/typescript/ — TS SDK layout
@@ -61,7 +61,7 @@ Plan the migration:
    - Update all imports in other packages that reference @relayauth/sdk
    - Update turbo.json, root package.json workspace paths
 
-2. **Move Python SDK**: packages/python-sdk/ → packages/sdk/python/
+2. **Move Python SDK**: packages/sdk/python/ → packages/sdk/python/
    - Update pyproject.toml paths
    - Keep the same module name (relayauth)
 
@@ -101,14 +101,14 @@ Working in ${ROOT} on branch feat/sdk-reorg.
    mkdir -p packages/sdk/typescript packages/sdk/python
 
 2. **Move TS SDK**:
-   - Move packages/sdk/src → packages/sdk/typescript/src
-   - Move packages/sdk/package.json → packages/sdk/typescript/package.json
-   - Move packages/sdk/tsconfig.json → packages/sdk/typescript/tsconfig.json
+   - Move packages/sdk/typescript/src → packages/sdk/typescript/src
+   - Move packages/sdk/typescript/package.json → packages/sdk/typescript/package.json
+   - Move packages/sdk/typescript/tsconfig.json → packages/sdk/typescript/tsconfig.json
    - Move packages/sdk/node_modules if exists
    - Update workspace references in root package.json/turbo.json
 
 3. **Move Python SDK**:
-   - Move packages/python-sdk/* → packages/sdk/python/
+   - Move packages/sdk/python/* → packages/sdk/python/
    - Update pyproject.toml if paths changed
 
 4. **Fix imports**: grep for any "@relayauth/sdk" imports in other packages
@@ -152,7 +152,7 @@ Working in ${ROOT} on branch feat/sdk-reorg.
 
    Matches relayfile's SDK structure for consistency.
    - packages/sdk/ → packages/sdk/typescript/
-   - packages/python-sdk/ → packages/sdk/python/
+   - packages/sdk/python/ → packages/sdk/python/
    - Added scripts/check-contract-surface.sh for TS ↔ Python parity
    - Added .github/workflows/contract.yml CI check"
    git push origin feat/sdk-reorg
@@ -172,7 +172,7 @@ Working in ${ROOT} on branch feat/sdk-reorg.
 1. **Structure check**:
    - packages/sdk/typescript/src/ exists with client.ts, index.ts, etc.
    - packages/sdk/python/relayauth/ exists with client.py, types.py, etc.
-   - packages/python-sdk/ is GONE (fully moved)
+   - packages/sdk/python/ is GONE (fully moved)
 
 2. **Run contract checks**:
    bash scripts/check-contract-surface.sh

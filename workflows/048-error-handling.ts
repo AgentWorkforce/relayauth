@@ -57,7 +57,7 @@ const result = await workflow('048-error-handling')
 
   .step('read-sdk-errors', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/errors.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/errors.ts`,
     captureOutput: true,
   })
 

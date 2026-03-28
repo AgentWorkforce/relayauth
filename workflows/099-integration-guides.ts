@@ -57,7 +57,7 @@ const result = await workflow('099-integration-guides')
 
   .step('read-sdk-middleware', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/index.ts && echo "=== verify ===" && cat ${ROOT}/packages/sdk/src/verify.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/index.ts && echo "=== verify ===" && cat ${ROOT}/packages/sdk/typescript/src/verify.ts`,
     captureOutput: true,
   })
 

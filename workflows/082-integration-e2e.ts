@@ -45,7 +45,7 @@ const result = await workflow('082-integration-e2e')
 
   .step('read-implementations', {
     type: 'deterministic',
-    command: `echo "=== RELAYCAST INTEGRATION ===" && cat ${ROOT}/packages/sdk/src/integrations/relaycast.ts 2>/dev/null || echo "NOT FOUND"; echo "=== RELAYFILE INTEGRATION ===" && cat ${ROOT}/packages/sdk/src/integrations/relayfile.ts 2>/dev/null || echo "NOT FOUND"; echo "=== CLOUD INTEGRATION ===" && cat ${ROOT}/packages/sdk/src/integrations/cloud.ts 2>/dev/null || echo "NOT FOUND"; echo "=== CROSS-PLANE ===" && cat ${ROOT}/packages/sdk/src/integrations/cross-plane.ts 2>/dev/null || echo "NOT FOUND"; echo "=== REVOCATION BROADCAST ===" && cat ${ROOT}/packages/server/src/engine/revocation-broadcast.ts 2>/dev/null || echo "NOT FOUND"; echo "=== PROVISION ===" && cat ${ROOT}/packages/server/src/routes/provision.ts 2>/dev/null || echo "NOT FOUND"`,
+    command: `echo "=== RELAYCAST INTEGRATION ===" && cat ${ROOT}/packages/sdk/typescript/src/integrations/relaycast.ts 2>/dev/null || echo "NOT FOUND"; echo "=== RELAYFILE INTEGRATION ===" && cat ${ROOT}/packages/sdk/typescript/src/integrations/relayfile.ts 2>/dev/null || echo "NOT FOUND"; echo "=== CLOUD INTEGRATION ===" && cat ${ROOT}/packages/sdk/typescript/src/integrations/cloud.ts 2>/dev/null || echo "NOT FOUND"; echo "=== CROSS-PLANE ===" && cat ${ROOT}/packages/sdk/typescript/src/integrations/cross-plane.ts 2>/dev/null || echo "NOT FOUND"; echo "=== REVOCATION BROADCAST ===" && cat ${ROOT}/packages/server/src/engine/revocation-broadcast.ts 2>/dev/null || echo "NOT FOUND"; echo "=== PROVISION ===" && cat ${ROOT}/packages/server/src/routes/provision.ts 2>/dev/null || echo "NOT FOUND"`,
     captureOutput: true,
   })
 

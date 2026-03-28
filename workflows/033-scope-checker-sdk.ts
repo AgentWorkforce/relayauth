@@ -51,25 +51,25 @@ const result = await workflow('033-scope-checker-sdk')
 
   .step('read-scope-parser', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/scope-parser.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/scope-parser.ts`,
     captureOutput: true,
   })
 
   .step('read-scope-matcher', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/scope-matcher.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/scope-matcher.ts`,
     captureOutput: true,
   })
 
   .step('read-existing-scopes', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/scopes.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/scopes.ts`,
     captureOutput: true,
   })
 
   .step('read-errors', {
     type: 'deterministic',
-    command: `cat ${ROOT}/packages/sdk/src/errors.ts`,
+    command: `cat ${ROOT}/packages/sdk/typescript/src/errors.ts`,
     captureOutput: true,
   })
 
@@ -90,7 +90,7 @@ Existing scopes scaffold:
 Errors:
 {{steps.read-errors.output}}
 
-Write failing tests to ${ROOT}/packages/sdk/src/__tests__/scope-checker.test.ts.
+Write failing tests to ${ROOT}/packages/sdk/typescript/src/__tests__/scope-checker.test.ts.
 Use node:test + node:assert/strict.
 
 Test these behaviors:
@@ -110,7 +110,7 @@ Test these behaviors:
   .step('verify-tests-exist', {
     type: 'deterministic',
     dependsOn: ['write-tests'],
-    command: `test -f ${ROOT}/packages/sdk/src/__tests__/scope-checker.test.ts && echo "OK" || echo "MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/__tests__/scope-checker.test.ts && echo "OK" || echo "MISSING"`,
     captureOutput: true,
   })
 
@@ -133,7 +133,7 @@ Errors:
 Tests to pass:
 {{steps.write-tests.output}}
 
-Update ${ROOT}/packages/sdk/src/scopes.ts with the full ScopeChecker class:
+Update ${ROOT}/packages/sdk/typescript/src/scopes.ts with the full ScopeChecker class:
 - constructor(grantedScopes: string[])
 - check(scope: string): boolean — returns true if scope is granted
 - require(scope: string): void — throws InsufficientScopeError if not granted
@@ -143,14 +143,14 @@ Update ${ROOT}/packages/sdk/src/scopes.ts with the full ScopeChecker class:
 - static fromToken(claims: { scopes: string[] }): ScopeChecker
 
 Uses matchScope/matchesAny from scope-matcher.ts.
-Export from ${ROOT}/packages/sdk/src/index.ts.`,
+Export from ${ROOT}/packages/sdk/typescript/src/index.ts.`,
     verification: { type: 'exit_code' },
   })
 
   .step('verify-files', {
     type: 'deterministic',
     dependsOn: ['implement'],
-    command: `test -f ${ROOT}/packages/sdk/src/scopes.ts && echo "impl OK" || echo "impl MISSING"`,
+    command: `test -f ${ROOT}/packages/sdk/typescript/src/scopes.ts && echo "impl OK" || echo "impl MISSING"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -160,7 +160,7 @@ Export from ${ROOT}/packages/sdk/src/index.ts.`,
   .step('run-tests', {
     type: 'deterministic',
     dependsOn: ['verify-files'],
-    command: `cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/scope-checker.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
+    command: `cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/scope-checker.test.ts 2>&1 | tail -30; echo "EXIT: $?"`,
     captureOutput: true,
     failOnError: false,
   })
@@ -210,7 +210,7 @@ Typecheck results:
 {{steps.typecheck.output}}
 
 Fix all issues. Then run:
-cd ${ROOT} && node --test --import tsx packages/sdk/src/__tests__/scope-checker.test.ts && npx turbo typecheck`,
+cd ${ROOT} && node --test --import tsx packages/sdk/typescript/src/__tests__/scope-checker.test.ts && npx turbo typecheck`,
     verification: { type: 'exit_code' },
   })
 
