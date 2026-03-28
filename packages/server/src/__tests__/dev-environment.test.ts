@@ -102,11 +102,11 @@ test("dev token generator produces valid JWT structure", async () => {
   assert.equal(signature, expectedSignature, "JWT should be signed with the dev secret");
 
   assert.equal(payload.sub, "agent_dev_admin");
-  assert.equal(payload.org, "org_test");
-  assert.equal(payload.wks, "ws_test");
-  assert.deepEqual(payload.scopes, ["*"]);
+  assert.equal(payload.org, "org_dev");
+  assert.equal(payload.wks, "ws_dev");
+  assert.deepEqual(payload.scopes, ["*:*:*:*"]);
   assert.equal(payload.iss, "relayauth:dev");
-  assert.deepEqual(payload.aud, ["relayauth"]);
+  assert.deepEqual(payload.aud, ["relayauth", "relayfile"]);
   assert.equal(typeof payload.iat, "number");
   assert.equal(typeof payload.exp, "number");
   assert.equal((payload.exp as number) > (payload.iat as number), true);
