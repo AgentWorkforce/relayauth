@@ -262,14 +262,14 @@ TypeScript SDK for token verification and identity management. The verification 
 
 ```json
 {
-  "extends": "../../tsconfig.base.json",
+  "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src"
   },
   "include": ["src"],
   "references": [
-    { "path": "../types" }
+    { "path": "../../types" }
   ]
 }
 ```

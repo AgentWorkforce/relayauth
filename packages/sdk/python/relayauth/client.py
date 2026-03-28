@@ -99,7 +99,10 @@ def _merge_payload(input_value: Any = None, **kwargs: Any) -> dict[str, Any]:
     if isinstance(input_value, dict):
         return {**input_value, **kwargs}
     if dataclasses.is_dataclass(input_value):
-        return {**dataclasses.asdict(input_value), **kwargs}
+        # Strip trailing underscores from keys — Python uses from_ to avoid
+        # keyword conflict, but the API expects 'from'
+        raw = dataclasses.asdict(input_value)
+        return {**{k.rstrip("_"): v for k, v in raw.items() if v is not None}, **kwargs}
     if hasattr(input_value, "__dict__"):
         return {**vars(input_value), **kwargs}
     raise TypeError("input must be a dict, dataclass-like object, or None")
