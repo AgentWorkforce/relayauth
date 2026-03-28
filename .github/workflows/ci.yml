@@ -34,4 +34,4 @@ jobs:
         run: npx turbo typecheck --filter='!@relayauth/landing'
 
       - name: Test
-        run: npx turbo test --filter='!@relayauth/landing'
+        run: npx turbo test --filter='!@relayauth/landing' --force
