@@ -7,13 +7,14 @@
     "test": "turbo test",
     "typecheck": "turbo typecheck",
     "dev": "turbo dev",
-    "dev:server": "wrangler dev --config wrangler.toml --local --persist-to .wrangler/state --ip 127.0.0.1 --port 8787",
-    "db:migrate:local": "wrangler d1 migrations apply relayauth --local --config wrangler.toml --persist-to .wrangler/state",
+    "dev:server": "tsx packages/server/src/server.ts",
+    "start": "tsx packages/server/src/server.ts",
     "smoke:local": "bash scripts/smoke-local.sh",
     "token:dev": "bash scripts/generate-dev-token.sh",
     "e2e": "npx tsx scripts/e2e.ts"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
     "@relayauth/types": "0.1.0",
     "@types/node": "^24.6.0",
     "agent-trajectories": "^0.5.2",
@@ -21,17 +22,13 @@
     "tsx": "^4.20.6",
     "turbo": "^2",
     "typescript": "^5.7",
-    "wrangler": "^4",
     "yaml": "^2.8.3"
   },
   "workspaces": [
-    "packages/*",
-    "packages/sdk/typescript"
+    "packages/*"
   ],
   "dependencies": {
-    "@agent-relay/sdk": "3.2.21"
-  },
-  "optionalDependencies": {
-    "@rollup/rollup-linux-x64-gnu": "^4.60.0"
+    "@agent-relay/sdk": "3.2.21",
+    "better-sqlite3": "^11.10.0"
   }
 }

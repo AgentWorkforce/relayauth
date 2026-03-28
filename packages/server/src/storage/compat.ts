@@ -1,7 +1,6 @@
 import type { Context } from "hono";
 import type { AppEnv } from "../env.js";
 import type { AuthStorage, AuditStorage, PolicyStorage, RoleStorage } from "./interface.js";
-import { createDatabaseStorage } from "./sqlite.js";
 
 type RoleStorageSource = RoleStorage | Pick<AuthStorage, "roles"> | unknown;
 type PolicyStorageSource = PolicyStorage | Pick<AuthStorage, "policies"> | unknown;
@@ -9,9 +8,6 @@ type AuditStorageSource = AuditStorage | Pick<AuthStorage, "audit"> | unknown;
 type AuthStorageSource = AuthStorage | unknown;
 
 export function resolveAuthStorage(source: AuthStorageSource): AuthStorage {
-  if (typeof source === "object" && source !== null && "prepare" in source) {
-    return createDatabaseStorage(source as D1Database);
-  }
   return source as AuthStorage;
 }
 
@@ -32,9 +28,6 @@ export function resolvePolicyStorage(source: PolicyStorageSource): PolicyStorage
 export function resolveAuditStorage(source: AuditStorageSource): AuditStorage {
   if (typeof source === "object" && source !== null && "audit" in source) {
     return (source as Pick<AuthStorage, "audit">).audit;
-  }
-  if (typeof source === "object" && source !== null && "prepare" in source) {
-    return createDatabaseStorage(source as D1Database).audit;
   }
   return source as AuditStorage;
 }

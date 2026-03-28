@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AuditAction, AuditEntry, RelayAuthTokenClaims } from "@relayauth/types";
 
-import type { StoredIdentity } from "../../durable-objects/identity-do.js";
+import type { StoredIdentity } from "../../storage/identity-types.js";
 import { countExpiredEntries, purgeExpiredEntries } from "../../engine/audit-retention.js";
 import { writeAuditEntry } from "../../engine/audit-logger.js";
 import { dispatchWebhook } from "../../engine/audit-webhook-dispatcher.js";

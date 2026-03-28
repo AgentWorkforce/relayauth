@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
-import type { StoredIdentity } from "../durable-objects/identity-do.js";
+import type { StoredIdentity } from "../storage/identity-types.js";
 import {
   assertJsonResponse,
   createTestApp,

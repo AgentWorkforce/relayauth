@@ -14,7 +14,7 @@ export type CreateRoleInput = {
 
 export type UpdateRoleInput = Partial<Pick<Role, "name" | "description" | "scopes">>;
 
-type RoleStorageSource = D1Database | RoleStorage | Pick<AuthStorage, "roles">;
+type RoleStorageSource = RoleStorage | Pick<AuthStorage, "roles">;
 
 class RoleEngineError extends Error {
   constructor(

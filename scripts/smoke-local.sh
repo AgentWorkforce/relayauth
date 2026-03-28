@@ -2,16 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG="${WRANGLER_CONFIG:-$ROOT/wrangler.toml}"
-PERSIST_TO="${WRANGLER_PERSIST_TO:-$ROOT/.wrangler/state}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8787}"
 BASE_URL="${BASE_URL:-http://${HOST}:${PORT}}"
-
-if [[ ! -f "$ROOT/.dev.vars" ]]; then
-  echo "Missing $ROOT/.dev.vars. Copy .dev.vars.example to .dev.vars first." >&2
-  exit 1
-fi
 
 server_started=false
 log_file=""
@@ -49,20 +42,18 @@ assert_json_field() {
 }
 
 if curl -fsS "$BASE_URL/health" >/dev/null 2>&1; then
-  echo "Reusing existing relayauth worker at $BASE_URL"
+  echo "Reusing existing relayauth server at $BASE_URL"
 else
-  (cd "$ROOT" && npx wrangler d1 migrations apply relayauth --local --config "$CONFIG" --persist-to "$PERSIST_TO") >/dev/null
-
   log_file="$(mktemp -t relayauth-local.XXXXXX.log)"
   (
     cd "$ROOT"
-    npx wrangler dev --config "$CONFIG" --local --persist-to "$PERSIST_TO" --ip "$HOST" --port "$PORT" >"$log_file" 2>&1
+    PORT="$PORT" HOST="$HOST" SIGNING_KEY="${SIGNING_KEY:-dev-secret}" npm run start >"$log_file" 2>&1
   ) &
   server_pid="$!"
   server_started=true
 
   if ! wait_for_server; then
-    echo "Local worker did not become ready. Recent wrangler output:" >&2
+    echo "Local server did not become ready. Recent output:" >&2
     if [[ -f "$log_file" ]]; then
       tail -n 80 "$log_file" >&2
     fi

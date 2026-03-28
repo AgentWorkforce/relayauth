@@ -17,7 +17,7 @@ export type UpdatePolicyInput = Partial<
   Pick<Policy, "name" | "effect" | "scopes" | "conditions" | "priority">
 >;
 
-type PolicyStorageSource = D1Database | PolicyStorage | Pick<AuthStorage, "policies">;
+type PolicyStorageSource = PolicyStorage | Pick<AuthStorage, "policies">;
 
 class PolicyEngineError extends Error {
   constructor(

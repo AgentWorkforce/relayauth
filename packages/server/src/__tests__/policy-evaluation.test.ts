@@ -5,7 +5,7 @@ import type {
   IdentityBudget,
   IdentityBudgetUsage,
   StoredIdentity,
-} from "../durable-objects/identity-do.js";
+} from "../storage/identity-types.js";
 import { generateTestIdentity } from "./test-helpers.js";
 
 type StoredPolicy = Policy & {

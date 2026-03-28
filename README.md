@@ -9,10 +9,8 @@ npm install
 npm run dev
 ```
 
-## Full local worker
+## Full local server
 ```bash
-cp .dev.vars.example .dev.vars
 npm install
-npm run db:migrate:local
-npm run dev:server
+SIGNING_KEY=dev-secret npm run start
 ```

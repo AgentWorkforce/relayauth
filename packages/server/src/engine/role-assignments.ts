@@ -2,7 +2,7 @@ import type { Role } from "@relayauth/types";
 import type { AuthStorage } from "../storage/index.js";
 import { resolveAuthStorage } from "../storage/index.js";
 
-type RoleAssignmentStorageSource = D1Database | AuthStorage;
+type RoleAssignmentStorageSource = AuthStorage;
 
 class RoleAssignmentEngineError extends Error {
   constructor(

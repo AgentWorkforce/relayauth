@@ -14,8 +14,8 @@ import type {
   WorkspaceContextRecord,
 } from "../storage/index.js";
 import { createSqliteStorage } from "../storage/sqlite.js";
-import type { IdentityBudget, StoredIdentity } from "../durable-objects/identity-do.js";
-import { createApp } from "../worker.js";
+import type { IdentityBudget, StoredIdentity } from "../storage/identity-types.js";
+import { createApp } from "../server.js";
 
 type TestBindings = Pick<AppEnv["Bindings"], "SIGNING_KEY" | "SIGNING_KEY_ID" | "INTERNAL_SECRET">;
 

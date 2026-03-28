@@ -6,9 +6,9 @@ import type {
 } from "@relayauth/types";
 import { matchScope } from "@relayauth/sdk";
 import { Hono } from "hono";
-import type { IdentityBudget, StoredIdentity } from "../durable-objects/identity-do.js";
 import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorize, decodeBase64UrlJson } from "../lib/auth.js";
+import type { IdentityBudget, StoredIdentity } from "../storage/identity-types.js";
 import { isStorageError, type AuthStorage } from "../storage/index.js";
 
 type CreateIdentityRequest = CreateIdentityInput & {
@@ -879,7 +879,7 @@ function isIdentityBudgetUsage(value: unknown): value is StoredIdentity["budgetU
 
 async function readResponseError(response: Response, fallback: string): Promise<string> {
   try {
-    const body = await response.clone().json<{ error?: unknown }>();
+    const body = await response.clone().json() as { error?: unknown };
     if (typeof body?.error === "string" && body.error.trim()) {
       return body.error;
     }
