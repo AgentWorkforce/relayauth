@@ -101,7 +101,7 @@ test("dev token generator produces valid JWT structure", async () => {
     .digest("base64url");
   assert.equal(signature, expectedSignature, "JWT should be signed with the dev secret");
 
-  assert.equal(payload.sub, "agent_test");
+  assert.equal(payload.sub, "agent_dev_admin");
   assert.equal(payload.org, "org_test");
   assert.equal(payload.wks, "ws_test");
   assert.deepEqual(payload.scopes, ["*"]);
@@ -114,21 +114,8 @@ test("dev token generator produces valid JWT structure", async () => {
   assert.equal((payload.jti as string).length > 0, true);
 });
 
-test("wrangler config has required bindings", async () => {
-  const source = await readRequiredFile(paths.wranglerConfig, "Wrangler config");
-
-  assert.match(source, /\[\[d1_databases\]\][\s\S]*?binding\s*=\s*"DB"/, "Wrangler config should bind D1 as DB");
-  assert.match(
-    source,
-    /\[\[kv_namespaces\]\][\s\S]*?binding\s*=\s*"REVOCATION_KV"/,
-    "Wrangler config should bind KV as REVOCATION_KV",
-  );
-  assert.match(
-    source,
-    /\[\[durable_objects\.bindings\]\][\s\S]*?name\s*=\s*"IDENTITY_DO"/,
-    "Wrangler config should bind the identity durable object",
-  );
-});
+// Wrangler binding tests removed — Cloudflare-specific config belongs in cloud repo.
+// See: AgentWorkforce/cloud/packages/relayauth/wrangler.toml
 
 test(".dev.vars template has all required env vars", async () => {
   const source = await readRequiredFile(paths.devVarsTemplate, ".dev.vars template");
