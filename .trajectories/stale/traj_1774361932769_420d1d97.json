@@ -1,0 +1,70 @@
+{
+  "id": "traj_1774361932769_420d1d97",
+  "version": 1,
+  "task": {
+    "title": "000-patch-new-concepts-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "ac6cfc20d0750a6bd9661092"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-03-24T14:18:52.769Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-24T14:18:52.769Z"
+    },
+    {
+      "name": "patcher",
+      "role": "specialist",
+      "joinedAt": "2026-03-24T14:18:56.969Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_8170a2af",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-24T14:18:52.769Z",
+      "events": [
+        {
+          "ts": 1774361932769,
+          "type": "note",
+          "content": "Purpose: Patch workflows with sponsor chain, budgets, scope delegation, mandatory expiry"
+        },
+        {
+          "ts": 1774361932769,
+          "type": "note",
+          "content": "Approach: 7-step dag workflow — Parsed 7 steps, 6 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-24T14:18:56.968Z"
+    },
+    {
+      "id": "ch_e63e67b1",
+      "title": "Execution: patch-token-workflows, patch-identity-workflows, patch-scope-workflows, patch-audit-workflows, patch-landing-page",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-24T14:18:56.968Z",
+      "events": [],
+      "endedAt": "2026-03-24T14:18:56.970Z"
+    },
+    {
+      "id": "ch_61b14bb4",
+      "title": "Execution: patch-token-workflows",
+      "agentName": "patcher",
+      "startedAt": "2026-03-24T14:18:56.970Z",
+      "events": [
+        {
+          "ts": 1774361936970,
+          "type": "note",
+          "content": "\"patch-token-workflows\": Update token-related workflows to include sponsor chain, mandatory expiry, and scope delegation",
+          "raw": {
+            "agent": "patcher"
+          }
+        }
+      ]
+    }
+  ]
+}

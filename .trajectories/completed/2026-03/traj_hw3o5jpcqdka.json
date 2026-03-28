@@ -1,0 +1,25 @@
+{
+  "id": "traj_hw3o5jpcqdka",
+  "version": 1,
+  "task": {
+    "title": "Fix TypeScript build failures in @relayauth/server"
+  },
+  "status": "completed",
+  "startedAt": "2026-03-27T19:13:07.401Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relayauth",
+  "tags": [],
+  "_trace": {
+    "startRef": "df91531d2eef83b67e704703f7a0c9c373662c0c",
+    "endRef": "df91531d2eef83b67e704703f7a0c9c373662c0c"
+  },
+  "completedAt": "2026-03-27T19:14:24.993Z",
+  "retrospective": {
+    "summary": "Verified the @relayauth/server packaging/export fixes on disk and confirmed the package builds cleanly with direct tsc, targeted export tests, and turbo build.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  }
+}

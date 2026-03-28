@@ -1,0 +1,94 @@
+{
+  "id": "traj_1774643007750_01d040c5",
+  "version": 1,
+  "task": {
+    "title": "ci-verify-My-Senior-Dev-app-workflow",
+    "source": {
+      "system": "workflow-runner",
+      "id": "abd2588b5b4ae7605e9c5a37"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-03-27T20:23:27.750Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-03-27T20:23:27.750Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch_0d7e75dd",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-27T20:23:27.750Z",
+      "events": [
+        {
+          "ts": 1774643007750,
+          "type": "note",
+          "content": "Purpose: CI verification (pre-push): My-Senior-Dev/app PR #10"
+        },
+        {
+          "ts": 1774643007750,
+          "type": "note",
+          "content": "Approach: 23-step dag workflow — Parsed 23 steps, 22 dependent steps, DAG validated, no cycles"
+        }
+      ],
+      "endedAt": "2026-03-27T20:23:29.853Z"
+    },
+    {
+      "id": "ch_d1e86fa0",
+      "title": "Retrospective",
+      "agentName": "orchestrator",
+      "startedAt": "2026-03-27T20:23:29.853Z",
+      "events": [
+        {
+          "ts": 1774643009853,
+          "type": "reflection",
+          "content": "Failed at \"check-env\" [unknown] after 2s. 0/23 steps completed before failure. (abandoned after 2 seconds)",
+          "significance": "high"
+        },
+        {
+          "ts": 1774643009853,
+          "type": "error",
+          "content": "Workflow abandoned: Channel name must be lowercase alphanumeric and hyphens, starting with a letter or number",
+          "significance": "high"
+        }
+      ],
+      "endedAt": "2026-03-27T20:23:29.853Z"
+    }
+  ],
+  "completedAt": "2026-03-27T20:23:29.853Z",
+  "retrospective": {
+    "summary": "Failed at \"check-env\" [unknown] after 2s. 0/23 steps completed before failure.",
+    "approach": "dag workflow (0 agents)",
+    "confidence": 0,
+    "learnings": [],
+    "challenges": [
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition.",
+      "Unexpected failure. Review the error and step definition."
+    ]
+  }
+}
