@@ -1,3 +1,0 @@
-SIGNING_KEY=dev-secret
-SIGNING_KEY_ID=dev-key
-INTERNAL_SECRET=internal-test-secret

@@ -190,7 +190,7 @@ function sanitizeRoleUpdate(body: UpdateRoleRequest): UpdateRoleRequest {
 }
 
 async function parseJsonObjectBody<T>(request: Request): Promise<T | null> {
-  const body = await request.json<T>().catch(() => null);
+  const body = await request.json().catch(() => null) as T | null;
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return null;
   }

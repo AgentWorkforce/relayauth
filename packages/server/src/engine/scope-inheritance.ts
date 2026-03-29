@@ -1,5 +1,5 @@
 import type { Policy, Role } from "@relayauth/types";
-import type { StoredIdentity as BaseStoredIdentity } from "../durable-objects/identity-do.js";
+import type { StoredIdentity as BaseStoredIdentity } from "../storage/identity-types.js";
 
 type StoredIdentity = Omit<BaseStoredIdentity, "workspaceId"> & { workspaceId?: string };
 import { applyPolicies, evaluateCondition, scopeMatches as policyEvalScopeMatches } from "./policy-evaluation.js";
@@ -48,7 +48,7 @@ export type InheritanceChain = {
   effective: string[];
 };
 
-type ScopeInheritanceStorageSource = D1Database | AuthStorage;
+type ScopeInheritanceStorageSource = AuthStorage;
 
 export async function resolveInheritedScopes(
   storageSource: ScopeInheritanceStorageSource,
@@ -135,17 +135,17 @@ export async function getInheritanceChain(
   };
 }
 
-async function getOrgScopes(storageSource: AuthStorage | D1Database, orgId: string): Promise<string[]> {
+async function getOrgScopes(storageSource: AuthStorage, orgId: string): Promise<string[]> {
   const context = await loadOrganizationContext(resolveAuthStorage(storageSource), orgId);
   return context.scopes;
 }
 
-async function getWorkspaceScopes(storageSource: AuthStorage | D1Database, workspaceId: string): Promise<string[]> {
+async function getWorkspaceScopes(storageSource: AuthStorage, workspaceId: string): Promise<string[]> {
   const context = await loadWorkspaceContext(resolveAuthStorage(storageSource), workspaceId);
   return context.scopes;
 }
 
-async function getAgentScopes(storageSource: AuthStorage | D1Database, identityId: string): Promise<string[]> {
+async function getAgentScopes(storageSource: AuthStorage, identityId: string): Promise<string[]> {
   const storage = resolveAuthStorage(storageSource);
   const identity = await getIdentity(storage, identityId);
   if (!identity) {

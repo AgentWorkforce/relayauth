@@ -13,7 +13,7 @@ import type {
   IdentityBudget,
   IdentityBudgetUsage,
   StoredIdentity,
-} from "../durable-objects/identity-do.js";
+} from "./identity-types.js";
 
 export type ExtendedAuditAction =
   | AuditAction

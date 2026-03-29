@@ -6,10 +6,7 @@
     "declaration": true,
     "composite": true,
     "skipLibCheck": true,
-    "types": [
-      "@cloudflare/workers-types",
-      "node"
-    ]
+    "types": ["node"]
   },
   "include": [
     "src/**/*.ts"

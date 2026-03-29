@@ -147,19 +147,10 @@ start_services() {
     return 1
   fi
 
-  print_info "Applying local D1 migrations for relayauth"
-  (
-    cd "$RELAYAUTH_ROOT"
-    npx wrangler d1 migrations apply relayauth --local --config "$RELAYAUTH_ROOT/wrangler.toml" --persist-to "$RELAYAUTH_ROOT/.wrangler/state"
-  ) >>"$RELAYAUTH_LOG" 2>&1 || {
-    print_fail "Failed to apply relayauth D1 migrations (see $RELAYAUTH_LOG)"
-    return 1
-  }
-
   print_info "Starting relayauth on :8787"
   (
     cd "$RELAYAUTH_ROOT"
-    SIGNING_KEY="$SHARED_SECRET" npx wrangler dev --local --port 8787
+    SIGNING_KEY="$SHARED_SECRET" PORT=8787 npm run start
   ) >"$RELAYAUTH_LOG" 2>&1 &
   RELAYAUTH_PID=$!
 

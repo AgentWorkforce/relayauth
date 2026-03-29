@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 
-import type { StoredIdentity } from "../durable-objects/identity-do.js";
 import type { AppEnv } from "../env.js";
 import { requireScope } from "../middleware/scope.js";
+import type { StoredIdentity } from "../storage/identity-types.js";
 import type { AuthStorage } from "../storage/index.js";
 import {
   buildAuditQuery,

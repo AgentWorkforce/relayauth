@@ -1,4 +1,4 @@
-export { createApp, IdentityDO } from "./worker.js";
+export { createApp, startServer } from "./server.js";
 export * from "./engine/index.js";
 export * from "./middleware/scope.js";
 export {
@@ -19,4 +19,4 @@ export type {
   RoleStorage,
   TokenStorage,
 } from "./storage/index.js";
-export type { AppEnv } from "./env.js";
+export type { AppConfig, AppEnv } from "./env.js";

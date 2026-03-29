@@ -1,7 +1,10 @@
+import process from "node:process";
+
+import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import type { AppEnv } from "./env.js";
-export { IdentityDO } from "./durable-objects/index.js";
+
+import type { AppConfig, AppEnv } from "./env.js";
 import auditExport from "./routes/audit-export.js";
 import auditQuery from "./routes/audit-query.js";
 import auditWebhooks from "./routes/audit-webhooks.js";
@@ -14,35 +17,63 @@ import policies from "./routes/policies.js";
 import roleAssignments from "./routes/role-assignments.js";
 import roles from "./routes/roles.js";
 import type { AuthStorage } from "./storage/index.js";
+import { createSqliteStorage } from "./storage/sqlite.js";
 
-// Routes that do not require authentication
 const PUBLIC_PATHS = new Set([
   "/health",
   "/.well-known/agent-configuration",
   "/v1/discovery/agent-card",
 ]);
+const BRIDGE_RATE_LIMIT = 30;
+const BRIDGE_RATE_WINDOW_MS = 60_000;
+
+export type CreateAppOptions = {
+  storage?: AuthStorage;
+  config?: Partial<AppConfig>;
+  defaultBindings?: Partial<AppConfig>;
+  signingKey?: string;
+  signingKeyId?: string;
+  internalSecret?: string;
+  baseUrl?: string;
+  allowedOrigins?: string;
+};
+
+export type StartServerOptions = {
+  port?: number;
+  dbPath?: string;
+  storage?: AuthStorage;
+  config?: Partial<AppConfig>;
+};
 
 function isPublicPath(path: string): boolean {
   return PUBLIC_PATHS.has(path) || path.startsWith("/.well-known/");
 }
 
-// Per-IP rate limiting for the bridge endpoint (SSRF-sensitive)
-const BRIDGE_RATE_LIMIT = 30; // requests per window
-const BRIDGE_RATE_WINDOW_MS = 60_000; // 1 minute
+function normalizeConfig(options: CreateAppOptions): Partial<AppConfig> {
+  return {
+    ...(options.defaultBindings ?? {}),
+    ...(options.config ?? {}),
+    ...(options.signingKey !== undefined ? { SIGNING_KEY: options.signingKey } : {}),
+    ...(options.signingKeyId !== undefined ? { SIGNING_KEY_ID: options.signingKeyId } : {}),
+    ...(options.internalSecret !== undefined ? { INTERNAL_SECRET: options.internalSecret } : {}),
+    ...(options.baseUrl !== undefined ? { BASE_URL: options.baseUrl } : {}),
+    ...(options.allowedOrigins !== undefined ? { ALLOWED_ORIGINS: options.allowedOrigins } : {}),
+  };
+}
 
-type CreateAppOptions = {
-  defaultBindings?: Partial<AppEnv["Bindings"]>;
-  storage?: AuthStorage;
-};
+function getClientIp(forwardedFor: string | undefined, realIp: string | undefined): string {
+  const firstForwarded = forwardedFor?.split(",")[0]?.trim();
+  return firstForwarded || realIp?.trim() || "unknown";
+}
 
 export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const bridgeRateMap = new Map<string, { count: number; resetAt: number }>();
-  const defaultBindings = options.defaultBindings ?? {};
+  const config = normalizeConfig(options);
 
-  if (Object.keys(defaultBindings).length > 0) {
+  if (Object.keys(config).length > 0) {
     app.use("*", async (c, next) => {
-      Object.assign(c.env as Record<string, unknown>, defaultBindings);
+      Object.assign(c.env as Record<string, unknown>, config);
       await next();
     });
   }
@@ -51,36 +82,30 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
     if (!options.storage) {
       throw new Error("storage is required — use createSqliteStorage (local) or provide a storage adapter");
     }
+
     c.set("storage", options.storage);
     await next();
   });
 
-  // Global middleware: CORS with origin restriction
   app.use("*", async (c, next) => {
     const allowedRaw = c.env.ALLOWED_ORIGINS;
     const origin = c.req.header("Origin") ?? "";
 
     if (allowedRaw) {
-      const allowed = allowedRaw.split(",").map((o) => o.trim()).filter(Boolean);
+      const allowed = allowedRaw.split(",").map((value) => value.trim()).filter(Boolean);
       return cors({ origin: allowed })(c, next);
     }
 
-    // No ALLOWED_ORIGINS configured: deny cross-origin requests by omitting
-    // the Access-Control-Allow-Origin header (same-origin requests still work).
     return cors({ origin: () => (origin === "" ? "*" : "") })(c, next);
   });
 
-  // Request ID middleware
   app.use("*", async (c, next) => {
-    const requestId =
-      c.req.header("x-request-id") ?? crypto.randomUUID();
+    const requestId = c.req.header("x-request-id") ?? crypto.randomUUID();
     c.header("x-request-id", requestId);
     c.set("requestId", requestId);
     await next();
   });
 
-  // Default-deny auth middleware: all non-public routes require a valid Bearer token.
-  // Individual routes still enforce scope checks via requireScope().
   app.use("*", async (c, next) => {
     if (isPublicPath(c.req.path)) {
       return next();
@@ -96,12 +121,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
       return c.json({ error: "Invalid Authorization header", code: "invalid_authorization" }, 401);
     }
 
-    // Token is present and well-formed; per-route middleware handles full verification.
     await next();
   });
 
   app.use("/v1/discovery/bridge", async (c, next) => {
-    const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
+    const ip = getClientIp(c.req.header("x-forwarded-for"), c.req.header("x-real-ip"));
     const now = Date.now();
 
     let entry = bridgeRateMap.get(ip);
@@ -135,6 +159,39 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   return app;
 }
 
-// No default export — callers must provide storage:
-// import { createApp } from '@relayauth/server';
-// const app = createApp({ storage: createSqliteStorage() });
+export function startServer(options: StartServerOptions = {}) {
+  const port = Number.isFinite(options.port) ? (options.port as number) : 8787;
+  const storage = options.storage ?? createSqliteStorage(options.dbPath);
+  const internalSecret =
+    options.config?.INTERNAL_SECRET
+    ?? process.env.INTERNAL_SECRET
+    ?? ("INTERNAL_SECRET" in storage && typeof storage.INTERNAL_SECRET === "string"
+      ? storage.INTERNAL_SECRET
+      : "internal-test-secret");
+  const config: AppConfig = {
+    SIGNING_KEY: options.config?.SIGNING_KEY ?? process.env.SIGNING_KEY ?? "dev-secret",
+    SIGNING_KEY_ID: options.config?.SIGNING_KEY_ID ?? process.env.SIGNING_KEY_ID ?? "dev-key",
+    INTERNAL_SECRET: internalSecret,
+    BASE_URL: options.config?.BASE_URL ?? process.env.BASE_URL ?? `http://127.0.0.1:${port}`,
+    ALLOWED_ORIGINS: options.config?.ALLOWED_ORIGINS ?? process.env.ALLOWED_ORIGINS,
+  };
+
+  const app = createApp({
+    storage,
+    config,
+  });
+
+  console.log(`relayauth listening on :${port}`);
+
+  return serve({
+    port,
+    fetch: (request) => app.fetch(request, config),
+  });
+}
+
+if (import.meta.url === new URL(process.argv[1] ?? "", "file:").href) {
+  startServer({
+    port: process.env.PORT ? Number.parseInt(process.env.PORT, 10) : undefined,
+    dbPath: process.env.RELAYAUTH_DB_PATH ?? process.env.DB_PATH,
+  });
+}

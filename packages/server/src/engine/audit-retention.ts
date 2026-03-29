@@ -3,6 +3,24 @@ export type OrgAuditRetentionConfig = {
   retentionDays: number;
 };
 
+type SqlRunMeta = {
+  changes?: number;
+};
+
+type SqlRunResult = {
+  meta?: SqlRunMeta;
+};
+
+type SqlStatement = {
+  bind(...params: unknown[]): SqlStatement;
+  run(): Promise<SqlRunResult>;
+  first<T>(): Promise<T | null>;
+};
+
+type SqlExecutor = {
+  prepare(query: string): SqlStatement;
+};
+
 type RetentionConfigRow = {
   org_id?: unknown;
   orgId?: unknown;
@@ -15,7 +33,7 @@ const MIN_RETENTION_DAYS = 7;
 const MAX_RETENTION_DAYS = 365;
 
 export async function purgeExpiredEntries(
-  db: D1Database,
+  db: SqlExecutor,
   retentionDays = DEFAULT_RETENTION_DAYS,
 ): Promise<{ deletedCount: number }> {
   const normalizedRetentionDays = normalizeRetentionDays(retentionDays);
@@ -23,12 +41,12 @@ export async function purgeExpiredEntries(
   const result = await db.prepare("DELETE FROM audit_logs WHERE created_at < ?").bind(cutoff).run();
 
   return {
-    deletedCount: result.meta.changes ?? 0,
+    deletedCount: result.meta?.changes ?? 0,
   };
 }
 
 export async function countExpiredEntries(
-  db: D1Database,
+  db: SqlExecutor,
   retentionDays = DEFAULT_RETENTION_DAYS,
 ): Promise<{ expiredCount: number }> {
   const normalizedRetentionDays = normalizeRetentionDays(retentionDays);
@@ -44,7 +62,7 @@ export async function countExpiredEntries(
 }
 
 export async function getRetentionConfig(
-  db: D1Database,
+  db: SqlExecutor,
   orgId: string,
 ): Promise<OrgAuditRetentionConfig> {
   const normalizedOrgId = validateOrgId(orgId);
@@ -67,7 +85,7 @@ export async function getRetentionConfig(
 }
 
 export async function setRetentionConfig(
-  db: D1Database,
+  db: SqlExecutor,
   orgId: string,
   retentionDays: number,
 ): Promise<OrgAuditRetentionConfig> {

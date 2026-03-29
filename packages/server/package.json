@@ -27,7 +27,8 @@
     }
   },
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "tsx src/server.ts",
+    "start": "tsx src/server.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx src/__tests__/*.test.ts",
@@ -37,20 +38,11 @@
     "@relayauth/sdk": "*",
     "@relayauth/types": "*",
     "@hono/node-server": "^1.19.11",
+    "better-sqlite3": "^11.10.0",
     "hono": "^4"
   },
-  "peerDependencies": {
-    "@cloudflare/workers-types": "^4",
-    "better-sqlite3": "^11.10.0"
-  },
-  "peerDependenciesMeta": {
-    "better-sqlite3": {
-      "optional": true
-    }
-  },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4",
-    "wrangler": "^4"
+    "@types/better-sqlite3": "^7.6.12"
   },
   "publishConfig": {
     "access": "public"

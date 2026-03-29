@@ -17,7 +17,7 @@ export type AuditLoggerEntry = Omit<AuditEntry, "action"> & {
 };
 
 type AuditLoggerInput = Partial<AuditLoggerEntry>;
-type AuditStorageSource = D1Database | AuditStorage | Pick<AuthStorage, "audit">;
+type AuditStorageSource = AuditStorage | Pick<AuthStorage, "audit">;
 
 type TokenValidationResult =
   | { ok: true; claims: RelayAuthTokenClaims }
