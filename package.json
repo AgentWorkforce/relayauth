@@ -25,7 +25,8 @@
     "yaml": "^2.8.3"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "packages/sdk/typescript"
   ],
   "dependencies": {
     "@agent-relay/sdk": "3.2.21",

@@ -48,13 +48,15 @@ const DEFAULT_INTERNAL_SECRET = "internal-test-secret";
  * D1-compatible shim for test helpers that access .DB.prepare().
  * Wraps better-sqlite3's synchronous API in D1's async interface.
  */
+interface D1PreparedResult {
+  all<T = unknown>(): Promise<{ results: T[] }>;
+  run(): Promise<{ success: boolean }>;
+  first<T = unknown>(): Promise<T | null>;
+}
+
 export interface D1Shim {
-  prepare(sql: string): {
-    bind(...params: unknown[]): {
-      all(): Promise<{ results: unknown[] }>;
-      run(): Promise<{ success: boolean }>;
-      first(): Promise<unknown>;
-    };
+  prepare(sql: string): D1PreparedResult & {
+    bind(...params: unknown[]): D1PreparedResult;
   };
   exec(sql: string): Promise<void>;
 }
@@ -773,29 +775,35 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
   // D1-compatible shim so test helpers that access .DB.prepare() still work
   const DB: D1Shim = {
     prepare(sql: string) {
+      function makeMethods(params: unknown[]): D1PreparedResult {
+        return {
+          async all<T = unknown>() {
+            const backend = await provider.getBackend();
+            if (backend.kind !== "sqlite") return { results: [] as T[] };
+            const stmt = backend.db.prepare(sql);
+            return { results: (params.length ? stmt.all(...params) : stmt.all()) as T[] };
+          },
+          async run() {
+            const backend = await provider.getBackend();
+            if (backend.kind !== "sqlite") return { success: true };
+            const stmt = backend.db.prepare(sql);
+            params.length ? stmt.run(...params) : stmt.run();
+            return { success: true };
+          },
+          async first<T = unknown>() {
+            const backend = await provider.getBackend();
+            if (backend.kind !== "sqlite") return null as T | null;
+            const stmt = backend.db.prepare(sql);
+            return (params.length ? stmt.get(...params) : stmt.get()) as T | null;
+          },
+        };
+      }
+
+      // Return all/run/first directly (no bind) AND via bind()
       return {
+        ...makeMethods([]),
         bind(...params: unknown[]) {
-          return {
-            async all() {
-              const backend = await provider.getBackend();
-              if (backend.kind !== "sqlite") return { results: [] };
-              const stmt = backend.db.prepare(sql);
-              return { results: params.length ? stmt.all(...params) : stmt.all() };
-            },
-            async run() {
-              const backend = await provider.getBackend();
-              if (backend.kind !== "sqlite") return { success: true };
-              const stmt = backend.db.prepare(sql);
-              params.length ? stmt.run(...params) : stmt.run();
-              return { success: true };
-            },
-            async first() {
-              const backend = await provider.getBackend();
-              if (backend.kind !== "sqlite") return null;
-              const stmt = backend.db.prepare(sql);
-              return params.length ? stmt.get(...params) : stmt.get();
-            },
-          };
+          return makeMethods(params);
         },
       };
     },
