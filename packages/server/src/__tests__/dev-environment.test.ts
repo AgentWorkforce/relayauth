@@ -117,10 +117,4 @@ test("dev token generator produces valid JWT structure", async () => {
 // Wrangler binding tests removed — Cloudflare-specific config belongs in cloud repo.
 // See: AgentWorkforce/cloud/packages/relayauth/wrangler.toml
 
-test(".dev.vars template has all required env vars", async () => {
-  const source = await readRequiredFile(paths.devVarsTemplate, ".dev.vars template");
-
-  assert.match(source, /^SIGNING_KEY=/m, "Template should include SIGNING_KEY");
-  assert.match(source, /^SIGNING_KEY_ID=/m, "Template should include SIGNING_KEY_ID");
-  assert.match(source, /^INTERNAL_SECRET=/m, "Template should include INTERNAL_SECRET");
-});
+// .dev.vars template test removed — Cloudflare-specific, belongs in cloud repo
