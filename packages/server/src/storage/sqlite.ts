@@ -785,10 +785,10 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
           },
           async run() {
             const backend = await provider.getBackend();
-            if (backend.kind !== "sqlite") return { success: true };
+            if (backend.kind !== "sqlite") return { success: true, meta: { changes: 0 } };
             const stmt = backend.db.prepare(sql);
-            params.length ? stmt.run(...params) : stmt.run();
-            return { success: true };
+            const result = params.length ? stmt.run(...params) : stmt.run();
+            return { success: true, meta: { changes: result.changes ?? 0 } };
           },
           async first<T = unknown>() {
             const backend = await provider.getBackend();
