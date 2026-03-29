@@ -64,7 +64,7 @@ declare -a DOMAINS=(
   "domain-9/integration|feat: Domain 9 — Integration (relaycast, relayfile, cloud, cross-plane, propagation)|076 077 078 079 080 081 082"
 
   # Domain 10: Hosted Server
-  "domain-10/hosted|feat: Domain 10 — Hosted Server (wrangler, D1, DOs, KV, deploy staging/prod)|083 084 085 086 087 088 089 090"
+  "domain-10/hosted|feat: Domain 10 — Hosted Server (node, sqlite, hosted deploy, staging/prod)|083 084 085 086 087 088 089 090"
 
   # Domain 11: Testing & CI
   "domain-11/testing-ci|feat: Domain 11 — Testing & CI (unit, integration, E2E, CI, npm publish, deploy)|091 092 093 094 095 096"

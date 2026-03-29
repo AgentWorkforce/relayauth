@@ -6,17 +6,16 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc --build --force",
-    "test": "vitest run",
+    "test": "node --import tsx --test src/__tests__/*.test.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@relayauth/types": "0.1.0",
+    "@relayauth/types": "*",
     "hono": "^4"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "vitest": "3.1.4"
+    "typescript": "^5.9.3"
   },
   "publishConfig": {
     "access": "public"

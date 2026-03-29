@@ -9,7 +9,7 @@ import {
   generateTestToken,
   seedStoredIdentities,
 } from "./test-helpers.js";
-import type { StoredIdentity } from "../durable-objects/identity-do.js";
+import type { StoredIdentity } from "../storage/identity-types.js";
 
 type ListIdentitiesResponse = {
   data: AgentIdentity[];

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Hono } from "hono";
 import * as server from "../index.js";
-import { createApp } from "../worker.js";
+import { createApp } from "../server.js";
 
 function getRoutePaths(app: Hono): Set<string> {
   return new Set(app.routes.map((route) => route.path));
@@ -39,12 +39,7 @@ test("TestCreateAppHasAllRoutes", () => {
 test("TestIndexExportsAll", () => {
   assert.equal(typeof server.createApp, "function", "index should export createApp()");
   assert.equal(typeof server.requireScope, "function", "index should export requireScope()");
-  assert.equal(typeof server.IdentityDO, "function", "index should export IdentityDO");
-  assert.match(
-    Function.prototype.toString.call(server.IdentityDO),
-    /^class\s+/,
-    "IdentityDO should be exported as a class",
-  );
+  assert.equal(typeof server.startServer, "function", "index should export startServer()");
 });
 
 test("TestAppFactoryIsIdempotent", () => {

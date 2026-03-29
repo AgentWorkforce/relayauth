@@ -159,6 +159,24 @@ function createRecordingD1(options: RecordingD1Options = {}): RecordingD1 {
   };
 }
 
+type RecordingAuditStorage = {
+  storage: { audit: { write: (entry: unknown) => Promise<void>; writeBatch: (entries: unknown[]) => Promise<void> } };
+  writes: unknown[];
+};
+
+function createRecordingAuditStorage(): RecordingAuditStorage {
+  const writes: unknown[] = [];
+  return {
+    storage: {
+      audit: {
+        write: async (entry: unknown) => { writes.push(entry); },
+        writeBatch: async (entries: unknown[]) => { entries.forEach(e => writes.push(e)); },
+      },
+    },
+    writes,
+  };
+}
+
 async function loadAuditLogger(): Promise<AuditLoggerModule> {
   let moduleRecord: Record<string, unknown>;
 
@@ -317,21 +335,21 @@ function createAuthorizationHeader(claims: Partial<RelayAuthTokenClaims> = {}): 
   };
 }
 
-test("writeAuditEntry() writes budget breach entries to D1 with sponsor and budget metadata", async () => {
+test("writeAuditEntry() writes budget breach entries with sponsor and budget metadata", async () => {
   const { writeAuditEntry } = await loadAuditLogger();
-  const { db, runs } = createRecordingD1();
+  const { storage, writes } = createRecordingAuditStorage();
   const entry = createBudgetExceededEntry();
 
-  await writeAuditEntry(db, entry);
+  await writeAuditEntry(storage, entry);
 
-  assert.equal(runs.length, 1, "expected one D1 write");
-  const write = findAuditWrite(runs);
-  assert.equal(write.params.includes("budget.exceeded"), true, "expected the new budget.exceeded action");
-  assert.equal(write.params.includes("agent_budget_1"), true, "expected the entry identity id");
-  assert.equal(write.params.includes("org_budget_1"), true, "expected the entry org id");
-  assert.equal(write.params.includes("denied"), true, "expected the entry result");
+  assert.equal(writes.length, 1, "expected one audit write");
+  const write = writes[0] as Record<string, unknown>;
+  assert.equal(write.action, "budget.exceeded", "expected the budget.exceeded action");
+  assert.equal(write.identityId, "agent_budget_1", "expected the entry identity id");
+  assert.equal(write.orgId, "org_budget_1", "expected the entry org id");
+  assert.equal(write.result, "denied", "expected the entry result");
 
-  const metadata = findMetadata(write.params);
+  const metadata = (write.metadata ?? {}) as MetadataRecord;
   assert.equal(metadata.sponsorId, "user_sponsor_1");
   assert.deepEqual(JSON.parse(metadata.sponsorChain), [
     "user_sponsor_1",
@@ -352,24 +370,21 @@ test("writeAuditEntry() writes budget breach entries to D1 with sponsor and budg
 
 test("writeAuditEntry() generates a unique audit id and timestamp when they are not provided", async () => {
   const { writeAuditEntry } = await loadAuditLogger();
-  const { db, runs } = createRecordingD1();
+  const { storage, writes } = createRecordingAuditStorage();
 
-  await writeAuditEntry(db, createBudgetExceededEntry({ identityId: "agent_budget_1a" }));
-  await writeAuditEntry(db, createBudgetExceededEntry({ identityId: "agent_budget_1b" }));
+  await writeAuditEntry(storage, createBudgetExceededEntry({ identityId: "agent_budget_1a" }));
+  await writeAuditEntry(storage, createBudgetExceededEntry({ identityId: "agent_budget_1b" }));
 
-  assert.equal(runs.length, 2, "expected two writes");
+  assert.equal(writes.length, 2, "expected two writes");
 
-  const firstWrite = findAuditWrite([runs[0]]);
-  const secondWrite = findAuditWrite([runs[1]]);
+  const first = writes[0] as Record<string, unknown>;
+  const second = writes[1] as Record<string, unknown>;
 
-  const firstId = findAuditId(firstWrite.params);
-  const secondId = findAuditId(secondWrite.params);
-  const firstTimestamp = findIsoTimestamp(firstWrite.params);
-  const secondTimestamp = findIsoTimestamp(secondWrite.params);
-
-  assert.notEqual(firstId, secondId, "expected unique generated ids");
-  assert.equal(Number.isNaN(Date.parse(firstTimestamp)), false, "expected a valid timestamp");
-  assert.equal(Number.isNaN(Date.parse(secondTimestamp)), false, "expected a valid timestamp");
+  assert.ok(typeof first.id === "string" && first.id.length > 0, "expected a generated id");
+  assert.ok(typeof second.id === "string" && second.id.length > 0, "expected a generated id");
+  assert.notEqual(first.id, second.id, "expected unique generated ids");
+  assert.equal(Number.isNaN(Date.parse(first.timestamp as string)), false, "expected a valid timestamp");
+  assert.equal(Number.isNaN(Date.parse(second.timestamp as string)), false, "expected a valid timestamp");
 });
 
 test("writeAuditEntry() validates required fields and sponsor trace metadata", async (t) => {
@@ -487,11 +502,11 @@ test("createAuditMiddleware() logs token validation events automatically", async
   assert.equal(metadata.tokenId, "tok_middleware_1");
 });
 
-test("flushAuditBatch() writes multiple audit entries in one transaction", async () => {
+test("flushAuditBatch() writes multiple audit entries", async () => {
   const { flushAuditBatch } = await loadAuditLogger();
-  const { db, runs, batchCalls } = createRecordingD1();
+  const { storage, writes } = createRecordingAuditStorage();
 
-  await flushAuditBatch(db, [
+  await flushAuditBatch(storage, [
     createAuditAlertEntry("budget.alert"),
     createAuditAlertEntry("scope.escalation_denied", {
       identityId: "agent_scope_1",
@@ -508,27 +523,17 @@ test("flushAuditBatch() writes multiple audit entries in one transaction", async
     }),
   ]);
 
-  assert.equal(batchCalls.length, 1, "expected a single D1 batch transaction");
-  assert.equal(batchCalls[0]?.length, 2, "expected both entries to be written in the same batch");
-  assert.equal(runs.length, 2, "expected both batched statements to execute");
+  assert.equal(writes.length, 2, "expected both entries to be written");
 
-  const actions = batchCalls[0]?.flatMap((statement) =>
-    statement.params.filter((param): param is string => typeof param === "string"),
-  ) ?? [];
+  const actions = writes.map((w) => (w as Record<string, unknown>).action);
   assert.equal(actions.includes("budget.alert"), true, "expected support for the new budget.alert action");
-  assert.equal(
-    actions.includes("scope.escalation_denied"),
-    true,
-    "expected support for the new scope.escalation_denied action",
-  );
+  assert.equal(actions.includes("scope.escalation_denied"), true, "expected support for scope.escalation_denied");
 
-  const alertWrite = findAuditWrite(runs.filter((statement) => statement.params.includes("budget.alert")));
-  const escalationWrite = findAuditWrite(
-    runs.filter((statement) => statement.params.includes("scope.escalation_denied")),
-  );
+  const alertEntry = writes.find((w) => (w as Record<string, unknown>).action === "budget.alert") as Record<string, unknown>;
+  const escalationEntry = writes.find((w) => (w as Record<string, unknown>).action === "scope.escalation_denied") as Record<string, unknown>;
 
-  const alertMetadata = findMetadata(alertWrite.params);
-  const escalationMetadata = findMetadata(escalationWrite.params);
+  const alertMetadata = (alertEntry.metadata ?? {}) as MetadataRecord;
+  const escalationMetadata = (escalationEntry.metadata ?? {}) as MetadataRecord;
 
   assert.equal(alertMetadata.sponsorId, "user_sponsor_2");
   assert.deepEqual(JSON.parse(alertMetadata.sponsorChain), [

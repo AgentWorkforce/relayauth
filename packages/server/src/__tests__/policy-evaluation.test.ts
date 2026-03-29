@@ -5,7 +5,7 @@ import type {
   IdentityBudget,
   IdentityBudgetUsage,
   StoredIdentity,
-} from "../durable-objects/identity-do.js";
+} from "../storage/identity-types.js";
 import { generateTestIdentity } from "./test-helpers.js";
 
 type StoredPolicy = Policy & {
@@ -59,6 +59,7 @@ type AuditWrite = {
 };
 
 type PolicyEvaluationScenario = {
+  storage: unknown;
   db: D1Database;
   auditWrites: AuditWrite[];
 };
@@ -518,7 +519,61 @@ function createPolicyEvaluationDb(input: {
     dump: async () => new ArrayBuffer(0),
   } as D1Database;
 
-  return { db, auditWrites };
+  // AuthStorage-compatible facade over the in-memory data
+  const storage = {
+    identities: {
+      get: async (id: string) => identities.get(id) ?? null,
+      list: async (orgId: string) => [...identities.values()].filter(i => i.orgId === orgId),
+      create: async (i: StoredIdentity) => { identities.set(i.id, clone(i)); return clone(i); },
+      update: async (id: string, patch: Partial<StoredIdentity>) => { const i = identities.get(id)!; Object.assign(i, patch); return clone(i); },
+      delete: async (id: string) => { identities.delete(id); },
+      suspend: async (id: string) => { const i = identities.get(id)!; i.status = "suspended"; return clone(i); },
+      retire: async (id: string) => { const i = identities.get(id)!; i.status = "retired"; return clone(i); },
+      reactivate: async (id: string) => { const i = identities.get(id)!; i.status = "active"; return clone(i); },
+      findDuplicate: async () => null,
+      loadOrgBudget: async () => undefined,
+      listChildIds: async () => [],
+      listChildren: async () => [],
+      getStatusCounts: async () => ({ active: 0, suspended: 0, retired: 0, pending: 0 }),
+    },
+    roles: {
+      get: async (id: string) => roles.get(id) ?? null,
+      list: async () => [...roles.values()],
+      listByIds: async (ids: string[]) => ids.map(id => roles.get(id)).filter(Boolean) as Role[],
+      create: async (r: Role) => { roles.set(r.id, clone(r) as Role); return clone(r) as Role; },
+      update: async (id: string, patch: Partial<Role>) => { const r = roles.get(id)!; Object.assign(r, patch); return clone(r) as Role; },
+      delete: async (id: string) => { roles.delete(id); },
+    },
+    policies: {
+      get: async (id: string) => policies.get(id) ?? null,
+      list: async (orgId?: string, workspaceId?: string) => {
+        let result = [...policies.values()];
+        if (orgId) result = result.filter(p => p.orgId === orgId);
+        if (workspaceId !== undefined) {
+          // Include org-level policies (no workspaceId) + workspace-specific
+          result = result.filter(p => !p.workspaceId || p.workspaceId === workspaceId);
+        }
+        result = result.filter(p => !p.deletedAt);
+        result.sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
+        return result;
+      },
+      create: async (p: StoredPolicy) => { policies.set(p.id, clone(p) as StoredPolicy); return clone(p) as StoredPolicy; },
+      update: async (id: string, patch: Partial<StoredPolicy>) => { const p = policies.get(id)!; Object.assign(p, patch); return clone(p) as StoredPolicy; },
+      delete: async (id: string) => { policies.delete(id); },
+    },
+    audit: {
+      write: async (entry: unknown) => { auditWrites.push({ query: "INSERT INTO audit_logs", params: [entry] }); },
+      writeBatch: async (entries: unknown[]) => { entries.forEach(e => auditWrites.push({ query: "INSERT INTO audit_logs", params: [e] })); },
+      query: async () => ({ entries: [], total: 0 }),
+      export: async () => [],
+    },
+    tokens: { listActiveIds: async () => [] },
+    revocations: { check: async () => false, revoke: async () => {}, list: async () => [] },
+    auditWebhooks: { list: async () => [], create: async () => ({}), delete: async () => {}, get: async () => null },
+    contexts: { get: async () => null, set: async () => {}, delete: async () => {} },
+  };
+
+  return { db, storage, auditWrites };
 }
 
 async function loadPolicyEvaluationModule(): Promise<Required<PolicyEvaluationModule>> {
@@ -609,7 +664,10 @@ function assertExcludesScope(scopes: string[], unexpectedScope: string, message:
 
 function assertAuditActionRecorded(auditWrites: AuditWrite[], action: string) {
   assert.equal(
-    auditWrites.some(({ params }) => params.includes(action)),
+    auditWrites.some(({ params }) =>
+      params.includes(action) ||
+      params.some(p => typeof p === "object" && p !== null && (p as Record<string, unknown>).action === action)
+    ),
     true,
     `expected an audit write for action ${action}`,
   );
@@ -630,7 +688,7 @@ test("evaluatePermissions merges identity direct scopes with assigned role scope
   const scenario = createPolicyEvaluationDb({ identities: [identity], roles: [role] });
 
   const result = await evaluatePermissions(
-    scenario.db,
+    scenario.storage,
     identity.id,
     identity.orgId,
     createContext({ identityId: identity.id, workspaceId: identity.workspaceId }),
@@ -659,7 +717,7 @@ test("allow policy adds scopes to the effective scope set", async () => {
   const scenario = createPolicyEvaluationDb({ identities: [identity], policies: [policy] });
 
   const result = await evaluatePermissions(
-    scenario.db,
+    scenario.storage,
     identity.id,
     identity.orgId,
     createContext({ identityId: identity.id, workspaceId: identity.workspaceId }),
@@ -685,7 +743,7 @@ test("deny policy removes scopes from the effective scope set", async () => {
   const scenario = createPolicyEvaluationDb({ identities: [identity], policies: [policy] });
 
   const result = await evaluatePermissions(
-    scenario.db,
+    scenario.storage,
     identity.id,
     identity.orgId,
     createContext({ identityId: identity.id, workspaceId: identity.workspaceId }),
@@ -719,7 +777,7 @@ test("higher priority policy wins over a lower priority policy covering the same
   const scenario = createPolicyEvaluationDb({ identities: [identity], policies: [allow, deny] });
 
   const result = await evaluatePermissions(
-    scenario.db,
+    scenario.storage,
     identity.id,
     identity.orgId,
     createContext({ identityId: identity.id, workspaceId: identity.workspaceId }),
@@ -756,7 +814,7 @@ test("deny policies are evaluated after allow policies at the same priority", as
   const scenario = createPolicyEvaluationDb({ identities: [identity], policies: [allow, deny] });
 
   const result = await evaluatePermissions(
-    scenario.db,
+    scenario.storage,
     identity.id,
     identity.orgId,
     createContext({ identityId: identity.id, workspaceId: identity.workspaceId }),
@@ -790,7 +848,7 @@ test("time-based conditions only activate policies within the configured UTC win
   const scenario = createPolicyEvaluationDb({ identities: [identity], policies: [policy] });
 
   const insideWindow = await evaluatePermissions(
-    scenario.db,
+    scenario.storage,
     identity.id,
     identity.orgId,
     createContext({
@@ -800,7 +858,7 @@ test("time-based conditions only activate policies within the configured UTC win
     }),
   );
   const outsideWindow = await evaluatePermissions(
-    scenario.db,
+    scenario.storage,
     identity.id,
     identity.orgId,
     createContext({
@@ -849,13 +907,13 @@ test("identity-based conditions restrict policies to the targeted identity", asy
   });
 
   const targeted = await evaluatePermissions(
-    scenario.db,
+    scenario.storage,
     targetedIdentity.id,
     targetedIdentity.orgId,
     createContext({ identityId: targetedIdentity.id, workspaceId: targetedIdentity.workspaceId }),
   );
   const other = await evaluatePermissions(
-    scenario.db,
+    scenario.storage,
     otherIdentity.id,
     otherIdentity.orgId,
     createContext({ identityId: otherIdentity.id, workspaceId: otherIdentity.workspaceId }),
@@ -907,13 +965,13 @@ test("workspace-level policy overrides the org-level policy for the targeted wor
   });
 
   const prod = await evaluatePermissions(
-    scenario.db,
+    scenario.storage,
     prodIdentity.id,
     prodIdentity.orgId,
     createContext({ identityId: prodIdentity.id, workspaceId: prodIdentity.workspaceId }),
   );
   const dev = await evaluatePermissions(
-    scenario.db,
+    scenario.storage,
     devIdentity.id,
     devIdentity.orgId,
     createContext({ identityId: devIdentity.id, workspaceId: devIdentity.workspaceId }),
@@ -963,7 +1021,7 @@ test("getEffectiveScopes returns the final merged scope list after policy evalua
   });
 
   const scopes = await getEffectiveScopes(
-    scenario.db,
+    scenario.storage,
     identity.id,
     identity.orgId,
     createContext({ identityId: identity.id, workspaceId: identity.workspaceId }),
@@ -987,7 +1045,7 @@ test("checkAccess returns allow or deny with a reason and matched policy details
     const scenario = createPolicyEvaluationDb({ identities: [identity] });
 
     const decision = await checkAccess(
-      scenario.db,
+      scenario.storage,
       identity.id,
       identity.orgId,
       "relayfile:fs:read:/reports/q1.csv",
@@ -1015,7 +1073,7 @@ test("checkAccess returns allow or deny with a reason and matched policy details
     const scenario = createPolicyEvaluationDb({ identities: [identity], policies: [deny] });
 
     const decision = await checkAccess(
-      scenario.db,
+      scenario.storage,
       identity.id,
       identity.orgId,
       "cloud:workflow:run:prod-release",
@@ -1049,7 +1107,7 @@ test("budget enforcement in the policy evaluation pipeline denies on budget exce
   const scenario = createPolicyEvaluationDb({ identities: [identity] });
 
   const decision = await checkAccess(
-    scenario.db,
+    scenario.storage,
     identity.id,
     identity.orgId,
     "cloud:workflow:run:prod-release",
@@ -1081,7 +1139,7 @@ test("budget approaching the threshold records budget.alert without denying an o
   const scenario = createPolicyEvaluationDb({ identities: [identity] });
 
   const decision = await checkAccess(
-    scenario.db,
+    scenario.storage,
     identity.id,
     identity.orgId,
     "cloud:workflow:run:prod-release",

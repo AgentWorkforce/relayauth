@@ -8,7 +8,7 @@ import type {
   IdentityBudget,
   IdentityBudgetUsage,
   StoredIdentity,
-} from "../durable-objects/identity-do.js";
+} from "../storage/identity-types.js";
 import type { AuthStorage } from "../storage/index.js";
 import { resolveAuthStorage } from "../storage/index.js";
 
@@ -44,7 +44,7 @@ type ScopeDecision = {
   policies: Policy[];
 };
 
-type PolicyEvaluationStorageSource = D1Database | AuthStorage;
+type PolicyEvaluationStorageSource = AuthStorage;
 
 const WEEKDAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 const MANAGE_IMPLIES = new Set<Action>(["read", "write", "create", "delete"]);

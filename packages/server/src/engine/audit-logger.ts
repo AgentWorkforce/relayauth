@@ -17,7 +17,7 @@ export type AuditLoggerEntry = Omit<AuditEntry, "action"> & {
 };
 
 type AuditLoggerInput = Partial<AuditLoggerEntry>;
-type AuditStorageSource = D1Database | AuditStorage | Pick<AuthStorage, "audit">;
+type AuditStorageSource = AuditStorage | Pick<AuthStorage, "audit">;
 
 type TokenValidationResult =
   | { ok: true; claims: RelayAuthTokenClaims }
@@ -138,7 +138,7 @@ export function createAuditMiddleware(): MiddlewareHandler<AppEnv> {
           resource: c.req.path,
           result: validation.ok ? "allowed" : "denied",
           metadata,
-          ip: extractClientIp(c.req.header("CF-Connecting-IP"), c.req.header("X-Forwarded-For")),
+          ip: extractClientIp(c.req.header("X-Real-IP"), c.req.header("X-Forwarded-For")),
           userAgent: c.req.header("User-Agent") ?? undefined,
         });
       }
@@ -288,10 +288,10 @@ async function validateAuthorizationHeader(
 }
 
 function extractClientIp(
-  cfConnectingIp: string | undefined,
+  realIp: string | undefined,
   xForwardedFor: string | undefined,
 ): string | undefined {
-  const direct = validateOptionalString(cfConnectingIp);
+  const direct = validateOptionalString(realIp);
   if (direct) {
     return direct;
   }

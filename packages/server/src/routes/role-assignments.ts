@@ -1,7 +1,6 @@
 import type { RelayAuthTokenClaims, Role } from "@relayauth/types";
 import { matchScope } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
-import type { StoredIdentity } from "../durable-objects/identity-do.js";
 import type { AppEnv } from "../env.js";
 import {
   assignRole,
@@ -9,6 +8,7 @@ import {
   removeRole,
 } from "../engine/role-assignments.js";
 import { getRole } from "../engine/roles.js";
+import type { StoredIdentity } from "../storage/identity-types.js";
 import type { AuthStorage } from "../storage/index.js";
 
 type AssignRoleRequest = {
@@ -295,7 +295,7 @@ function decodeBase64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
 
 async function parseJsonObjectBody<T extends object>(request: Request): Promise<T | null> {
   try {
-    const parsed = await request.clone().json<unknown>();
+    const parsed = await request.clone().json();
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return null;
     }

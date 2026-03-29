@@ -108,8 +108,8 @@ check_prereqs() {
     missing=$((missing + 1))
   fi
 
-  if ! npx wrangler --version >/dev/null 2>&1; then
-    echo "  ✗ wrangler not available (npx wrangler failed)" >&2
+  if ! npx tsx --version >/dev/null 2>&1; then
+    echo "  ✗ tsx not available (npx tsx failed)" >&2
     missing=$((missing + 1))
   fi
 
@@ -124,10 +124,10 @@ check_prereqs() {
     missing=$((missing + 1))
   fi
 
-  if [[ -d "${RELAYAUTH_ROOT}/.wrangler/state/v3/d1" ]]; then
-    echo "  ✓ local D1 database initialized"
+  if [[ -f "${RELAYAUTH_ROOT}/.relay/relayauth.db" ]]; then
+    echo "  ✓ local relayauth database initialized"
   else
-    echo "  ⚠ local D1 not yet initialized (will be created on first wrangler dev run)"
+    echo "  ⚠ local relayauth database not yet initialized (will be created on first start)"
   fi
 
   # Build relayauth packages if dist is missing (needed for config parser)
@@ -557,7 +557,7 @@ cmd_up() {
 
   (
     cd "${RELAYAUTH_ROOT}"
-    SIGNING_KEY="${secret}" npx wrangler dev --port 8787 > "${relayauth_log}" 2>&1
+    SIGNING_KEY="${secret}" PORT=8787 npm run start > "${relayauth_log}" 2>&1
   ) &
   local relayauth_pid=$!
 
@@ -1274,9 +1274,9 @@ cmd_doctor() {
   done
 
   echo ""
-  echo "Wrangler:"
-  if npx wrangler --version >/dev/null 2>&1; then
-    echo "  ✓ available ($(npx wrangler --version 2>/dev/null | head -1))"
+  echo "TSX:"
+  if npx tsx --version >/dev/null 2>&1; then
+    echo "  ✓ available ($(npx tsx --version 2>/dev/null | head -1))"
   else
     echo "  ✗ not available"
   fi
@@ -1292,8 +1292,8 @@ cmd_doctor() {
   fi
 
   echo ""
-  echo "Local D1:"
-  if [[ -d "${RELAYAUTH_ROOT}/.wrangler/state/v3/d1" ]]; then
+  echo "Local relayauth database:"
+  if [[ -f "${RELAYAUTH_ROOT}/.relay/relayauth.db" ]]; then
     echo "  ✓ initialized"
   else
     echo "  ⚠ not initialized (created automatically on first 'relay up')"

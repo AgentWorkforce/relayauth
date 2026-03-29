@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, onTestFinished } from "vitest";
+import { test } from "node:test";
 import type { AuditEntry, AuditQuery } from "@relayauth/types";
 import { RelayAuthClient } from "../client.js";
 
@@ -128,7 +128,7 @@ function assertBearer(headers: Headers): void {
   assert.equal(headers.get("authorization"), `Bearer ${token}`);
 }
 
-test("queryAudit sends audit filters as query params and maps nextCursor to cursor", async () => {
+test("queryAudit sends audit filters as query params and maps nextCursor to cursor", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() =>
     jsonResponse({
@@ -137,7 +137,7 @@ test("queryAudit sends audit filters as query params and maps nextCursor to curs
       hasMore: true,
     }),
   );
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const query: AuditQuery = {
     orgId: "org_123",
@@ -173,7 +173,7 @@ test("queryAudit sends audit filters as query params and maps nextCursor to curs
   assert.equal(request.url.searchParams.get("limit"), "50");
 });
 
-test("queryAudit returns an empty page when no audit entries match", async () => {
+test("queryAudit returns an empty page when no audit entries match", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() =>
     jsonResponse({
@@ -182,7 +182,7 @@ test("queryAudit returns an empty page when no audit entries match", async () =>
       hasMore: false,
     }),
   );
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const result = await client.queryAudit({
     orgId: "org_123",
@@ -203,7 +203,7 @@ test("queryAudit returns an empty page when no audit entries match", async () =>
   assert.equal(request.url.searchParams.get("cursor"), null);
 });
 
-test("getIdentityActivity fetches a paginated activity feed with action and date-range filters", async () => {
+test("getIdentityActivity fetches a paginated activity feed with action and date-range filters", async (t) => {
   const client = createClient();
   const identityId = "agent/activity 123";
   const fetchMock = mockFetch(() =>
@@ -220,7 +220,7 @@ test("getIdentityActivity fetches a paginated activity feed with action and date
       subAgents: [],
     }),
   );
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const result = await client.getIdentityActivity(identityId, {
     action: "scope.denied",
@@ -255,7 +255,7 @@ test("getIdentityActivity fetches a paginated activity feed with action and date
   assert.equal(request.url.searchParams.get("orgId"), null);
 });
 
-test("exportAudit posts json export filters and returns the raw json payload", async () => {
+test("exportAudit posts json export filters and returns the raw json payload", async (t) => {
   const client = createClient();
   const query: AuditQuery = {
     orgId: "org_123",
@@ -268,7 +268,7 @@ test("exportAudit posts json export filters and returns the raw json payload", a
   };
   const exportPayload = JSON.stringify(auditEntries);
   const fetchMock = mockFetch(() => textResponse(exportPayload, 200, "application/json"));
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const result = await client.exportAudit(query, "json");
 
@@ -286,13 +286,13 @@ test("exportAudit posts json export filters and returns the raw json payload", a
   });
 });
 
-test("exportAudit returns raw csv data for csv exports", async () => {
+test("exportAudit returns raw csv data for csv exports", async (t) => {
   const client = createClient();
   const csvExport =
     "id,action,identityId,orgId,result,timestamp\n" +
     "aud_002,scope.denied,agent_123,org_123,denied,2026-03-25T10:05:00.000Z\n";
   const fetchMock = mockFetch(() => textResponse(csvExport, 200, "text/csv; charset=utf-8"));
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const result = await client.exportAudit(
     {

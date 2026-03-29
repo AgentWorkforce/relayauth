@@ -3,7 +3,7 @@ import test from "node:test";
 import type { Policy, Role } from "@relayauth/types";
 import { Hono } from "hono";
 
-import type { StoredIdentity } from "../../durable-objects/identity-do.js";
+import type { StoredIdentity } from "../../storage/identity-types.js";
 import { writeAuditEntry } from "../../engine/audit-logger.js";
 import { checkAccess, evaluatePermissions } from "../../engine/policy-evaluation.js";
 import { getInheritanceChain } from "../../engine/scope-inheritance.js";
