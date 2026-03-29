@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, onTestFinished } from "vitest";
+import { test, afterEach } from "node:test";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 
 import { RelayAuthError, TokenExpiredError } from "../errors.js";
@@ -127,16 +127,16 @@ function createNextSpy(): NextSpy {
   return next;
 }
 
+const _originalVerify = TokenVerifier.prototype.verify;
+
+afterEach(() => {
+  TokenVerifier.prototype.verify = _originalVerify;
+});
+
 function mockVerifierVerify(
   implementation: (this: TokenVerifier, token: string) => Promise<RelayAuthTokenClaims>,
 ): void {
-  const originalVerify = TokenVerifier.prototype.verify;
-
   TokenVerifier.prototype.verify = implementation;
-
-  onTestFinished(() => {
-    TokenVerifier.prototype.verify = originalVerify;
-  });
 }
 
 function assertErrorJson(response: MockResponse, status: number, body: ErrorBody): void {

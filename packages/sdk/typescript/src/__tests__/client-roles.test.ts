@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, onTestFinished } from "vitest";
+import { test } from "node:test";
 import type { Role } from "@relayauth/types";
 import { RelayAuthClient } from "../client.js";
 import { RelayAuthError } from "../errors.js";
@@ -118,10 +118,10 @@ function assertBearer(headers: Headers): void {
   assert.equal(headers.get("authorization"), `Bearer ${token}`);
 }
 
-test("createRole posts to /v1/roles with orgId in the JSON body", async () => {
+test("createRole posts to /v1/roles with orgId in the JSON body", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() => jsonResponse(role, 201));
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const input: CreateRoleInput = {
     name: "incident-reviewer",
@@ -146,10 +146,10 @@ test("createRole posts to /v1/roles with orgId in the JSON body", async () => {
   });
 });
 
-test("getRole fetches /v1/roles/:id with bearer auth", async () => {
+test("getRole fetches /v1/roles/:id with bearer auth", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() => jsonResponse(role));
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const result = await client.getRole(role.id);
 
@@ -163,14 +163,14 @@ test("getRole fetches /v1/roles/:id with bearer auth", async () => {
   assert.equal(request.body, "");
 });
 
-test("listRoles sends orgId as a query param and maps data to a role array", async () => {
+test("listRoles sends orgId as a query param and maps data to a role array", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() =>
     jsonResponse({
       data: [role, secondRole],
     }),
   );
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const result = await client.listRoles("org_123");
 
@@ -185,7 +185,7 @@ test("listRoles sends orgId as a query param and maps data to a role array", asy
   assert.equal(request.body, "");
 });
 
-test("updateRole patches /v1/roles/:id with JSON updates", async () => {
+test("updateRole patches /v1/roles/:id with JSON updates", async (t) => {
   const client = createClient();
   const updatedRole: Role = {
     ...role,
@@ -193,7 +193,7 @@ test("updateRole patches /v1/roles/:id with JSON updates", async () => {
     scopes: [...role.scopes, "cloud:workflow:read:prod-*"],
   };
   const fetchMock = mockFetch(() => jsonResponse(updatedRole));
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const updates: UpdateRoleInput = {
     description: "Can review incidents and production audit logs",
@@ -213,10 +213,10 @@ test("updateRole patches /v1/roles/:id with JSON updates", async () => {
   assert.deepEqual(JSON.parse(request.body), updates);
 });
 
-test("deleteRole deletes /v1/roles/:id and returns void", async () => {
+test("deleteRole deletes /v1/roles/:id and returns void", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const result = await client.deleteRole(role.id);
 
@@ -230,10 +230,10 @@ test("deleteRole deletes /v1/roles/:id and returns void", async () => {
   assert.equal(request.body, "");
 });
 
-test("assignRole posts roleId to /v1/identities/:id/roles", async () => {
+test("assignRole posts roleId to /v1/identities/:id/roles", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const result = await client.assignRole("agent_123", role.id);
 
@@ -250,10 +250,10 @@ test("assignRole posts roleId to /v1/identities/:id/roles", async () => {
   });
 });
 
-test("removeRole deletes /v1/identities/:id/roles/:roleId", async () => {
+test("removeRole deletes /v1/identities/:id/roles/:roleId", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   const result = await client.removeRole("agent_123", role.id);
 
@@ -267,7 +267,7 @@ test("removeRole deletes /v1/identities/:id/roles/:roleId", async () => {
   assert.equal(request.body, "");
 });
 
-test("getRole maps a 404 role_not_found response to RelayAuthError", async () => {
+test("getRole maps a 404 role_not_found response to RelayAuthError", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() =>
     jsonResponse(
@@ -278,7 +278,7 @@ test("getRole maps a 404 role_not_found response to RelayAuthError", async () =>
       404,
     ),
   );
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   await assert.rejects(
     () => client.getRole("role_missing_404"),
@@ -299,7 +299,7 @@ test("getRole maps a 404 role_not_found response to RelayAuthError", async () =>
   assertBearer(request.headers);
 });
 
-test("createRole surfaces duplicate role name conflicts as RelayAuthError", async () => {
+test("createRole surfaces duplicate role name conflicts as RelayAuthError", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() =>
     jsonResponse(
@@ -310,7 +310,7 @@ test("createRole surfaces duplicate role name conflicts as RelayAuthError", asyn
       409,
     ),
   );
-  onTestFinished(() => fetchMock.restore());
+  t.after(() => fetchMock.restore());
 
   await assert.rejects(
     () =>

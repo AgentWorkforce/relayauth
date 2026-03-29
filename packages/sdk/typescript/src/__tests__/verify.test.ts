@@ -1,4 +1,5 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, beforeEach, afterEach, mock } from "node:test";
+import assert from "node:assert/strict";
 import { TokenVerifier } from "../verify.js";
 import type { VerifyOptions } from "../verify.js";
 import { RelayAuthError, TokenExpiredError } from "../errors.js";
@@ -82,7 +83,7 @@ function createMockJwksServer(keys: JsonWebKey[]): string {
 }
 
 function mockFetch(keys: JsonWebKey[], revoked = false) {
-  return vi.fn(async (input: RequestInfo | URL) => {
+  return mock.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.includes("jwks")) {
       return new Response(JSON.stringify({ keys }), { status: 200 });
@@ -100,14 +101,14 @@ describe("TokenVerifier", () => {
   describe("constructor", () => {
     it("can be instantiated with issuer", () => {
       const verifier = new TokenVerifier({ issuer: "relayauth:test" });
-      expect(verifier).toBeInstanceOf(TokenVerifier);
-      expect(verifier.options).toEqual({ issuer: "relayauth:test" });
+      assert.ok(verifier instanceof TokenVerifier);
+      assert.deepEqual(verifier.options, { issuer: "relayauth:test" });
     });
 
     it("can be instantiated without options", () => {
       const verifier = new TokenVerifier();
-      expect(verifier).toBeInstanceOf(TokenVerifier);
-      expect(verifier.options).toBeUndefined();
+      assert.ok(verifier instanceof TokenVerifier);
+      assert.equal(verifier.options, undefined);
     });
 
     it("preserves all options", () => {
@@ -118,17 +119,17 @@ describe("TokenVerifier", () => {
         maxAge: 3600,
       };
       const verifier = new TokenVerifier(opts);
-      expect(verifier.options).toEqual(opts);
+      assert.deepEqual(verifier.options, opts);
     });
 
     it("accepts empty audience array", () => {
       const verifier = new TokenVerifier({ audience: [] });
-      expect(verifier.options?.audience).toEqual([]);
+      assert.deepEqual(verifier.options?.audience, []);
     });
 
     it("options are readonly", () => {
       const verifier = new TokenVerifier({ issuer: "test" });
-      expect(verifier.options?.issuer).toBe("test");
+      assert.equal(verifier.options?.issuer, "test");
     });
   });
 
@@ -164,8 +165,8 @@ describe("TokenVerifier", () => {
       });
 
       const claims = await verifier.verify(token);
-      expect(claims.sub).toBe("identity-1");
-      expect(claims.org).toBe("org-1");
+      assert.equal(claims.sub, "identity-1");
+      assert.equal(claims.org, "org-1");
     });
 
     it("rejects a token with invalid signature", async () => {
@@ -187,7 +188,7 @@ describe("TokenVerifier", () => {
         jwksUrl: "https://auth.test/.well-known/jwks.json",
       });
 
-      await expect(verifier.verify(token)).rejects.toThrow(RelayAuthError);
+      await assert.rejects(async () => { await verifier.verify(token); }, (err) => { assert.ok(err instanceof RelayAuthError); return true; });
     });
   });
 
@@ -223,7 +224,7 @@ describe("TokenVerifier", () => {
       });
 
       const claims = await verifier.verify(token);
-      expect(claims.sub).toBe("identity-1");
+      assert.equal(claims.sub, "identity-1");
     });
   });
 
@@ -261,7 +262,7 @@ describe("TokenVerifier", () => {
         jwksUrl: "https://auth.test/.well-known/jwks.json",
       });
 
-      await expect(verifier.verify(token)).rejects.toThrow(TokenExpiredError);
+      await assert.rejects(async () => { await verifier.verify(token); }, (err) => { assert.ok(err instanceof TokenExpiredError); return true; });
     });
 
     it("rejects tokens exceeding maxAge", async () => {
@@ -288,7 +289,7 @@ describe("TokenVerifier", () => {
         maxAge: 3600,
       });
 
-      await expect(verifier.verify(token)).rejects.toThrow(TokenExpiredError);
+      await assert.rejects(async () => { await verifier.verify(token); }, (err) => { assert.ok(err instanceof TokenExpiredError); return true; });
     });
   });
 
@@ -322,7 +323,7 @@ describe("TokenVerifier", () => {
         audience: ["api.example.com"],
       });
 
-      await expect(verifier.verify(token)).rejects.toThrow(RelayAuthError);
+      await assert.rejects(async () => { await verifier.verify(token); }, (err) => { assert.ok(err instanceof RelayAuthError); return true; });
     });
 
     it("accepts tokens when audience matches", async () => {
@@ -345,7 +346,7 @@ describe("TokenVerifier", () => {
       });
 
       const claims = await verifier.verify(token);
-      expect(claims.aud).toContain("api.example.com");
+      assert.ok((claims.aud).includes("api.example.com"));
     });
   });
 
@@ -379,7 +380,7 @@ describe("TokenVerifier", () => {
         issuer: "relayauth:test",
       });
 
-      await expect(verifier.verify(token)).rejects.toThrow(RelayAuthError);
+      await assert.rejects(async () => { await verifier.verify(token); }, (err) => { assert.ok(err instanceof RelayAuthError); return true; });
     });
   });
 
@@ -403,7 +404,7 @@ describe("TokenVerifier", () => {
         jwksUrl: "https://auth.test/.well-known/jwks.json",
       });
 
-      await expect(verifier.verify(fakeToken)).rejects.toThrow(RelayAuthError);
+      await assert.rejects(async () => { await verifier.verify(fakeToken); }, (err) => { assert.ok(err instanceof RelayAuthError); return true; });
     });
 
     it("rejects none algorithm", async () => {
@@ -415,7 +416,7 @@ describe("TokenVerifier", () => {
         jwksUrl: "https://auth.test/.well-known/jwks.json",
       });
 
-      await expect(verifier.verify(fakeToken)).rejects.toThrow(RelayAuthError);
+      await assert.rejects(async () => { await verifier.verify(fakeToken); }, (err) => { assert.ok(err instanceof RelayAuthError); return true; });
     });
 
     it("rejects tokens with missing typ header", async () => {
@@ -427,7 +428,7 @@ describe("TokenVerifier", () => {
         jwksUrl: "https://auth.test/.well-known/jwks.json",
       });
 
-      await expect(verifier.verify(fakeToken)).rejects.toThrow(RelayAuthError);
+      await assert.rejects(async () => { await verifier.verify(fakeToken); }, (err) => { assert.ok(err instanceof RelayAuthError); return true; });
     });
   });
 
@@ -452,11 +453,11 @@ describe("TokenVerifier", () => {
       );
 
       const verifier = new TokenVerifier();
-      await expect(verifier.verify(token)).rejects.toThrow("JWKS URL is required");
+      await assert.rejects(async () => { await verifier.verify(token); }, (err) => { assert.ok((err as Error).message === "JWKS URL is required"); return true; });
     });
 
     it("throws when JWKS endpoint returns error", async () => {
-      globalThis.fetch = vi.fn(async () => new Response("Server Error", { status: 500 }));
+      globalThis.fetch = mock.fn(async () => new Response("Server Error", { status: 500 }));
 
       const { privateKey } = await generateRS256KeyPair();
       const token = await signToken(
@@ -470,7 +471,7 @@ describe("TokenVerifier", () => {
         jwksUrl: "https://auth.test/.well-known/jwks.json",
       });
 
-      await expect(verifier.verify(token)).rejects.toThrow("Failed to fetch JWKS");
+      await assert.rejects(async () => { await verifier.verify(token); }, (err) => { assert.ok((err as Error).message.includes("Failed to fetch JWKS")); return true; });
     });
 
     it("refreshes JWKS when key not found", async () => {
@@ -479,7 +480,7 @@ describe("TokenVerifier", () => {
       const jwkWithKid = { ...jwk, kid, use: "sig", alg: "RS256" };
 
       let callCount = 0;
-      globalThis.fetch = vi.fn(async () => {
+      globalThis.fetch = mock.fn(async () => {
         callCount++;
         if (callCount === 1) {
           return new Response(JSON.stringify({ keys: [] }), { status: 200 });
@@ -501,8 +502,8 @@ describe("TokenVerifier", () => {
       });
 
       const claims = await verifier.verify(token);
-      expect(claims.sub).toBe("identity-1");
-      expect(callCount).toBe(2);
+      assert.equal(claims.sub, "identity-1");
+      assert.equal(callCount, 2);
     });
   });
 
@@ -539,7 +540,7 @@ describe("TokenVerifier", () => {
         revocationUrl: "https://auth.test/revocation",
       });
 
-      await expect(verifier.verify(token)).rejects.toThrow("Token has been revoked");
+      await assert.rejects(async () => { await verifier.verify(token); }, (err) => { assert.ok((err as Error).message === "Token has been revoked"); return true; });
     });
 
     it("accepts non-revoked tokens", async () => {
@@ -565,7 +566,7 @@ describe("TokenVerifier", () => {
       });
 
       const claims = await verifier.verify(token);
-      expect(claims.sub).toBe("identity-1");
+      assert.equal(claims.sub, "identity-1");
     });
   });
 
@@ -575,7 +576,7 @@ describe("TokenVerifier", () => {
         jwksUrl: "https://auth.test/.well-known/jwks.json",
       });
       const result = await verifier.verifyOrNull("not.a.token");
-      expect(result).toBeNull();
+      assert.equal(result, null);
     });
   });
 
@@ -584,9 +585,9 @@ describe("TokenVerifier", () => {
       const verifier = new TokenVerifier({
         jwksUrl: "https://auth.test/.well-known/jwks.json",
       });
-      await expect(verifier.verify("only.two")).rejects.toThrow(RelayAuthError);
-      await expect(verifier.verify("a.b.c.d")).rejects.toThrow(RelayAuthError);
-      await expect(verifier.verify("")).rejects.toThrow(RelayAuthError);
+      await assert.rejects(async () => { await verifier.verify("only.two"); }, (err) => { assert.ok(err instanceof RelayAuthError); return true; });
+      await assert.rejects(async () => { await verifier.verify("a.b.c.d"); }, (err) => { assert.ok(err instanceof RelayAuthError); return true; });
+      await assert.rejects(async () => { await verifier.verify(""); }, (err) => { assert.ok(err instanceof RelayAuthError); return true; });
     });
   });
 });

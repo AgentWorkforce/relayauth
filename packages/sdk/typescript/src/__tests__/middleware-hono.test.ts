@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, onTestFinished } from "vitest";
+import { test, afterEach } from "node:test";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 import { Hono, type MiddlewareHandler } from "hono";
 
@@ -60,16 +60,16 @@ function createClaims(overrides: Partial<RelayAuthTokenClaims> = {}): RelayAuthT
   };
 }
 
+const _originalHonoVerify = TokenVerifier.prototype.verify;
+
+afterEach(() => {
+  TokenVerifier.prototype.verify = _originalHonoVerify;
+});
+
 function mockVerifierVerify(
   implementation: (this: TokenVerifier, token: string) => Promise<RelayAuthTokenClaims>,
 ): void {
-  const originalVerify = TokenVerifier.prototype.verify;
-
   TokenVerifier.prototype.verify = implementation;
-
-  onTestFinished(() => {
-    TokenVerifier.prototype.verify = originalVerify;
-  });
 }
 
 async function assertJsonResponse<T>(
