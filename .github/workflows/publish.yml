@@ -81,8 +81,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
           cache: npm
+          cache-dependency-path: package-lock.json
+          registry-url: "https://registry.npmjs.org"
 
       - run: npm ci
       - run: npx turbo build --filter='!@relayauth/landing'
@@ -138,8 +139,26 @@ jobs:
             fi
           done
 
-      - name: Sync lock file after version bumps
-        run: npm install --package-lock-only
+      - name: Clean reinstall after version bump
+        run: |
+          rm -rf node_modules packages/*/node_modules package-lock.json
+          npm install
+
+      - name: Rebuild after version bump
+        run: npx turbo build --filter='!@relayauth/landing'
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            package.json
+            package-lock.json
+            packages/*/package.json
+            packages/*/dist/
+            packages/sdk/typescript/package.json
+            packages/sdk/typescript/dist/
+          retention-days: 1
 
       - name: Commit version bump
         if: ${{ github.event.inputs.dry_run != 'true' }}
@@ -167,20 +186,17 @@ jobs:
         package: ${{ fromJson(needs.build.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: main
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
-          cache: npm
 
-      - name: Update npm (required for provenance)
-        run: npm install -g npm@10
-
-      - run: npm ci
-      - run: npx turbo build --filter='!@relayauth/landing'
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
 
       - name: Resolve package directory
         id: package-dir
