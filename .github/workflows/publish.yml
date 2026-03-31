@@ -132,9 +132,9 @@ jobs:
                 package_dir="sdk/typescript"
               fi
 
-              cd "packages/$package_dir"
+              pushd "packages/$package_dir" > /dev/null
               npm version "$NEW_VERSION" --no-git-tag-version
-              cd ../..
+              popd > /dev/null
             fi
           done
 
