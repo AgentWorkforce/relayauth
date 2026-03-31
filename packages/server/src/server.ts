@@ -17,7 +17,6 @@ import policies from "./routes/policies.js";
 import roleAssignments from "./routes/role-assignments.js";
 import roles from "./routes/roles.js";
 import type { AuthStorage } from "./storage/index.js";
-import { createSqliteStorage } from "./storage/sqlite.js";
 
 const PUBLIC_PATHS = new Set([
   "/health",
@@ -159,9 +158,16 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   return app;
 }
 
-export function startServer(options: StartServerOptions = {}) {
+export async function startServer(options: StartServerOptions = {}) {
   const port = Number.isFinite(options.port) ? (options.port as number) : 8787;
-  const storage = options.storage ?? createSqliteStorage(options.dbPath);
+  let storage: AuthStorage;
+  if (options.storage) {
+    storage = options.storage;
+  } else {
+    // Dynamic import to avoid bundling sqlite (uses Function()) in Workers
+    const { createSqliteStorage } = await import("./storage/sqlite.js");
+    storage = createSqliteStorage(options.dbPath);
+  }
   const internalSecret =
     options.config?.INTERNAL_SECRET
     ?? process.env.INTERNAL_SECRET
