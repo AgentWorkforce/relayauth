@@ -176,8 +176,8 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
-      - name: Update npm to latest (required for provenance)
-        run: npm install -g npm@latest
+      - name: Update npm (required for provenance)
+        run: npm install -g npm@10
 
       - run: npm ci
       - run: npx turbo build --filter='!@relayauth/landing'
