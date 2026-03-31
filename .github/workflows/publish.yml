@@ -85,7 +85,7 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npx turbo build
+      - run: npx turbo build --filter='!@relayauth/landing'
 
       - name: Determine packages to publish
         id: packages
@@ -175,7 +175,7 @@ jobs:
         run: npm install -g npm@latest
 
       - run: npm ci
-      - run: npx turbo build
+      - run: npx turbo build --filter='!@relayauth/landing'
 
       - name: Resolve package directory
         id: package-dir
