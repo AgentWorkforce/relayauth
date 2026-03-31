@@ -128,6 +128,8 @@ jobs:
               package_dir="$pkg"
               if [ "$package_dir" = "relayauth" ]; then
                 package_dir="cli"
+              elif [ "$package_dir" = "sdk" ]; then
+                package_dir="sdk/typescript"
               fi
 
               cd "packages/$package_dir"
@@ -182,6 +184,8 @@ jobs:
         run: |
           if [ "${{ matrix.package }}" = "relayauth" ]; then
             echo "dir=cli" >> "$GITHUB_OUTPUT"
+          elif [ "${{ matrix.package }}" = "sdk" ]; then
+            echo "dir=sdk/typescript" >> "$GITHUB_OUTPUT"
           else
             echo "dir=${{ matrix.package }}" >> "$GITHUB_OUTPUT"
           fi
