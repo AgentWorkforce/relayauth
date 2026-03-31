@@ -138,6 +138,9 @@ jobs:
             fi
           done
 
+      - name: Sync lock file after version bumps
+        run: npm install --package-lock-only
+
       - name: Commit version bump
         if: ${{ github.event.inputs.dry_run != 'true' }}
         run: |
