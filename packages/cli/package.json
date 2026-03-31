@@ -1,6 +1,6 @@
 {
   "name": "relayauth",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "CLI for relayauth",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
