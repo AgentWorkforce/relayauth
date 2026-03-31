@@ -198,6 +198,9 @@ jobs:
           name: build-output
           path: .
 
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
       - name: Resolve package directory
         id: package-dir
         run: |
