@@ -4,6 +4,11 @@ export interface TokenBudget {
   remaining?: number;
 }
 
+export interface RelayAuthWorkspaceScope {
+  product_id: string;
+  scopes: string[];
+}
+
 export interface RelayAuthTokenClaims {
   sub: string;
   org: string;
@@ -13,6 +18,10 @@ export interface RelayAuthTokenClaims {
   /** @deprecated Duplicates `sub` — prefer using `sub` directly */
   agent_name?: string;
   scopes: string[];
+  /** Optional, additive product narrowing. Consumer enforcement happens downstream. */
+  product_id?: string;
+  /** Optional, additive richer narrowing for future use. Consumer enforcement happens downstream. */
+  workspace_scope?: RelayAuthWorkspaceScope[];
   sponsorId: string;
   sponsorChain: string[];
   token_type: "access" | "refresh";

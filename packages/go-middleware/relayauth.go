@@ -41,6 +41,7 @@ type Claims struct {
 	Org           string            `json:"org"`
 	Wks           string            `json:"wks"`
 	Scopes        []string          `json:"scopes"`
+	ProductID     string            `json:"product_id,omitempty"`
 	SponsorID     string            `json:"sponsorId"`
 	SponsorChain  []string          `json:"sponsorChain"`
 	TokenType     string            `json:"token_type"`
@@ -54,6 +55,65 @@ type Claims struct {
 	Meta          map[string]string `json:"meta,omitempty"`
 	ParentTokenID string            `json:"parentTokenId,omitempty"`
 	Budget        *TokenBudget      `json:"budget,omitempty"`
+}
+
+func (c *Claims) UnmarshalJSON(data []byte) error {
+	type claimsWire struct {
+		Sub           string            `json:"sub"`
+		Org           string            `json:"org"`
+		Wks           string            `json:"wks"`
+		Scopes        []string          `json:"scopes"`
+		ProductID     json.RawMessage   `json:"product_id,omitempty"`
+		SponsorID     string            `json:"sponsorId"`
+		SponsorChain  []string          `json:"sponsorChain"`
+		TokenType     string            `json:"token_type"`
+		Iss           string            `json:"iss"`
+		Aud           []string          `json:"aud"`
+		Exp           int64             `json:"exp"`
+		Iat           int64             `json:"iat"`
+		Jti           string            `json:"jti"`
+		Nbf           *int64            `json:"nbf,omitempty"`
+		Sid           string            `json:"sid,omitempty"`
+		Meta          map[string]string `json:"meta,omitempty"`
+		ParentTokenID string            `json:"parentTokenId,omitempty"`
+		Budget        *TokenBudget      `json:"budget,omitempty"`
+	}
+
+	var wire claimsWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+
+	*c = Claims{
+		Sub:           wire.Sub,
+		Org:           wire.Org,
+		Wks:           wire.Wks,
+		Scopes:        wire.Scopes,
+		SponsorID:     wire.SponsorID,
+		SponsorChain:  wire.SponsorChain,
+		TokenType:     wire.TokenType,
+		Iss:           wire.Iss,
+		Aud:           wire.Aud,
+		Exp:           wire.Exp,
+		Iat:           wire.Iat,
+		Jti:           wire.Jti,
+		Nbf:           wire.Nbf,
+		Sid:           wire.Sid,
+		Meta:          wire.Meta,
+		ParentTokenID: wire.ParentTokenID,
+		Budget:        wire.Budget,
+	}
+
+	if len(wire.ProductID) == 0 || string(wire.ProductID) == "null" {
+		return nil
+	}
+
+	var productID string
+	if err := json.Unmarshal(wire.ProductID, &productID); err == nil {
+		c.ProductID = productID
+	}
+
+	return nil
 }
 
 // VerifyOptions configures the token verifier.
