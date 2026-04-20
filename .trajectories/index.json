@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-03-28T17:33:09.255Z",
+  "lastUpdated": "2026-04-20T20:04:21.004Z",
   "trajectories": {
     "traj_a11zh8l3gbp5": {
       "title": "Work on the relay: combine relayauth + relayfile for agent sandboxing",
@@ -91,6 +91,813 @@
       "startedAt": "2026-03-28T17:19:07.702Z",
       "completedAt": "2026-03-28T17:33:09.148Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relayauth/.trajectories/completed/2026-03/traj_9mrjb4jd95nj.json"
+    },
+    "traj_1774453555105_a504aa62": {
+      "title": "100-landing-page-workflow",
+      "status": "active",
+      "startedAt": "2026-03-25T15:45:55.105Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/active/traj_1774453555105_a504aa62.json"
+    },
+    "traj_1774610389169_e1d84e90": {
+      "title": "autofix-swarm-Agentworkforce-relayauth-workflow",
+      "status": "active",
+      "startedAt": "2026-03-27T11:19:49.169Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/active/traj_1774610389169_e1d84e90.json"
+    },
+    "traj_1774612574920_f3fdc1c5": {
+      "title": "review-pr-8-workflow",
+      "status": "active",
+      "startedAt": "2026-03-27T11:56:14.920Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/active/traj_1774612574920_f3fdc1c5.json"
+    },
+    "traj_1774647106611_54b83aed": {
+      "title": "116-sqlite-adapter-parity-workflow",
+      "status": "active",
+      "startedAt": "2026-03-27T21:31:46.611Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/active/traj_1774647106611_54b83aed.json"
+    },
+    "traj_64d5p5tpls6g": {
+      "title": "Execute SDK reorganization",
+      "status": "completed",
+      "startedAt": "2026-03-28T15:46:08.295Z",
+      "completedAt": "2026-03-28T15:57:46.450Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/2026-03/traj_64d5p5tpls6g.json"
+    },
+    "traj_1774360550947_99680dfd": {
+      "title": "000-generate-all-workflows-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T13:55:50.947Z",
+      "completedAt": "2026-03-24T14:10:19.415Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774360550947_99680dfd.json"
+    },
+    "traj_1774363900594_4fc6eb87": {
+      "title": "001-project-scaffold-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T14:51:40.594Z",
+      "completedAt": "2026-03-24T15:06:05.653Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774363900594_4fc6eb87.json"
+    },
+    "traj_1774367266465_f793c322": {
+      "title": "002-openapi-spec-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T15:47:46.465Z",
+      "completedAt": "2026-03-24T16:09:18.915Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774367266465_f793c322.json"
+    },
+    "traj_1774368896365_cd3281db": {
+      "title": "003-token-format-spec-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T16:14:56.365Z",
+      "completedAt": "2026-03-24T16:24:37.722Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774368896365_cd3281db.json"
+    },
+    "traj_1774369571191_d8fb19df": {
+      "title": "004-scope-format-spec-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T16:26:11.191Z",
+      "completedAt": "2026-03-24T16:42:12.392Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774369571191_d8fb19df.json"
+    },
+    "traj_1774370562354_7927e8e7": {
+      "title": "005-rbac-spec-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T16:42:42.354Z",
+      "completedAt": "2026-03-24T16:55:12.816Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774370562354_7927e8e7.json"
+    },
+    "traj_1774374352141_22ce5c08": {
+      "title": "006-audit-spec-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T17:45:52.141Z",
+      "completedAt": "2026-03-24T17:59:30.835Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774374352141_22ce5c08.json"
+    },
+    "traj_1774382121659_46c3923c": {
+      "title": "019-key-rotation-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-24T19:55:21.659Z",
+      "completedAt": "2026-03-24T19:55:39.784Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382121659_46c3923c.json"
+    },
+    "traj_1774382161681_4aebdc00": {
+      "title": "011-jwt-signing-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-24T19:56:01.681Z",
+      "completedAt": "2026-03-24T19:56:15.419Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382161681_4aebdc00.json"
+    },
+    "traj_1774382177175_5892d302": {
+      "title": "012-jwks-endpoint-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-24T19:56:17.175Z",
+      "completedAt": "2026-03-24T19:56:32.835Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382177175_5892d302.json"
+    },
+    "traj_1774382194659_11843027": {
+      "title": "013-token-verification-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-24T19:56:34.659Z",
+      "completedAt": "2026-03-24T19:56:50.467Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382194659_11843027.json"
+    },
+    "traj_1774382212223_24d8a98a": {
+      "title": "014-token-issuance-api-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-24T19:56:52.223Z",
+      "completedAt": "2026-03-24T19:57:09.790Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382212223_24d8a98a.json"
+    },
+    "traj_1774382231584_6d619eb7": {
+      "title": "015-token-refresh-api-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-24T19:57:11.584Z",
+      "completedAt": "2026-03-24T19:57:31.302Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382231584_6d619eb7.json"
+    },
+    "traj_1774382253043_03450641": {
+      "title": "016-token-revocation-api-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-24T19:57:33.043Z",
+      "completedAt": "2026-03-24T19:57:51.050Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382253043_03450641.json"
+    },
+    "traj_1774382272957_cf50cb7e": {
+      "title": "017-revocation-kv-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-24T19:57:52.957Z",
+      "completedAt": "2026-03-24T19:58:08.803Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382272957_cf50cb7e.json"
+    },
+    "traj_1774382290765_4e20c7db": {
+      "title": "018-token-introspect-api-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-24T19:58:10.765Z",
+      "completedAt": "2026-03-24T19:58:30.511Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382290765_4e20c7db.json"
+    },
+    "traj_1774382312475_95c3cbac": {
+      "title": "019-key-rotation-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-24T19:58:32.475Z",
+      "completedAt": "2026-03-24T19:58:50.532Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382312475_95c3cbac.json"
+    },
+    "traj_1774382332232_ae788bf1": {
+      "title": "020-token-system-e2e-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-24T19:58:52.232Z",
+      "completedAt": "2026-03-24T19:59:06.090Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382332232_ae788bf1.json"
+    },
+    "traj_1774382348309_4aa74825": {
+      "title": "021-identity-do-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T19:59:08.309Z",
+      "completedAt": "2026-03-24T20:15:21.070Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382348309_4aa74825.json"
+    },
+    "traj_1774382810672_ff9e95c7": {
+      "title": "021-identity-do-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T20:06:50.672Z",
+      "completedAt": "2026-03-24T20:15:39.914Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774382810672_ff9e95c7.json"
+    },
+    "traj_1774383341872_ae8346ae": {
+      "title": "022-create-identity-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T20:15:41.872Z",
+      "completedAt": "2026-03-24T20:27:03.021Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774383341872_ae8346ae.json"
+    },
+    "traj_1774384024635_aba11d54": {
+      "title": "023-get-identity-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T20:27:04.635Z",
+      "completedAt": "2026-03-24T20:32:39.049Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774384024635_aba11d54.json"
+    },
+    "traj_1774384360704_517f7d60": {
+      "title": "024-list-identities-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T20:32:40.704Z",
+      "completedAt": "2026-03-24T20:40:41.287Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774384360704_517f7d60.json"
+    },
+    "traj_1774384843426_dccf36b7": {
+      "title": "025-update-identity-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T20:40:43.426Z",
+      "completedAt": "2026-03-24T20:48:16.650Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774384843426_dccf36b7.json"
+    },
+    "traj_1774385298002_8211e5f7": {
+      "title": "026-suspend-identity-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T20:48:18.002Z",
+      "completedAt": "2026-03-24T20:59:49.730Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774385298002_8211e5f7.json"
+    },
+    "traj_1774385991216_388af2d6": {
+      "title": "027-reactivate-identity-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T20:59:51.216Z",
+      "completedAt": "2026-03-24T21:04:29.702Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774385991216_388af2d6.json"
+    },
+    "traj_1774386272200_355e6a5f": {
+      "title": "028-retire-identity-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T21:04:32.200Z",
+      "completedAt": "2026-03-24T21:12:38.986Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774386272200_355e6a5f.json"
+    },
+    "traj_1774386760812_a78664fe": {
+      "title": "029-delete-identity-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-24T21:12:40.812Z",
+      "completedAt": "2026-03-24T21:19:35.667Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774386760812_a78664fe.json"
+    },
+    "traj_1774412360139_78633933": {
+      "title": "030-identity-lifecycle-e2e-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T04:19:20.139Z",
+      "completedAt": "2026-03-25T04:25:52.700Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774412360139_78633933.json"
+    },
+    "traj_1774412754616_64f5367f": {
+      "title": "031-scope-parser-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T04:25:54.616Z",
+      "completedAt": "2026-03-25T04:33:27.910Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774412754616_64f5367f.json"
+    },
+    "traj_1774413210205_3d514c94": {
+      "title": "032-scope-matcher-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T04:33:30.205Z",
+      "completedAt": "2026-03-25T04:43:21.432Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774413210205_3d514c94.json"
+    },
+    "traj_1774413803425_38cfc339": {
+      "title": "033-scope-checker-sdk-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T04:43:23.425Z",
+      "completedAt": "2026-03-25T04:48:20.249Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774413803425_38cfc339.json"
+    },
+    "traj_1774414101861_37a96a61": {
+      "title": "034-scope-middleware-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T04:48:21.861Z",
+      "completedAt": "2026-03-25T05:18:42.426Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774414101861_37a96a61.json"
+    },
+    "traj_1774415924234_83f2db3e": {
+      "title": "035-role-crud-api-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T05:18:44.234Z",
+      "completedAt": "2026-03-25T05:18:58.003Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774415924234_83f2db3e.json"
+    },
+    "traj_1774415940321_80d7c6ab": {
+      "title": "036-role-assignment-api-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T05:19:00.321Z",
+      "completedAt": "2026-03-25T05:19:16.111Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774415940321_80d7c6ab.json"
+    },
+    "traj_1774415957976_937a90b9": {
+      "title": "037-policy-crud-api-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T05:19:17.976Z",
+      "completedAt": "2026-03-25T05:19:39.913Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774415957976_937a90b9.json"
+    },
+    "traj_1774415981984_479bb738": {
+      "title": "038-policy-evaluation-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T05:19:41.984Z",
+      "completedAt": "2026-03-25T05:20:03.664Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774415981984_479bb738.json"
+    },
+    "traj_1774416005552_bbfd7b18": {
+      "title": "039-scope-inheritance-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T05:20:05.552Z",
+      "completedAt": "2026-03-25T05:20:21.303Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774416005552_bbfd7b18.json"
+    },
+    "traj_1774418311534_d52104a9": {
+      "title": "040-rbac-e2e-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T05:58:31.534Z",
+      "completedAt": "2026-03-25T05:58:45.401Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774418311534_d52104a9.json"
+    },
+    "traj_1774419545455_19b90a9d": {
+      "title": "041-auth-middleware-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T06:19:05.455Z",
+      "completedAt": "2026-03-25T06:19:23.181Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774419545455_19b90a9d.json"
+    },
+    "traj_1774419565776_371bba4a": {
+      "title": "042-org-crud-api-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T06:19:25.776Z",
+      "completedAt": "2026-03-25T06:19:39.587Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774419565776_371bba4a.json"
+    },
+    "traj_1774419581667_3e99428b": {
+      "title": "043-workspace-crud-api-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T06:19:41.667Z",
+      "completedAt": "2026-03-25T06:19:57.390Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774419581667_3e99428b.json"
+    },
+    "traj_1774419599432_e38aba27": {
+      "title": "044-workspace-membership-api-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T06:19:59.432Z",
+      "completedAt": "2026-03-25T06:20:17.486Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774419599432_e38aba27.json"
+    },
+    "traj_1774419619412_a062a510": {
+      "title": "045-api-key-management-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T06:20:19.412Z",
+      "completedAt": "2026-03-25T06:20:35.353Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774419619412_a062a510.json"
+    },
+    "traj_1774419638049_ef43bbab": {
+      "title": "046-admin-routes-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T06:20:38.049Z",
+      "completedAt": "2026-03-25T06:20:51.683Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774419638049_ef43bbab.json"
+    },
+    "traj_1774419653652_fdaa35b3": {
+      "title": "047-rate-limiting-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T06:20:53.652Z",
+      "completedAt": "2026-03-25T06:21:07.548Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774419653652_fdaa35b3.json"
+    },
+    "traj_1774419669317_ba78dc24": {
+      "title": "048-error-handling-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T06:21:09.317Z",
+      "completedAt": "2026-03-25T06:21:23.011Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774419669317_ba78dc24.json"
+    },
+    "traj_1774419684972_8baae973": {
+      "title": "049-cors-and-headers-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T06:21:24.972Z",
+      "completedAt": "2026-03-25T06:21:42.784Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774419684972_8baae973.json"
+    },
+    "traj_1774419704657_7f1c9825": {
+      "title": "050-api-routes-e2e-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-25T06:21:44.657Z",
+      "completedAt": "2026-03-25T06:21:58.288Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774419704657_7f1c9825.json"
+    },
+    "traj_1774419720302_073342c5": {
+      "title": "051-audit-logger-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T06:22:00.302Z",
+      "completedAt": "2026-03-25T06:33:14.674Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774419720302_073342c5.json"
+    },
+    "traj_1774420396574_d913ecd4": {
+      "title": "052-audit-query-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T06:33:16.574Z",
+      "completedAt": "2026-03-25T06:47:24.173Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774420396574_d913ecd4.json"
+    },
+    "traj_1774421236470_c7373ca9": {
+      "title": "035-role-crud-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T06:47:16.470Z",
+      "completedAt": "2026-03-25T07:06:40.200Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774421236470_c7373ca9.json"
+    },
+    "traj_1774421246261_75777963": {
+      "title": "053-audit-export-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T06:47:26.261Z",
+      "completedAt": "2026-03-25T06:57:19.788Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774421246261_75777963.json"
+    },
+    "traj_1774421841632_3aaae174": {
+      "title": "054-audit-retention-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T06:57:21.632Z",
+      "completedAt": "2026-03-25T07:07:58.520Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774421841632_3aaae174.json"
+    },
+    "traj_1774422402079_efcac811": {
+      "title": "036-role-assignment-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T07:06:42.079Z",
+      "completedAt": "2026-03-25T07:22:04.278Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774422402079_efcac811.json"
+    },
+    "traj_1774422482219_4cebabe8": {
+      "title": "055-audit-webhooks-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T07:08:02.219Z",
+      "completedAt": "2026-03-25T07:26:11.342Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774422482219_4cebabe8.json"
+    },
+    "traj_1774423326054_8fdf0572": {
+      "title": "037-policy-crud-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T07:22:06.054Z",
+      "completedAt": "2026-03-25T07:37:27.143Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774423326054_8fdf0572.json"
+    },
+    "traj_1774423573177_624471e3": {
+      "title": "056-identity-activity-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T07:26:13.177Z",
+      "completedAt": "2026-03-25T07:42:16.379Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774423573177_624471e3.json"
+    },
+    "traj_1774424248914_e04ae975": {
+      "title": "038-policy-evaluation-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T07:37:28.914Z",
+      "completedAt": "2026-03-25T07:59:08.869Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774424248914_e04ae975.json"
+    },
+    "traj_1774424337079_cbc118c1": {
+      "title": "037-policy-crud-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T07:38:57.079Z",
+      "completedAt": "2026-03-25T07:45:03.659Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774424337079_cbc118c1.json"
+    },
+    "traj_1774424538596_395d7681": {
+      "title": "057-dashboard-stats-api-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T07:42:18.596Z",
+      "completedAt": "2026-03-25T07:53:13.593Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774424538596_395d7681.json"
+    },
+    "traj_1774424705367_ac490356": {
+      "title": "038-policy-evaluation-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T07:45:05.367Z",
+      "completedAt": "2026-03-25T07:56:54.651Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774424705367_ac490356.json"
+    },
+    "traj_1774425195462_0b4b3c48": {
+      "title": "058-audit-e2e-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T07:53:15.462Z",
+      "completedAt": "2026-03-25T08:08:58.628Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774425195462_0b4b3c48.json"
+    },
+    "traj_1774425416366_dfd50f5b": {
+      "title": "039-scope-inheritance-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T07:56:56.366Z",
+      "completedAt": "2026-03-25T08:21:14.863Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774425416366_dfd50f5b.json"
+    },
+    "traj_1774426140526_8ae01239": {
+      "title": "059-sdk-client-identities-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T08:09:00.526Z",
+      "completedAt": "2026-03-25T08:19:07.841Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774426140526_8ae01239.json"
+    },
+    "traj_1774426749839_37d7d4d4": {
+      "title": "060-sdk-client-tokens-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T08:19:09.839Z",
+      "completedAt": "2026-03-25T08:26:21.001Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774426749839_37d7d4d4.json"
+    },
+    "traj_1774426876595_b643fefe": {
+      "title": "040-rbac-e2e-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T08:21:16.595Z",
+      "completedAt": "2026-03-25T08:35:23.068Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774426876595_b643fefe.json"
+    },
+    "traj_1774427182809_f1cdfa6f": {
+      "title": "061-sdk-client-roles-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T08:26:22.809Z",
+      "completedAt": "2026-03-25T08:34:37.946Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774427182809_f1cdfa6f.json"
+    },
+    "traj_1774427679819_d0e9105c": {
+      "title": "062-sdk-client-audit-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T08:34:39.819Z",
+      "completedAt": "2026-03-25T08:44:23.062Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774427679819_d0e9105c.json"
+    },
+    "traj_1774428265137_1d0ed660": {
+      "title": "063-sdk-verify-complete-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T08:44:25.137Z",
+      "completedAt": "2026-03-25T08:58:11.025Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774428265137_1d0ed660.json"
+    },
+    "traj_1774429092833_9ccbf621": {
+      "title": "064-sdk-middleware-hono-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T08:58:12.833Z",
+      "completedAt": "2026-03-25T09:08:13.989Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774429092833_9ccbf621.json"
+    },
+    "traj_1774429696066_d47a97d8": {
+      "title": "065-sdk-middleware-express-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T09:08:16.066Z",
+      "completedAt": "2026-03-25T09:16:30.946Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774429696066_d47a97d8.json"
+    },
+    "traj_1774430192958_7d990431": {
+      "title": "066-go-middleware-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T09:16:32.958Z",
+      "completedAt": "2026-03-25T09:26:11.504Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774430192958_7d990431.json"
+    },
+    "traj_1774430773594_d9808538": {
+      "title": "067-python-sdk-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T09:26:13.594Z",
+      "completedAt": "2026-03-25T09:41:03.227Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774430773594_d9808538.json"
+    },
+    "traj_1774431665136_307428d8": {
+      "title": "068-sdk-e2e-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T09:41:05.136Z",
+      "completedAt": "2026-03-25T09:57:44.277Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774431665136_307428d8.json"
+    },
+    "traj_1774460999018_4281a1c2": {
+      "title": "100-landing-page-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T17:49:59.018Z",
+      "completedAt": "2026-03-25T18:08:14.846Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774460999018_4281a1c2.json"
+    },
+    "traj_1774462609672_af8120c5": {
+      "title": "101-well-known-spec-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T18:16:49.672Z",
+      "completedAt": "2026-03-25T18:31:54.246Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774462609672_af8120c5.json"
+    },
+    "traj_1774463516317_d04c2505": {
+      "title": "102-well-known-endpoint-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T18:31:56.317Z",
+      "completedAt": "2026-03-25T18:42:24.014Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774463516317_d04c2505.json"
+    },
+    "traj_1774464146203_45bb1183": {
+      "title": "103-openapi-to-scopes-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T18:42:26.203Z",
+      "completedAt": "2026-03-25T18:52:52.233Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774464146203_45bb1183.json"
+    },
+    "traj_1774464774550_f887eea5": {
+      "title": "104-framework-adapter-types-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T18:52:54.550Z",
+      "completedAt": "2026-03-25T19:11:04.985Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774464774550_f887eea5.json"
+    },
+    "traj_1774465867078_cf61e395": {
+      "title": "105-adapter-vercel-ai-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T19:11:07.078Z",
+      "completedAt": "2026-03-25T19:23:04.730Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774465867078_cf61e395.json"
+    },
+    "traj_1774466586755_9bd80161": {
+      "title": "106-adapter-openai-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T19:23:06.755Z",
+      "completedAt": "2026-03-25T19:29:55.828Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774466586755_9bd80161.json"
+    },
+    "traj_1774466997735_7b3324f8": {
+      "title": "107-adapter-anthropic-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T19:29:57.735Z",
+      "completedAt": "2026-03-25T19:36:12.803Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774466997735_7b3324f8.json"
+    },
+    "traj_1774467375706_3a51ef8c": {
+      "title": "108-init-wizard-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T19:36:15.706Z",
+      "completedAt": "2026-03-25T19:52:04.913Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774467375706_3a51ef8c.json"
+    },
+    "traj_1774468326712_82e43108": {
+      "title": "109-a2a-discovery-bridge-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T19:52:06.712Z",
+      "completedAt": "2026-03-25T20:11:50.244Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774468326712_82e43108.json"
+    },
+    "traj_1774469512266_76b19292": {
+      "title": "110-discovery-ecosystem-e2e-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-25T20:11:52.266Z",
+      "completedAt": "2026-03-25T20:22:10.345Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774469512266_76b19292.json"
+    },
+    "traj_1774534912074_214e23b6": {
+      "title": "autofix-swarm-Agentworkforce-relayauth-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-26T14:21:52.074Z",
+      "completedAt": "2026-03-26T14:23:17.521Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774534912074_214e23b6.json"
+    },
+    "traj_1774541876121_456ffb41": {
+      "title": "111-work-on-the-relay-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-26T16:17:56.121Z",
+      "completedAt": "2026-03-26T16:18:23.450Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774541876121_456ffb41.json"
+    },
+    "traj_1774542102742_d27ee722": {
+      "title": "111-work-on-the-relay-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-26T16:21:42.742Z",
+      "completedAt": "2026-03-26T16:45:21.668Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774542102742_d27ee722.json"
+    },
+    "traj_1774551454963_6e0da678": {
+      "title": "111-work-on-the-relay-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-26T18:57:34.963Z",
+      "completedAt": "2026-03-26T19:04:11.346Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774551454963_6e0da678.json"
+    },
+    "traj_1774557516947_83dff083": {
+      "title": "112-relay-prereqs-and-dotfiles-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-26T20:38:36.947Z",
+      "completedAt": "2026-03-26T20:40:36.586Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774557516947_83dff083.json"
+    },
+    "traj_1774563188506_0cf8bc67": {
+      "title": "113-relay-run-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-26T22:13:08.506Z",
+      "completedAt": "2026-03-26T22:24:31.771Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774563188506_0cf8bc67.json"
+    },
+    "traj_1774609889766_afd18845": {
+      "title": "autofix-swarm-Agentworkforce-relayauth-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-27T11:11:29.766Z",
+      "completedAt": "2026-03-27T11:15:05.647Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774609889766_afd18845.json"
+    },
+    "traj_1774613530751_151eab8d": {
+      "title": "autofix-swarm-Agentworkforce-relayauth-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-27T12:12:10.751Z",
+      "completedAt": "2026-03-27T12:20:15.231Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774613530751_151eab8d.json"
+    },
+    "traj_1774638472822_9122f611": {
+      "title": "114-publish-server-package-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-27T19:07:52.822Z",
+      "completedAt": "2026-03-27T19:19:18.481Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774638472822_9122f611.json"
+    },
+    "traj_1774639819578_54bbe84c": {
+      "title": "115-decouple-server-from-cloudflare-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-27T19:30:19.578Z",
+      "completedAt": "2026-03-27T20:11:04.596Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774639819578_54bbe84c.json"
+    },
+    "traj_1774643007750_01d040c5": {
+      "title": "ci-verify-My-Senior-Dev-app-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-27T20:23:27.750Z",
+      "completedAt": "2026-03-27T20:23:29.853Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774643007750_01d040c5.json"
+    },
+    "traj_1774643657732_30a73d94": {
+      "title": "ci-verify-My-Senior-Dev-app-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-27T20:34:17.732Z",
+      "completedAt": "2026-03-27T20:34:20.156Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774643657732_30a73d94.json"
+    },
+    "traj_1774643776001_ca59585d": {
+      "title": "ci-verify-My-Senior-Dev-app-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-27T20:36:16.001Z",
+      "completedAt": "2026-03-27T20:36:18.095Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774643776001_ca59585d.json"
+    },
+    "traj_1774646806771_08afc85b": {
+      "title": "116-sqlite-adapter-parity-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-03-27T21:26:46.771Z",
+      "completedAt": "2026-03-27T21:27:20.273Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774646806771_08afc85b.json"
+    },
+    "traj_1774649187037_3739ea0d": {
+      "title": "116-sqlite-adapter-parity-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-27T22:06:27.037Z",
+      "completedAt": "2026-03-27T22:13:34.457Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774649187037_3739ea0d.json"
+    },
+    "traj_1774712548479_cf48a6f2": {
+      "title": "relayauth-python-sdk-reorg-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-28T15:42:28.479Z",
+      "completedAt": "2026-03-28T16:01:06.174Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774712548479_cf48a6f2.json"
+    },
+    "traj_1774718172887_20a4c7a8": {
+      "title": "oss-cloudflare-separation-workflow",
+      "status": "completed",
+      "startedAt": "2026-03-28T17:16:12.887Z",
+      "completedAt": "2026-03-28T17:49:44.849Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/traj_1774718172887_20a4c7a8.json"
+    },
+    "traj_ye951dls42hh": {
+      "title": "platform-v1-wave1-relayauth-workspace-scope-workflow",
+      "status": "active",
+      "startedAt": "2026-04-20T19:45:35.325Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/active/traj_ye951dls42hh.json"
+    },
+    "traj_umzzemldvbb7": {
+      "title": "Add optional product_id to JWT claim types",
+      "status": "completed",
+      "startedAt": "2026-04-20T19:49:45.763Z",
+      "completedAt": "2026-04-20T19:50:24.628Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/2026-04/traj_umzzemldvbb7.json"
+    },
+    "traj_ovn9csn9j7nu": {
+      "title": "platform-v1-wave1-relayauth-workspace-scope-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-04-20T19:51:15.746Z",
+      "completedAt": "2026-04-20T19:51:29.396Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/2026-04/traj_ovn9csn9j7nu.json"
+    },
+    "traj_ngiex5uuh0sm": {
+      "title": "platform-v1-wave1-relayauth-workspace-scope-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-04-20T19:51:39.749Z",
+      "completedAt": "2026-04-20T20:04:20.994Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/2026-04/traj_ngiex5uuh0sm.json"
+    },
+    "traj_4u5oyg0fcvgb": {
+      "title": "Thread optional productId through mint/sign JWT payload",
+      "status": "completed",
+      "startedAt": "2026-04-20T19:51:54.104Z",
+      "completedAt": "2026-04-20T19:55:26.438Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/2026-04/traj_4u5oyg0fcvgb.json"
+    },
+    "traj_q7t7tb8kj5dw": {
+      "title": "Surface product_id from verify results without enforcing it",
+      "status": "completed",
+      "startedAt": "2026-04-20T19:55:49.933Z",
+      "completedAt": "2026-04-20T19:58:36.185Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/2026-04/traj_q7t7tb8kj5dw.json"
+    },
+    "traj_9euxutraijrr": {
+      "title": "Add vitest coverage for product_id mint/verify behavior",
+      "status": "completed",
+      "startedAt": "2026-04-20T19:59:07.980Z",
+      "completedAt": "2026-04-20T20:01:42.415Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/2026-04/traj_9euxutraijrr.json"
+    },
+    "traj_bquob6dw46xy": {
+      "title": "Bump relayauth package versions to next minor",
+      "status": "completed",
+      "startedAt": "2026-04-20T20:02:45.773Z",
+      "completedAt": "2026-04-20T20:03:39.592Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/2026-04/traj_bquob6dw46xy.json"
     }
   }
 }

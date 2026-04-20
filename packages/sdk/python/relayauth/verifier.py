@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 import httpx
@@ -23,6 +23,11 @@ class VerifyOptions:
     cache_ttl_ms: int | None = None
     check_revocation: bool = False
     revocation_url: str | None = None
+
+
+@dataclass(slots=True)
+class _ClaimsWithProductID(Claims):
+    product_id: str | None = None
 
 
 def _invalid_token_error() -> RelayAuthError:
@@ -80,6 +85,18 @@ def _normalize_cache_ttl_ms(value: int | None) -> int:
     if value is None:
         return DEFAULT_CACHE_TTL_MS
     return max(0, int(value))
+
+
+def _with_optional_product_id(claims: Claims, payload: Any) -> Claims:
+    if not isinstance(payload, dict):
+        return claims
+
+    product_id = payload.get("product_id")
+    if not isinstance(product_id, str):
+        return claims
+
+    base_values = {field.name: getattr(claims, field.name) for field in fields(Claims)}
+    return _ClaimsWithProductID(**base_values, product_id=product_id)
 
 
 def _is_supported_algorithm(algorithm: str | None) -> bool:
@@ -158,7 +175,7 @@ class TokenVerifier:
         except jwt.InvalidTokenError as exc:
             raise _invalid_token_error() from exc
 
-        claims = self._validate_claims(payload)
+        claims = _with_optional_product_id(self._validate_claims(payload), payload)
 
         if self.options.check_revocation:
             await self._check_revocation(claims.jti)
