@@ -4,6 +4,7 @@ import { parseScope } from "@relayauth/sdk";
 import { writeAuditEntry } from "./audit-logger.js";
 import { listPolicies } from "./policies.js";
 import { listIdentityRoles } from "./role-assignments.js";
+import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 import type {
   IdentityBudget,
   IdentityBudgetUsage,
@@ -132,6 +133,7 @@ export async function checkAccess(
 
   if (budgetState === "exceeded") {
     await writeBudgetAudit(storage, identity, requestedScope, "budget.exceeded", "denied");
+    emitBudgetAlert(identity);
     return {
       allowed: false,
       reason: "budget_exceeded",
@@ -140,6 +142,7 @@ export async function checkAccess(
 
   if (budgetState === "alert") {
     await writeBudgetAudit(storage, identity, requestedScope, "budget.alert", "allowed");
+    emitBudgetAlert(identity);
   }
 
   const [roles, policies] = await Promise.all([
@@ -586,6 +589,51 @@ async function writeBudgetAudit(
       actionAttempted: requestedScope,
     },
   });
+}
+
+function emitBudgetAlert(identity: StoredIdentity): void {
+  const metric = getBudgetMetric(identity);
+  if (!metric) {
+    return;
+  }
+
+  emitObserverEvent({
+    type: "budget.alert",
+    timestamp: observerNow(),
+    payload: {
+      id: identity.id,
+      org: identity.orgId,
+      usage: metric.usage,
+      limit: metric.limit,
+    },
+  });
+}
+
+function getBudgetMetric(identity: StoredIdentity): { usage: number; limit: number; ratio: number } | undefined {
+  const budget = identity.budget;
+  const usage = identity.budgetUsage;
+  if (!budget || !usage) {
+    return undefined;
+  }
+
+  const metrics: { usage: number; limit: number; ratio: number }[] = [];
+  if (typeof budget.maxActionsPerHour === "number" && budget.maxActionsPerHour > 0) {
+    metrics.push({
+      usage: usage.actionsThisHour,
+      limit: budget.maxActionsPerHour,
+      ratio: usage.actionsThisHour / budget.maxActionsPerHour,
+    });
+  }
+
+  if (typeof budget.maxCostPerDay === "number" && budget.maxCostPerDay > 0) {
+    metrics.push({
+      usage: usage.costToday,
+      limit: budget.maxCostPerDay,
+      ratio: usage.costToday / budget.maxCostPerDay,
+    });
+  }
+
+  return metrics.sort((left, right) => right.ratio - left.ratio)[0];
 }
 
 function parseScopePlane(scope: string): string | undefined {

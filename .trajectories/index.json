@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-20T20:04:21.004Z",
+  "lastUpdated": "2026-04-21T09:52:43.009Z",
   "trajectories": {
     "traj_a11zh8l3gbp5": {
       "title": "Work on the relay: combine relayauth + relayfile for agent sandboxing",
@@ -114,7 +114,7 @@
       "title": "116-sqlite-adapter-parity-workflow",
       "status": "active",
       "startedAt": "2026-03-27T21:31:46.611Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/active/traj_1774647106611_54b83aed.json"
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relayauth/.trajectories/active/traj_1774647106611_54b83aed.json"
     },
     "traj_64d5p5tpls6g": {
       "title": "Execute SDK reorganization",
@@ -898,6 +898,19 @@
       "startedAt": "2026-04-20T20:02:45.773Z",
       "completedAt": "2026-04-20T20:03:39.592Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/completed/2026-04/traj_bquob6dw46xy.json"
+    },
+    "traj_6j77b9optyhl": {
+      "title": "117-observer-implementation-workflow",
+      "status": "active",
+      "startedAt": "2026-04-21T08:39:45.100Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relayauth/.trajectories/active/traj_6j77b9optyhl.json"
+    },
+    "traj_v5az2xzbci6k": {
+      "title": "117-observer-implementation-workflow",
+      "status": "completed",
+      "startedAt": "2026-04-21T09:04:23.560Z",
+      "completedAt": "2026-04-21T09:52:42.995Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relayauth/.trajectories/completed/2026-04/traj_v5az2xzbci6k.json"
     }
   }
 }

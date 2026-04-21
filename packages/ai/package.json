@@ -18,7 +18,7 @@
   "peerDependencies": {
     "@relayauth/sdk": ">=0.1.0",
     "ai": ">=5.0.0",
-    "zod": "^3.23.0"
+    "zod": "^3.23.0 || ^4.0.0"
   },
   "dependencies": {
     "@relayauth/types": "*"

@@ -40,6 +40,7 @@ import type {
   WorkspaceContextRecord,
 } from "./interface.js";
 import { StorageError } from "./interface.js";
+import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 
 const DEFAULT_DB_PATH = ".relay/relayauth.db";
 const DEFAULT_INTERNAL_SECRET = "internal-test-secret";
@@ -883,22 +884,23 @@ class BackendProvider {
   }
 
   private async initialize(): Promise<BackendContext> {
-    const Database = await loadBetterSqlite();
-    if (!Database) {
-      return createMemoryBackend();
+    const candidates = await loadSqliteConstructors();
+
+    for (const Database of candidates) {
+      try {
+        await ensureDbDirectory(this.dbPath);
+        const db = new Database(this.dbPath);
+        db.pragma("journal_mode = WAL");
+        db.pragma("foreign_keys = ON");
+        db.exec(SCHEMA_SQL);
+        ensureRevokedTokensSchema(db);
+        return { kind: "sqlite", db };
+      } catch {
+        // Try the next SQLite implementation before falling back to memory.
+      }
     }
 
-    try {
-      await ensureDbDirectory(this.dbPath);
-      const db = new Database(this.dbPath);
-      db.pragma("journal_mode = WAL");
-      db.pragma("foreign_keys = ON");
-      db.exec(SCHEMA_SQL);
-      ensureRevokedTokensSchema(db);
-      return { kind: "sqlite", db };
-    } catch {
-      return createMemoryBackend();
-    }
+    return createMemoryBackend();
   }
 }
 
@@ -970,6 +972,9 @@ class SqliteIdentityStorage implements IdentityStorage {
       }
 
       backend.state.identities.set(finalIdentity.id, cloneStoredIdentity(finalIdentity));
+      if (budgetResult.shouldWriteAuditEvent) {
+        emitBudgetAlert(finalIdentity);
+      }
       return cloneStoredIdentity(finalIdentity);
     }
 
@@ -980,6 +985,7 @@ class SqliteIdentityStorage implements IdentityStorage {
     backend.db.prepare(INSERT_IDENTITY_SQL).run(...toIdentityParams(finalIdentity));
     if (budgetResult.shouldWriteAuditEvent) {
       await this.writeBudgetAuditEvent(backend, finalIdentity);
+      emitBudgetAlert(finalIdentity);
     }
     return this.getRequired(finalIdentity.id);
   }
@@ -994,12 +1000,16 @@ class SqliteIdentityStorage implements IdentityStorage {
 
     if (backend.kind === "memory") {
       backend.state.identities.set(finalIdentity.id, cloneStoredIdentity(finalIdentity));
+      if (budgetResult.shouldWriteAuditEvent) {
+        emitBudgetAlert(finalIdentity);
+      }
       return cloneStoredIdentity(finalIdentity);
     }
 
     backend.db.prepare(UPDATE_IDENTITY_SQL).run(...toIdentityUpdateParams(finalIdentity), finalIdentity.id);
     if (budgetResult.shouldWriteAuditEvent) {
       await this.writeBudgetAuditEvent(backend, finalIdentity);
+      emitBudgetAlert(finalIdentity);
     }
     return this.getRequired(finalIdentity.id);
   }
@@ -1743,12 +1753,13 @@ class SqliteContextStorage implements ContextStorage {
   }
 }
 
-async function loadBetterSqlite(): Promise<SqliteDatabaseConstructor | null> {
+async function loadSqliteConstructors(): Promise<SqliteDatabaseConstructor[]> {
+  const constructors: SqliteDatabaseConstructor[] = [];
   const moduleRecord = await importOptional<Record<string, unknown>>("better-sqlite3");
   if (moduleRecord) {
     const candidate = "default" in moduleRecord ? moduleRecord.default : moduleRecord;
     if (typeof candidate === "function") {
-      return candidate as SqliteDatabaseConstructor;
+      constructors.push(candidate as SqliteDatabaseConstructor);
     }
   }
 
@@ -1766,7 +1777,7 @@ async function loadBetterSqlite(): Promise<SqliteDatabaseConstructor | null> {
   if (sqliteModule?.DatabaseSync) {
     const NodeSqlite = sqliteModule.DatabaseSync;
 
-    return class NodeSqliteAdapter {
+    constructors.push(class NodeSqliteAdapter {
       private readonly db: InstanceType<typeof NodeSqlite>;
 
       constructor(filename: string) {
@@ -1788,10 +1799,10 @@ async function loadBetterSqlite(): Promise<SqliteDatabaseConstructor | null> {
       close(): void {
         this.db.close();
       }
-    } as unknown as SqliteDatabaseConstructor;
+    } as unknown as SqliteDatabaseConstructor);
   }
 
-  return null;
+  return constructors;
 }
 
 async function ensureDbDirectory(dbPath: string): Promise<void> {
@@ -2105,6 +2116,51 @@ function isBudgetExceeded(identity: StoredIdentity): boolean {
       && usage.costToday > budget.maxCostPerDay;
 
   return actionsExceeded || costExceeded;
+}
+
+function emitBudgetAlert(identity: StoredIdentity): void {
+  const metric = getBudgetMetric(identity);
+  if (!metric) {
+    return;
+  }
+
+  emitObserverEvent({
+    type: "budget.alert",
+    timestamp: observerNow(),
+    payload: {
+      id: identity.id,
+      org: identity.orgId,
+      usage: metric.usage,
+      limit: metric.limit,
+    },
+  });
+}
+
+function getBudgetMetric(identity: StoredIdentity): { usage: number; limit: number; ratio: number } | undefined {
+  const budget = identity.budget;
+  const usage = identity.budgetUsage;
+  if (!budget || !usage) {
+    return undefined;
+  }
+
+  const metrics: { usage: number; limit: number; ratio: number }[] = [];
+  if (typeof budget.maxActionsPerHour === "number" && budget.maxActionsPerHour > 0) {
+    metrics.push({
+      usage: usage.actionsThisHour,
+      limit: budget.maxActionsPerHour,
+      ratio: usage.actionsThisHour / budget.maxActionsPerHour,
+    });
+  }
+
+  if (typeof budget.maxCostPerDay === "number" && budget.maxCostPerDay > 0) {
+    metrics.push({
+      usage: usage.costToday,
+      limit: budget.maxCostPerDay,
+      ratio: usage.costToday / budget.maxCostPerDay,
+    });
+  }
+
+  return metrics.sort((left, right) => right.ratio - left.ratio)[0];
 }
 
 function toIdentityParams(identity: StoredIdentity): unknown[] {

@@ -97,7 +97,7 @@ type HarnessState = {
 
 type AuditHarness = {
   app: ReturnType<typeof createTestApp>;
-  db: D1Database;
+  db: ReturnType<typeof createTestApp>["storage"] & D1Database;
   state: HarnessState;
   request: (
     method: string,
@@ -282,8 +282,13 @@ test("Audit & Observability E2E", async (t) => {
     assert.equal(listedWebhooks[0]?.id, createdWebhook.id);
     assert.equal(listedWebhooks[0]?.secret, "****lert");
 
-    const alertRow = scenario.harness.state.auditLogs.find((row) => row.action === "budget.alert");
-    assert.ok(alertRow, "expected a budget.alert audit row");
+    const alertEntries = await scenario.harness.db.audit.query({
+      orgId: ORG_ID,
+      action: "budget.alert" as AuditAction,
+      limit: 10,
+    });
+    const alertEntry = alertEntries.find((entry) => entry.action === "budget.alert");
+    assert.ok(alertEntry, "expected a budget.alert audit row");
 
     const requests: Array<{ request: Request; body: string }> = [];
     const originalFetch = globalThis.fetch;
@@ -299,7 +304,7 @@ test("Audit & Observability E2E", async (t) => {
       globalThis.fetch = originalFetch;
     });
 
-    await dispatchWebhook(createdWebhook, toObservedAuditEntry(alertRow));
+    await dispatchWebhook(createdWebhook, alertEntry);
 
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.request.url, createdWebhook.url);
@@ -361,6 +366,7 @@ test("Audit & Observability E2E", async (t) => {
   });
 
   await t.test("purges retained audit rows older than the cutoff", async () => {
+    const oldTimestamp = daysAgo(120);
     await writeAuditEntry(scenario.harness.db, {
       id: "aud_retention_old",
       action: "token.issued",
@@ -374,8 +380,11 @@ test("Audit & Observability E2E", async (t) => {
         sponsorId: scenario.targetIdentity.sponsorId,
         sponsorChain: JSON.stringify(scenario.targetIdentity.sponsorChain),
       },
-      timestamp: daysAgo(120),
+      timestamp: oldTimestamp,
     });
+    await scenario.harness.db.DB.prepare("UPDATE audit_logs SET created_at = ? WHERE id = ?")
+      .bind(oldTimestamp, "aud_retention_old")
+      .run();
 
     const beforePurge = await countExpiredEntries(scenario.harness.db, 90);
     assert.deepEqual(beforePurge, { expiredCount: 1 });
@@ -386,7 +395,9 @@ test("Audit & Observability E2E", async (t) => {
     const afterPurge = await countExpiredEntries(scenario.harness.db, 90);
     assert.deepEqual(afterPurge, { expiredCount: 0 });
     assert.equal(
-      scenario.harness.state.auditLogs.some((row) => row.id === "aud_retention_old"),
+      (await scenario.harness.db.audit.query({ orgId: ORG_ID, limit: 100 })).some(
+        (row) => row.id === "aud_retention_old",
+      ),
       false,
     );
   });
@@ -461,7 +472,7 @@ async function seedScenario(): Promise<SeededScenario> {
     },
   });
 
-  const harness = createAuditHarness([
+  const harness = await createAuditHarness([
     targetIdentity,
     childIdentity,
     grandchildIdentity,
@@ -554,7 +565,7 @@ async function seedScenario(): Promise<SeededScenario> {
   };
 }
 
-function createAuditHarness(identities: StoredIdentity[]): AuditHarness {
+async function createAuditHarness(identities: StoredIdentity[]): Promise<AuditHarness> {
   const state: HarnessState = {
     auditLogs: [],
     auditWebhooks: new Map<string, AuditWebhookRecord>(),
@@ -656,10 +667,21 @@ function createAuditHarness(identities: StoredIdentity[]): AuditHarness {
     DB: db,
     IDENTITY_DO: identityDo,
   });
+  for (const identity of identities) {
+    await app.storage.identities.create(identity);
+  }
+
+  const storageDb = Object.assign(app.storage, {
+    prepare: app.storage.DB.prepare,
+    exec: app.storage.DB.exec,
+    batch: async <T>(statements: D1PreparedStatement[]) =>
+      Promise.all(statements.map((statement) => statement.run())) as Awaited<T>,
+    dump: async () => new ArrayBuffer(0),
+  }) as AuditHarness["db"];
 
   return {
     app,
-    db,
+    db: storageDb,
     state,
     async request(method, path, options = {}) {
       const headers = new Headers(options.headers);

@@ -166,6 +166,30 @@ export function createTestRequest(
   return new Request(`http://localhost${path}`, requestInit);
 }
 
+export function mockKV(): KVNamespace {
+  const values = new Map<string, string>();
+
+  return {
+    get: async (key: string) => values.get(key) ?? null,
+    put: async (key: string, value: string) => {
+      values.set(key, value);
+    },
+    delete: async (key: string) => {
+      values.delete(key);
+    },
+    list: async () => ({
+      keys: [...values.keys()].map((name) => ({ name })),
+      list_complete: true,
+      cacheStatus: null,
+    }),
+    getWithMetadata: async (key: string) => ({
+      value: values.get(key) ?? null,
+      metadata: null,
+      cacheStatus: null,
+    }),
+  } as unknown as KVNamespace;
+}
+
 export function createTestApp(bindingsOverrides: Partial<TestBindings> = {}): TestApp {
   const storage = createTestStorage();
   const bindings: TestBindings = {

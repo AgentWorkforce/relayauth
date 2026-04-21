@@ -1,0 +1,26 @@
+{
+  "name": "@relayauth/observer",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3101",
+    "build": "next build",
+    "start": "next start -p 3101",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "^14",
+    "react": "^18",
+    "react-dom": "^18"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/node": "^24.6.0",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "postcss": "^8.5.1",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7"
+  }
+}

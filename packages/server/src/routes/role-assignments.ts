@@ -1,5 +1,5 @@
 import type { RelayAuthTokenClaims, Role } from "@relayauth/types";
-import { matchScope } from "@relayauth/sdk";
+import { matchScope, parseScope } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import {
@@ -8,6 +8,7 @@ import {
   removeRole,
 } from "../engine/role-assignments.js";
 import { getRole } from "../engine/roles.js";
+import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { AuthStorage } from "../storage/index.js";
 
@@ -174,7 +175,10 @@ async function authenticateAndAuthorize(
     return auth;
   }
 
-  if (!requiredScopes.every((scope) => matchScope(scope, auth.claims.scopes))) {
+  const allowed = requiredScopes.every((scope) => matchScope(scope, auth.claims.scopes));
+  emitScopeChecks(auth.claims, requiredScopes, allowed);
+
+  if (!allowed) {
     return { ok: false, error: "insufficient_scope", status: 403 };
   }
 
@@ -189,11 +193,13 @@ async function authenticate(
   | { ok: false; error: string; status: 401 }
 > {
   if (!authorization) {
+    emitTokenInvalid("missing_authorization");
     return { ok: false, error: "Missing Authorization header", status: 401 };
   }
 
   const [scheme, token] = authorization.split(/\s+/, 2);
   if (scheme !== "Bearer" || !token) {
+    emitTokenInvalid("invalid_authorization");
     return { ok: false, error: "Invalid Authorization header", status: 401 };
   }
 
@@ -208,6 +214,7 @@ async function authenticate(
 async function verifyToken(token: string, signingKey: string): Promise<RelayAuthTokenClaims | null> {
   const parts = token.split(".");
   if (parts.length !== 3) {
+    emitTokenInvalid("malformed_token");
     return null;
   }
 
@@ -215,6 +222,7 @@ async function verifyToken(token: string, signingKey: string): Promise<RelayAuth
   const header = decodeBase64UrlJson<JwtHeader>(encodedHeader);
   const payload = decodeBase64UrlJson<RelayAuthTokenClaims>(encodedPayload);
   if (!header || !payload || header.alg !== "HS256") {
+    emitTokenInvalid("invalid_header", payload);
     return null;
   }
 
@@ -224,11 +232,13 @@ async function verifyToken(token: string, signingKey: string): Promise<RelayAuth
     signingKey,
   );
   if (!isValidSignature) {
+    emitTokenInvalid("invalid_signature", payload);
     return null;
   }
 
   const now = Math.floor(Date.now() / 1000);
   if (typeof payload.exp !== "number" || payload.exp <= now) {
+    emitTokenInvalid("token_expired", payload);
     return null;
   }
 
@@ -239,9 +249,11 @@ async function verifyToken(token: string, signingKey: string): Promise<RelayAuth
     typeof payload.sponsorId !== "string" ||
     !Array.isArray(payload.sponsorChain)
   ) {
+    emitTokenInvalid("invalid_claims", payload);
     return null;
   }
 
+  emitTokenVerified(payload, now);
   return payload;
 }
 
@@ -291,6 +303,136 @@ function decodeBase64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
     bytes[i] = decoded.charCodeAt(i);
   }
   return bytes;
+}
+
+function emitTokenVerified(claims: RelayAuthTokenClaims, nowSeconds: number): void {
+  emitObserverEvent({
+    type: "token.verified",
+    timestamp: observerNow(),
+    payload: {
+      sub: claims.sub,
+      org: claims.org,
+      scopes: Array.isArray(claims.scopes) ? [...claims.scopes] : [],
+      expiresIn: Math.max(0, claims.exp - nowSeconds),
+    },
+  });
+}
+
+function emitTokenInvalid(reason: string, claims?: Partial<RelayAuthTokenClaims> | null): void {
+  const sub = typeof claims?.sub === "string" ? claims.sub : undefined;
+  const org = typeof claims?.org === "string" ? claims.org : undefined;
+
+  emitObserverEvent({
+    type: "token.invalid",
+    timestamp: observerNow(),
+    payload: {
+      reason,
+      ...(sub !== undefined ? { sub } : {}),
+      ...(org !== undefined ? { org } : {}),
+    },
+  });
+}
+
+function emitScopeChecks(
+  claims: RelayAuthTokenClaims,
+  requestedScopes: string[],
+  aggregateAllowed: boolean,
+): void {
+  for (const requestedScope of requestedScopes) {
+    const allowed = aggregateAllowed ? true : scopeAllowed(requestedScope, claims.scopes);
+    const matchedScope = allowed ? findMatchedScope(requestedScope, claims.scopes) : undefined;
+    emitScopeCheck(claims, requestedScope, allowed ? "allowed" : "denied", matchedScope);
+
+    if (!allowed) {
+      emitScopeDenied(claims, requestedScope, "insufficient_scope", matchedScope);
+    }
+  }
+}
+
+function emitScopeCheck(
+  claims: RelayAuthTokenClaims,
+  requestedScope: string,
+  result: "allowed" | "denied",
+  matchedScope?: string,
+): void {
+  emitObserverEvent({
+    type: "scope.check",
+    timestamp: observerNow(),
+    payload: {
+      agent: claims.sub,
+      requestedScope,
+      grantedScopes: Array.isArray(claims.scopes) ? [...claims.scopes] : [],
+      result,
+      ...(matchedScope !== undefined ? { matchedScope } : {}),
+      evaluation: parseScopeEvaluation(requestedScope),
+    },
+  });
+}
+
+function emitScopeDenied(
+  claims: RelayAuthTokenClaims,
+  requestedScope: string,
+  reason: string,
+  matchedScope?: string,
+): void {
+  emitObserverEvent({
+    type: "scope.denied",
+    timestamp: observerNow(),
+    payload: {
+      agent: claims.sub,
+      requestedScope,
+      grantedScopes: Array.isArray(claims.scopes) ? [...claims.scopes] : [],
+      result: "denied",
+      ...(matchedScope !== undefined ? { matchedScope } : {}),
+      evaluation: parseScopeEvaluation(requestedScope),
+      reason,
+    },
+  });
+}
+
+function scopeAllowed(requestedScope: string, grantedScopes: string[]): boolean {
+  try {
+    return matchScope(requestedScope, grantedScopes);
+  } catch {
+    return false;
+  }
+}
+
+function findMatchedScope(requestedScope: string, grantedScopes: string[]): string | undefined {
+  if (grantedScopes.includes("*")) {
+    return "*";
+  }
+
+  for (const grantedScope of grantedScopes) {
+    try {
+      if (matchScope(requestedScope, [grantedScope])) {
+        return grantedScope;
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
+  return undefined;
+}
+
+function parseScopeEvaluation(scope: string): { plane: string; resource: string; action: string; path: string } {
+  try {
+    const parsed = parseScope(scope);
+    return {
+      plane: parsed.plane,
+      resource: parsed.resource,
+      action: parsed.action,
+      path: parsed.path,
+    };
+  } catch {
+    return {
+      plane: "",
+      resource: "",
+      action: "",
+      path: scope,
+    };
+  }
 }
 
 async function parseJsonObjectBody<T extends object>(request: Request): Promise<T | null> {

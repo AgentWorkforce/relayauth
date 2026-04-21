@@ -1,4 +1,5 @@
 .agent-relay
+.relay/
 node_modules
 dist
 .wrangler
@@ -20,3 +21,4 @@ __pycache__/
 tsconfig.tsbuildinfo
 *.tsbuildinfo
 packages/sdk/typescript/tsconfig.tsbuildinfo
+packages/observer/.next/

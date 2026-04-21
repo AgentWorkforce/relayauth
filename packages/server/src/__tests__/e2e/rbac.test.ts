@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Policy, Role } from "@relayauth/types";
+import type { AuditAction, Policy, Role } from "@relayauth/types";
 import { Hono } from "hono";
 
 import type { StoredIdentity } from "../../storage/identity-types.js";
@@ -17,9 +17,9 @@ import {
   generateTestIdentity,
   generateTestToken,
 } from "../test-helpers.js";
-import { RelayAuthError } from "../../../../sdk/src/errors.js";
-import { matchesAny, validateSubset } from "../../../../sdk/src/scope-matcher.js";
-import { parseScope, validateScope } from "../../../../sdk/src/scope-parser.js";
+import { RelayAuthError } from "../../../../sdk/typescript/src/errors.js";
+import { matchesAny, validateSubset } from "../../../../sdk/typescript/src/scope-matcher.js";
+import { parseScope, validateScope } from "../../../../sdk/typescript/src/scope-parser.js";
 import { authenticate } from "../../lib/auth.js";
 
 type StoredPolicy = Policy & { deletedAt?: string };
@@ -77,9 +77,9 @@ const PRIORITY_SCOPE = "relaycast:channel:write:priority-room";
 const ADMIN_SCOPES = ["relayauth:*:*:*"];
 
 test("Scopes & RBAC E2E", async (t) => {
-  const harness = createRbacHarness();
+  const harness = await createRbacHarness();
 
-  const primaryIdentity = harness.seedIdentity(
+  const primaryIdentity = await harness.seedIdentity(
     createStoredIdentity({
       id: "agent_rbac_primary",
       name: "Primary RBAC Agent",
@@ -87,7 +87,7 @@ test("Scopes & RBAC E2E", async (t) => {
       roles: [],
     }),
   );
-  const priorityIdentity = harness.seedIdentity(
+  const priorityIdentity = await harness.seedIdentity(
     createStoredIdentity({
       id: "agent_rbac_priority",
       name: "Priority Agent",
@@ -95,7 +95,7 @@ test("Scopes & RBAC E2E", async (t) => {
       roles: [],
     }),
   );
-  const budgetIdentity = harness.seedIdentity(
+  const budgetIdentity = await harness.seedIdentity(
     createStoredIdentity({
       id: "agent_rbac_budget",
       name: "Budget Limited Agent",
@@ -112,7 +112,7 @@ test("Scopes & RBAC E2E", async (t) => {
       },
     }),
   );
-  const childIdentity = harness.seedIdentity(
+  const childIdentity = await harness.seedIdentity(
     createStoredIdentity({
       id: "agent_rbac_child",
       name: "Child RBAC Agent",
@@ -393,10 +393,15 @@ test("Scopes & RBAC E2E", async (t) => {
       reason: "budget_exceeded",
     });
 
-    const audit = harness.state.auditLogs.find(
+    const auditEntries = await harness.db.audit.query({
+      orgId: ORG_ID,
+      identityId: budgetIdentity.id,
+      action: "budget.exceeded" as AuditAction,
+      limit: 10,
+    });
+    const audit = auditEntries.find(
       (entry) =>
         entry.action === "budget.exceeded"
-        && entry.identityId === budgetIdentity.id
         && entry.resource === READ_GENERAL_SCOPE,
     );
 
@@ -436,10 +441,15 @@ test("Scopes & RBAC E2E", async (t) => {
       assert.match(body.error, /broader than the parent scope set/i);
     });
 
-    const audit = harness.state.auditLogs.find(
+    const auditEntries = await harness.db.audit.query({
+      orgId: ORG_ID,
+      identityId: primaryIdentity.id,
+      action: "scope.escalation_denied" as AuditAction,
+      limit: 10,
+    });
+    const audit = auditEntries.find(
       (entry) =>
         entry.action === "scope.escalation_denied"
-        && entry.identityId === primaryIdentity.id
         && entry.resource === FILE_WRITE_SCOPE,
     );
 
@@ -449,7 +459,7 @@ test("Scopes & RBAC E2E", async (t) => {
   });
 });
 
-function createRbacHarness() {
+async function createRbacHarness() {
   const state: HarnessState = {
     roles: new Map(),
     policies: new Map(),
@@ -531,6 +541,24 @@ function createRbacHarness() {
     DB: db,
     IDENTITY_DO: identityDo,
   });
+  await app.storage.DB.prepare(
+    "INSERT INTO organizations (id, org_id, scopes_json, roles_json) VALUES (?, ?, ?, ?)",
+  )
+    .bind(ORG_ID, ORG_ID, JSON.stringify(["relaycast:*:*:*"]), JSON.stringify([]))
+    .run();
+  await app.storage.DB.prepare(
+    "INSERT INTO workspaces (id, workspace_id, org_id, scopes_json, roles_json) VALUES (?, ?, ?, ?, ?)",
+  )
+    .bind(WORKSPACE_ID, WORKSPACE_ID, ORG_ID, JSON.stringify(["relaycast:channel:*:*"]), JSON.stringify([]))
+    .run();
+
+  const storageDb = Object.assign(app.storage, {
+    prepare: app.storage.DB.prepare,
+    exec: app.storage.DB.exec,
+    batch: async <T>(statements: D1PreparedStatement[]) =>
+      Promise.all(statements.map((statement) => statement.run())) as Awaited<T>,
+    dump: async () => new ArrayBuffer(0),
+  }) as AuthStorage & D1Database;
 
   async function request(method: string, path: string, options: RequestOptions = {}): Promise<Response> {
     const headers = new Headers(options.headers);
@@ -553,9 +581,10 @@ function createRbacHarness() {
     return app.request(request, undefined, app.bindings);
   }
 
-  function seedIdentity(identity: StoredIdentity): StoredIdentity {
+  async function seedIdentity(identity: StoredIdentity): Promise<StoredIdentity> {
     const cloned = clone(identity);
     state.identities.set(cloned.id, cloned);
+    await app.storage.identities.create(cloned);
     return clone(cloned);
   }
 
@@ -563,7 +592,7 @@ function createRbacHarness() {
     const identity = state.identities.get(identityId);
     assert.ok(identity, `expected seeded identity '${identityId}'`);
 
-    const evaluation = await evaluatePermissions(db, identity.id, identity.orgId, {
+    const evaluation = await evaluatePermissions(storageDb, identity.id, identity.orgId, {
       workspaceId: identity.workspaceId,
       identityId: identity.id,
     });
@@ -580,7 +609,7 @@ function createRbacHarness() {
 
   return {
     app,
-    db,
+    db: storageDb,
     state,
     request,
     seedIdentity,
