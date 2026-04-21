@@ -14,10 +14,12 @@
     "e2e": "npx tsx scripts/e2e.ts"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
+    "@agent-relay/config": "^4.0.33",
+    "@agent-relay/sdk": "^4.0.33",
     "@relayauth/types": "0.1.0",
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^24.6.0",
-    "agent-trajectories": "^0.5.2",
+    "agent-trajectories": "^0.5.7",
     "ignore": "^7.0.5",
     "tsx": "^4.20.6",
     "turbo": "^2",
@@ -29,7 +31,6 @@
     "packages/sdk/typescript"
   ],
   "dependencies": {
-    "@agent-relay/sdk": "3.2.21",
     "better-sqlite3": "^11.10.0"
   }
 }
