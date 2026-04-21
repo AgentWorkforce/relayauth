@@ -98,55 +98,52 @@ function getEventStatus(event: ObserverEvent): EventStatus {
 
 function summarizeEvent(event: ObserverEvent): string {
   const p = event.payload as Record<string, unknown>;
+  const eventType = event.type;
 
-  switch (event.type) {
-    case "token.verified": {
-      const sub = String(p.sub ?? "unknown");
-      const scopes = (p.scopes as string[] | undefined)?.length ?? 0;
-      return `✓ ${sub} authenticated (${scopes} scopes)`;
-    }
-    case "token.invalid": {
-      const sub = String(p.sub ?? "unknown");
-      const reason = String(p.reason ?? "invalid");
-      return `✗ ${sub} rejected: ${reason}`;
-    }
-    case "scope.check": {
-      const agent = String(p.agent ?? p.sub ?? "unknown");
-      const requested = String(p.requestedScope ?? "");
-      const result = String(p.result ?? "unknown");
-      return `${agent} → ${requested} → ${result}`;
-    }
-    case "scope.denied": {
-      const agent = String(p.agent ?? p.sub ?? "unknown");
-      const requested = String(p.requestedScope ?? "");
-      const reason = String(p.reason ?? "insufficient_scope");
-      return `✗ ${agent} denied: ${requested}`;
-    }
-    case "identity.created": {
-      const name = String(p.name ?? p.id ?? "unknown");
-      return `+ Created identity "${name}"`;
-    }
-    case "identity.updated": {
-      const name = String(p.name ?? p.id ?? "unknown");
-      return `~ Updated identity "${name}"`;
-    }
-    case "identity.deleted": {
-      const name = String(p.name ?? p.id ?? "unknown");
-      return `- Deleted identity "${name}"`;
-    }
-    case "budget.alert": {
-      const id = String(p.id ?? "").slice(0, 12);
-      const usage = Number(p.usage ?? 0);
-      const limit = Number(p.limit ?? 0);
-      return `⚠ Budget alert: ${id} used ${usage}/${limit}`;
-    }
-    case "budget.suspended": {
-      const id = String(p.id ?? "").slice(0, 12);
-      return `⛔ Suspended ${id} (budget exceeded)`;
-    }
-    default:
-      return event.type;
+  if (eventType === "token.verified") {
+    const sub = String(p.sub ?? "unknown");
+    const scopes = (p.scopes as string[] | undefined)?.length ?? 0;
+    return `✓ ${sub} authenticated (${scopes} scopes)`;
   }
+  if (eventType === "token.invalid") {
+    const sub = String(p.sub ?? "unknown");
+    const reason = String(p.reason ?? "invalid");
+    return `✗ ${sub} rejected: ${reason}`;
+  }
+  if (eventType === "scope.check") {
+    const agent = String(p.agent ?? p.sub ?? "unknown");
+    const requested = String(p.requestedScope ?? "");
+    const result = String(p.result ?? "unknown");
+    return `${agent} → ${requested} → ${result}`;
+  }
+  if (eventType === "scope.denied") {
+    const agent = String(p.agent ?? p.sub ?? "unknown");
+    const requested = String(p.requestedScope ?? "");
+    return `✗ ${agent} denied: ${requested}`;
+  }
+  if (eventType === "identity.created") {
+    const name = String(p.name ?? p.id ?? "unknown");
+    return `+ Created identity "${name}"`;
+  }
+  if (eventType === "identity.updated") {
+    const name = String(p.name ?? p.id ?? "unknown");
+    return `~ Updated identity "${name}"`;
+  }
+  if (eventType === "identity.deleted") {
+    const name = String(p.name ?? p.id ?? "unknown");
+    return `- Deleted identity "${name}"`;
+  }
+  if (eventType === "budget.alert") {
+    const id = String(p.id ?? "").slice(0, 12);
+    const usage = Number(p.usage ?? 0);
+    const limit = Number(p.limit ?? 0);
+    return `⚠ Budget alert: ${id} used ${usage}/${limit}`;
+  }
+  if (eventType === "budget.suspended") {
+    const id = String(p.id ?? "").slice(0, 12);
+    return `⛔ Suspended ${id} (budget exceeded)`;
+  }
+  return eventType;
 }
 
 function formatTime(timestamp: string): string {

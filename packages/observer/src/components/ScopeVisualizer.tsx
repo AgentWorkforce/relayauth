@@ -155,6 +155,7 @@ function ScopeEventDetails({ event }: { event: ScopeEvent }) {
 
 function TokenEventDetails({ event }: { event: TokenEvent }) {
   const isValid = event.type === "token.verified";
+  const payload = event.payload as { sub?: string; org?: string; scopes?: string[]; expiresIn?: number };
 
   return (
     <section className="brand-card flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -171,35 +172,39 @@ function TokenEventDetails({ event }: { event: TokenEvent }) {
         <div>
           <div className="brand-kicker mb-2">Subject</div>
           <div className="brand-soft px-3 py-2 text-sm font-mono text-[var(--foreground)]">
-            {event.payload.sub}
+            {payload.sub ?? "unknown"}
           </div>
         </div>
 
         <div>
           <div className="brand-kicker mb-2">Organization</div>
           <div className="brand-soft px-3 py-2 text-sm text-[var(--foreground)]">
-            {event.payload.org}
+            {payload.org ?? "unknown"}
           </div>
         </div>
 
-        <div>
-          <div className="brand-kicker mb-2">Scopes</div>
-          <ul className="space-y-1">
-            {event.payload.scopes.map((scope, i) => (
-              <li key={i} className="brand-soft flex items-center gap-2 px-3 py-1.5 text-sm font-mono">
-                <span className="text-[var(--status-success)]">✓</span>
-                <span className="text-[var(--foreground)]">{scope}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div>
-          <div className="brand-kicker mb-2">Expires In</div>
-          <div className="brand-soft px-3 py-2 text-sm text-[var(--foreground)]">
-            {event.payload.expiresIn} seconds
+        {payload.scopes && (
+          <div>
+            <div className="brand-kicker mb-2">Scopes</div>
+            <ul className="space-y-1">
+              {payload.scopes.map((scope, i) => (
+                <li key={i} className="brand-soft flex items-center gap-2 px-3 py-1.5 text-sm font-mono">
+                  <span className="text-[var(--status-success)]">✓</span>
+                  <span className="text-[var(--foreground)]">{scope}</span>
+                </li>
+              ))}
+            </ul>
           </div>
-        </div>
+        )}
+
+        {payload.expiresIn !== undefined && (
+          <div>
+            <div className="brand-kicker mb-2">Expires In</div>
+            <div className="brand-soft px-3 py-2 text-sm text-[var(--foreground)]">
+              {payload.expiresIn} seconds
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );
