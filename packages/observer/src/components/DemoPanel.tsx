@@ -2,72 +2,88 @@
 
 import { useState } from "react";
 
-type ScenarioId = 1 | 2 | 3 | 4;
-
-const scenarios: Array<{ id: ScenarioId; label: string }> = [
-  { id: 1, label: "GitHub-only agent tries Slack" },
-  { id: 2, label: "Full-access admin accesses file" },
-  { id: 3, label: "Expired token verification" },
-  { id: 4, label: "Budget exceeded" },
+const scenarios = [
+  {
+    id: 1,
+    name: "Cross-Integration Access",
+    description: "GitHub-only token tries Slack files → Denied",
+    color: "var(--status-danger)",
+  },
+  {
+    id: 2,
+    name: "Admin Full Access",
+    description: "Admin token accesses any integration → Allowed",
+    color: "var(--status-success)",
+  },
+  {
+    id: 3,
+    name: "Expired Token",
+    description: "Stale JWT rejected at the door",
+    color: "var(--status-warning)",
+  },
+  {
+    id: 4,
+    name: "Budget Exceeded",
+    description: "Agent hits action limit → Auto-suspended",
+    color: "var(--brand-warm)",
+  },
 ];
 
 export function DemoPanel() {
-  const [running, setRunning] = useState<ScenarioId | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [running, setRunning] = useState<number | null>(null);
 
-  async function runScenario(scenario: ScenarioId): Promise<void> {
-    setRunning(scenario);
-    setMessage(null);
-
+  const runScenario = async (scenarioId: number) => {
+    setRunning(scenarioId);
     try {
-      const response = await fetch("/api/demo-scenario", {
+      const response = await fetch(`/api/demo-scenario`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ scenario }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenario: scenarioId }),
       });
 
       if (!response.ok) {
-        const body = await response.json().catch(() => null) as { error?: string } | null;
-        throw new Error(body?.error ?? `Scenario ${scenario} failed`);
+        console.error("Demo failed:", await response.text());
       }
-
-      setMessage(`Scenario ${scenario} started.`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to start scenario.");
+    } catch (err) {
+      console.error("Demo error:", err);
     } finally {
       setRunning(null);
     }
-  }
+  };
 
   return (
-    <section className="border-t border-slate-200 bg-white p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-900">Demo Scenarios</h2>
-          <p className="text-xs text-slate-500">Generate representative observer traffic</p>
+    <section className="brand-card">
+      <div className="border-b border-[var(--border-default)] px-4 py-3">
+        <h2 className="brand-kicker">Demo Scenarios</h2>
+        <p className="text-xs text-[var(--text-muted)] mt-0.5">Trigger sample authorization events</p>
+      </div>
+
+      <div className="p-4">
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+          {scenarios.map((scenario) => (
+            <button
+              key={scenario.id}
+              onClick={() => runScenario(scenario.id)}
+              disabled={running !== null}
+              className="group relative overflow-hidden rounded-lg border border-[var(--border-default)] bg-[var(--surface-soft)] p-3 text-left transition-all hover:border-[var(--brand-primary)] hover:shadow-md disabled:opacity-50"
+            >
+              <div
+                className="absolute left-0 top-0 bottom-0 w-1"
+                style={{ background: scenario.color }}
+              />
+              <div className="pl-2">
+                <div className="text-sm font-semibold text-[var(--foreground)]">{scenario.name}</div>
+                <div className="text-[0.7rem] text-[var(--text-muted)] mt-0.5">{scenario.description}</div>
+              </div>
+              {running === scenario.id && (
+                <div className="absolute inset-0 flex items-center justify-center bg-[var(--surface-card)]/80">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--brand-primary)] border-t-transparent" />
+                </div>
+              )}
+            </button>
+          ))}
         </div>
       </div>
-
-      <div className="grid gap-2 sm:grid-cols-2">
-        {scenarios.map((scenario) => (
-          <button
-            key={scenario.id}
-            type="button"
-            onClick={() => void runScenario(scenario.id)}
-            disabled={running !== null}
-            className="flex items-center justify-between gap-3 rounded border border-slate-300 bg-white px-3 py-2 text-left text-sm text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <span className="min-w-0 truncate">
-              {scenario.id}. {scenario.label}
-            </span>
-            <span className="shrink-0 rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white">
-              {running === scenario.id ? "Running" : "Try"}
-            </span>
-          </button>
-        ))}
-      </div>
-
-      {message ? <p className="mt-3 text-xs text-slate-500">{message}</p> : null}
     </section>
   );
 }

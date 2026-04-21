@@ -14,11 +14,11 @@ import {
   agentCardToConfiguration,
   configurationToAgentCard,
   type A2aAgentCard,
-} from "../../../../sdk/src/a2a-bridge.js";
-import type { OpenAPISpec } from "../../../../sdk/src/openapi-scopes.js";
-import { generateScopes } from "../../../../sdk/src/openapi-scopes.js";
-import { ScopeChecker } from "../../../../sdk/src/scopes.js";
-import { TokenVerifier } from "../../../../sdk/src/verify.js";
+} from "../../../../sdk/typescript/src/a2a-bridge.js";
+import type { OpenAPISpec } from "../../../../sdk/typescript/src/openapi-scopes.js";
+import { generateScopes } from "../../../../sdk/typescript/src/openapi-scopes.js";
+import { ScopeChecker } from "../../../../sdk/typescript/src/scopes.js";
+import { TokenVerifier } from "../../../../sdk/typescript/src/verify.js";
 import { createFetchDispatchHarness } from "./helpers.js";
 import { createTestApp } from "../test-helpers.js";
 

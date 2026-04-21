@@ -7,57 +7,95 @@ type AgentMapProps = {
   events: ObserverEvent[];
 };
 
-type AgentRecord = {
-  id: string;
-  org?: string;
-  name?: string;
+interface AgentInfo {
+  name: string;
   scopes: string[];
   lastSeen: string;
-};
+}
 
 export function AgentMap({ events }: AgentMapProps) {
-  const agents = useMemo(() => deriveAgents(events), [events]);
+  const agents = useMemo(() => {
+    const map = new Map<string, AgentInfo>();
+
+    for (const event of events) {
+      let agentName: string | undefined;
+
+      if (event.type === "token.verified" || event.type === "token.invalid") {
+        agentName = event.payload.sub;
+      } else if (event.type === "scope.check" || event.type === "scope.denied") {
+        agentName = event.payload.agent;
+      } else if (event.type === "identity.created") {
+        agentName = event.payload.name ?? event.payload.id;
+      }
+
+      if (agentName) {
+        const existing = map.get(agentName);
+        const scopes =
+          event.type === "token.verified" && Array.isArray(event.payload.scopes)
+            ? event.payload.scopes
+            : existing?.scopes ?? [];
+
+        map.set(agentName, {
+          name: agentName,
+          scopes: [...new Set([...scopes, ...(existing?.scopes ?? [])])],
+          lastSeen: event.timestamp,
+        });
+      }
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.lastSeen.localeCompare(a.lastSeen));
+  }, [events]);
 
   return (
-    <aside className="flex min-h-0 w-full flex-col border-r border-slate-200 bg-slate-50 lg:w-80">
-      <div className="border-b border-slate-200 px-4 py-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-900">Agents</h2>
-        <p className="text-xs text-slate-500">{agents.length} seen in stream</p>
+    <aside className="brand-card flex min-h-0 w-full flex-col overflow-hidden lg:w-72">
+      <div className="border-b border-[var(--border-default)] px-4 py-3">
+        <h2 className="brand-kicker">Agents</h2>
+        <p className="text-xs text-[var(--text-muted)] mt-0.5">{agents.length} active</p>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {agents.length === 0 ? (
-          <div className="rounded border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
-            Agents appear here after token or scope events arrive.
+          <div className="py-6 text-center">
+            <div className="mx-auto mb-2 h-8 w-8 rounded-full bg-[var(--surface-muted)] flex items-center justify-center">
+              <svg className="h-4 w-4 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </div>
+            <p className="text-xs text-[var(--text-muted)]">No agents seen yet</p>
           </div>
         ) : (
-          <ul className="space-y-3">
+          <ul className="space-y-2">
             {agents.map((agent) => (
-              <li key={agent.id} className="rounded border border-slate-200 bg-white p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold text-slate-900">{agent.name ?? agent.id}</div>
-                    {agent.org ? <div className="mt-1 text-xs text-slate-500">org: {agent.org}</div> : null}
+              <li key={agent.name} className="brand-soft p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--brand-primary)] text-xs font-bold text-white">
+                    {agent.name.charAt(0).toUpperCase()}
                   </div>
-                  <time className="shrink-0 text-xs tabular-nums text-slate-400" dateTime={agent.lastSeen}>
-                    {formatTime(agent.lastSeen)}
-                  </time>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-[var(--foreground)] truncate">{agent.name}</div>
+                    <div className="text-[0.65rem] text-[var(--text-muted)]">
+                      {formatTimeAgo(agent.lastSeen)}
+                    </div>
+                  </div>
                 </div>
-
-                <div className="mt-3">
-                  <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Scopes</div>
-                  {agent.scopes.length === 0 ? (
-                    <p className="text-xs text-slate-500">No scopes observed yet.</p>
-                  ) : (
-                    <ul className="space-y-1">
-                      {agent.scopes.map((scope) => (
-                        <li key={scope} className="truncate font-mono text-xs text-slate-700">
-                          {scope}
-                        </li>
+                {agent.scopes.length > 0 && (
+                  <div className="mt-2">
+                    <div className="text-[0.6rem] uppercase tracking-wider text-[var(--text-faint)] mb-1">Scopes</div>
+                    <div className="flex flex-wrap gap-1">
+                      {agent.scopes.slice(0, 3).map((scope, i) => (
+                        <span
+                          key={i}
+                          className="inline-block rounded bg-[var(--surface-muted)] px-1.5 py-0.5 text-[0.6rem] font-mono text-[var(--text-secondary)]"
+                        >
+                          {scope.split(":").pop()}
+                        </span>
                       ))}
-                    </ul>
-                  )}
-                </div>
+                      {agent.scopes.length > 3 && (
+                        <span className="text-[0.6rem] text-[var(--text-muted)]">+{agent.scopes.length - 3}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </li>
             ))}
           </ul>
@@ -67,65 +105,16 @@ export function AgentMap({ events }: AgentMapProps) {
   );
 }
 
-function deriveAgents(events: ObserverEvent[]): AgentRecord[] {
-  const byId = new Map<string, AgentRecord>();
-
-  for (const event of [...events].reverse()) {
-    const update = getAgentUpdate(event);
-    if (!update) {
-      continue;
-    }
-
-    const current = byId.get(update.id);
-    byId.set(update.id, {
-      id: update.id,
-      org: update.org ?? current?.org,
-      name: update.name ?? current?.name,
-      scopes: update.scopes ?? current?.scopes ?? [],
-      lastSeen: event.timestamp,
-    });
-  }
-
-  return [...byId.values()].sort((left, right) => Date.parse(right.lastSeen) - Date.parse(left.lastSeen));
-}
-
-function getAgentUpdate(event: ObserverEvent): Pick<AgentRecord, "id" | "org" | "name"> & { scopes?: string[] } | null {
-  switch (event.type) {
-    case "token.verified":
-      return {
-        id: event.payload.sub,
-        org: event.payload.org,
-        scopes: event.payload.scopes,
-      };
-    case "scope.check":
-    case "scope.denied":
-      return {
-        id: event.payload.agent,
-        scopes: event.payload.grantedScopes,
-      };
-    case "identity.created":
-      return {
-        id: event.payload.id,
-        org: event.payload.org,
-        name: event.payload.name,
-      };
-    case "budget.alert":
-      return {
-        id: event.payload.id,
-      };
-    case "token.invalid":
-      return event.payload.sub
-        ? {
-            id: event.payload.sub,
-            org: event.payload.org,
-          }
-        : null;
-  }
-}
-
-function formatTime(timestamp: string): string {
+function formatTimeAgo(timestamp: string): string {
   const date = new Date(timestamp);
-  return Number.isNaN(date.getTime())
-    ? "--:--"
-    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHour = Math.floor(diffMin / 60);
+
+  if (diffSec < 60) return "just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHour < 24) return `${diffHour}h ago`;
+  return date.toLocaleDateString();
 }

@@ -4,12 +4,12 @@ import test from "node:test";
 import type { AgentIdentity, CreateIdentityInput, JWKSResponse, RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
 import { Hono } from "hono";
 
-import { RelayAuthClient } from "../../../../sdk/src/client.js";
-import { TokenRevokedError } from "../../../../sdk/src/errors.js";
-import { relayAuth, requireScope } from "../../../../sdk/src/middleware/hono.js";
-import { relayAuthExpress, requireScopeExpress } from "../../../../sdk/src/middleware/express.js";
-import { ScopeChecker } from "../../../../sdk/src/scopes.js";
-import { TokenVerifier } from "../../../../sdk/src/verify.js";
+import { RelayAuthClient } from "../../../../sdk/typescript/src/client.js";
+import { TokenRevokedError } from "../../../../sdk/typescript/src/errors.js";
+import { relayAuth, requireScope } from "../../../../sdk/typescript/src/middleware/hono.js";
+import { relayAuthExpress, requireScopeExpress } from "../../../../sdk/typescript/src/middleware/express.js";
+import { ScopeChecker } from "../../../../sdk/typescript/src/scopes.js";
+import { TokenVerifier } from "../../../../sdk/typescript/src/verify.js";
 import { createFetchDispatchHarness } from "./helpers.js";
 import { createTestApp, generateTestToken, mockKV } from "../test-helpers.js";
 
