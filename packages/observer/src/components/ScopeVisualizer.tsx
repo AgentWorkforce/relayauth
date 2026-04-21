@@ -24,27 +24,29 @@ export function ScopeVisualizer({ event }: ScopeVisualizerProps) {
     );
   }
 
-  if (isScopeEvent(event)) {
-    return <ScopeEventDetails event={event} />;
+  const eventType = event.type;
+
+  if (eventType === "scope.check" || eventType === "scope.denied") {
+    return <ScopeEventDetails event={event as ScopeEvent} />;
   }
 
-  if (isTokenEvent(event)) {
-    return <TokenEventDetails event={event} />;
+  if (eventType === "token.verified" || eventType === "token.invalid") {
+    return <TokenEventDetails event={event as TokenEvent} />;
   }
 
-  if (isIdentityEvent(event)) {
-    return <IdentityEventDetails event={event} />;
+  if (eventType === "identity.created" || eventType === "identity.updated" || eventType === "identity.deleted") {
+    return <IdentityEventDetails event={event as IdentityEvent} />;
   }
 
-  if (isBudgetEvent(event)) {
-    return <BudgetEventDetails event={event} />;
+  if (eventType === "budget.alert" || eventType === "budget.suspended") {
+    return <BudgetEventDetails event={event as BudgetEvent} />;
   }
 
   return (
     <section className="brand-card flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="border-b border-[var(--border-default)] px-4 py-3">
         <h2 className="brand-kicker">Event Details</h2>
-        <p className="text-xs text-[var(--text-muted)] mt-0.5">{event.type}</p>
+        <p className="text-xs text-[var(--text-muted)] mt-0.5">{eventType}</p>
       </div>
       <JsonDisplay data={event} />
     </section>

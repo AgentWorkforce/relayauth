@@ -83,18 +83,18 @@ async function main(): Promise<void> {
 
 async function runScopeDenied(): Promise<ScenarioResult> {
   const token = generateDevToken({
-    sub: `observer-denied-${runId}`,
-    scopes: ["relayauth:identity:read:*"],
+    sub: `github-agent-${runId}`,
+    scopes: ["relayfile:fs:read:/github/*"],
   });
   const attempt = await requestJson("POST /v1/identities", {
     method: "POST",
     path: "/v1/identities",
     token,
     body: {
-      name: `observer-denied-${runId}`,
+      name: `slack-access-${runId}`,
       type: "agent",
       sponsorId: sponsor,
-      scopes: ["relayfile:fs:read:/github/*"],
+      scopes: ["relayfile:fs:read:/slack/channels/*"],
       metadata: { scenario: "observer-demo-1" },
     },
   });
@@ -103,12 +103,10 @@ async function runScopeDenied(): Promise<ScenarioResult> {
 
 async function runScopeAllowed(): Promise<ScenarioResult> {
   const token = generateDevToken({
-    sub: `observer-admin-read-${runId}`,
+    sub: `admin-agent-${runId}`,
     scopes: [
-      "relayauth:identity:read:*",
-      "relayauth:identity:manage:*",
-      "relayauth:role:read:*",
-      "relayauth:policy:manage:*",
+      "relayfile:fs:read:/*",
+      "relayfile:fs:write:/*",
     ],
   });
   const attempt = await requestJson("GET /v1/identities", {
@@ -121,13 +119,13 @@ async function runScopeAllowed(): Promise<ScenarioResult> {
 
 async function runTokenInvalid(): Promise<ScenarioResult> {
   const expiredToken = generateDevToken({
-    sub: `observer-expired-${runId}`,
-    scopes: ["relayauth:role:read:*"],
+    sub: `old-agent-${runId}`,
+    scopes: ["relayfile:fs:read:/github/*"],
     ttlSeconds: -60,
   });
-  const attempt = await requestJson("GET /v1/roles with expired token", {
+  const attempt = await requestJson("GET /v1/identities with expired token", {
     method: "GET",
-    path: "/v1/roles",
+    path: "/v1/identities",
     token: expiredToken,
   });
   return result("3", [attempt]);
@@ -135,8 +133,8 @@ async function runTokenInvalid(): Promise<ScenarioResult> {
 
 async function runBudgetAlert(): Promise<ScenarioResult> {
   const token = generateDevToken({
-    sub: `observer-budget-admin-${runId}`,
-    scopes: ["relayauth:identity:manage:*", "relayauth:identity:read:*"],
+    sub: `ci-agent-${runId}`,
+    scopes: ["relayfile:fs:read:/github/*", "relayfile:fs:write:/github/*"],
   });
   const budget = {
     maxActionsPerHour: 1,
@@ -149,10 +147,10 @@ async function runBudgetAlert(): Promise<ScenarioResult> {
     path: "/v1/identities",
     token,
     body: {
-      name: `observer-budget-${runId}`,
+      name: `ci-runner-${runId}`,
       type: "agent",
       sponsorId: sponsor,
-      scopes: ["relayfile:fs:read:/github/*"],
+      scopes: ["relayfile:fs:read:/github/actions/*"],
       metadata: { scenario: "observer-demo-4" },
       budget,
     },

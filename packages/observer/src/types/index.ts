@@ -53,6 +53,24 @@ export type ObserverEvent =
       };
     }
   | {
+      type: "identity.updated";
+      timestamp: string;
+      payload: {
+        id: string;
+        org: string;
+        name?: string;
+      };
+    }
+  | {
+      type: "identity.deleted";
+      timestamp: string;
+      payload: {
+        id: string;
+        org: string;
+        name?: string;
+      };
+    }
+  | {
       type: "budget.alert";
       timestamp: string;
       payload: {
@@ -60,6 +78,18 @@ export type ObserverEvent =
         org: string;
         usage: number;
         limit: number;
+        reason?: string;
+      };
+    }
+  | {
+      type: "budget.suspended";
+      timestamp: string;
+      payload: {
+        id: string;
+        org: string;
+        usage: number;
+        limit: number;
+        reason?: string;
       };
     };
 
