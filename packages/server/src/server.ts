@@ -13,6 +13,7 @@ import discovery, { apiDiscovery } from "./routes/discovery.js";
 import jwks from "./routes/jwks.js";
 import identityActivity from "./routes/identity-activity.js";
 import identities from "./routes/identities.js";
+import observerApp from "./routes/observer.js";
 import policies from "./routes/policies.js";
 import roleAssignments from "./routes/role-assignments.js";
 import roles from "./routes/roles.js";
@@ -45,7 +46,7 @@ export type StartServerOptions = {
 };
 
 function isPublicPath(path: string): boolean {
-  return PUBLIC_PATHS.has(path) || path.startsWith("/.well-known/");
+  return PUBLIC_PATHS.has(path) || path.startsWith("/.well-known/") || path.startsWith("/v1/observer/");
 }
 
 function normalizeConfig(options: CreateAppOptions): Partial<AppConfig> {
@@ -72,7 +73,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
 
   if (Object.keys(config).length > 0) {
     app.use("*", async (c, next) => {
-      Object.assign(c.env as Record<string, unknown>, config);
+      c.env = {
+        ...(c.env ?? {}),
+        ...config,
+      } as AppEnv["Bindings"];
       await next();
     });
   }
@@ -151,6 +155,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.route("/v1/identities", identityActivity);
   app.route("/v1/identities", identities);
   app.route("/v1/identities", roleAssignments);
+  app.route("/v1/observer", observerApp);
   app.route("/v1/policies", policies);
   app.route("/v1/roles", roles);
   app.route("/v1/stats", dashboardStats);

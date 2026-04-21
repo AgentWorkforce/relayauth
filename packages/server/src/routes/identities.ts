@@ -8,6 +8,7 @@ import { matchScope } from "@relayauth/sdk";
 import { Hono } from "hono";
 import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorize, decodeBase64UrlJson } from "../lib/auth.js";
+import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 import type { IdentityBudget, StoredIdentity } from "../storage/identity-types.js";
 import { isStorageError, type AuthStorage } from "../storage/index.js";
 
@@ -464,6 +465,15 @@ identities.post("/", async (c) => {
 
   try {
     const createdIdentity = await storage.identities.create(storedIdentity);
+    emitObserverEvent({
+      type: "identity.created",
+      timestamp: observerNow(),
+      payload: {
+        id: createdIdentity.id,
+        org: createdIdentity.orgId,
+        name: createdIdentity.name,
+      },
+    });
     return c.json(createdIdentity, 201);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to create identity";
