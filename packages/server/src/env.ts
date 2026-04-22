@@ -6,6 +6,10 @@ export type AppConfig = {
   INTERNAL_SECRET: string;
   BASE_URL?: string;
   ALLOWED_ORIGINS?: string;
+  RELAYAUTH_SIGNING_ALG?: string;
+  RELAYAUTH_SIGNING_KEY_PEM?: string;
+  RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?: string;
+  RELAYAUTH_ENV_STAGE?: string;
 };
 
 export type AppEnv = {
