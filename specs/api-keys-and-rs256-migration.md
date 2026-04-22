@@ -6,7 +6,7 @@ Proposed.
 
 ## Problem
 
-Production relayauth (`https://api.relayauth.dev`) is out of step with two
+Production relayauth (`https://api.relayauth.dev`) is out of step with three
 contracts that other Agent Relay services already depend on:
 
 1. **`specs/token-format.md` mandates `RS256` or `EdDSA`** and says *"verifiers
@@ -16,7 +16,19 @@ contracts that other Agent Relay services already depend on:
    `HS256` outright, so any consumer that follows the spec cannot verify
    production tokens at all.
 
-2. **There is no programmatic way to obtain credentials.** The OpenAPI spec
+2. **`POST /v1/tokens` is unimplemented.** The discovery endpoint advertises
+   it (`routes/discovery.ts:165`), the OpenAPI spec lists it, the
+   `@relayauth/sdk`'s `client.issueToken(...)` posts to it — but there's no
+   route handler registered in `packages/server/src/server.ts` (only
+   identities, roles, policies, audit, dashboard stats, observer,
+   discovery, jwks). Cloud's e2e tests in
+   `cloud/packages/relayauth/src/__tests__/e2e/*.test.ts` mock the route
+   with their own fetch handler; production has no such mock. So
+   `mintRelayfileToken`'s "production" path can't actually mint anything,
+   which is part of why every consumer (sage included) silently falls back
+   to the legacy HS256 helper.
+
+3. **There is no programmatic way to obtain credentials.** The OpenAPI spec
    and `__tests__/e2e/contract.test.ts` both reference `POST /v1/api-keys`,
    `GET /v1/api-keys`, and `POST /v1/api-keys/:id/revoke`. None of those
    routes exist in `packages/server/src/routes/`, and there is no
@@ -95,13 +107,56 @@ request right now."* in Slack.
 | `POST /v1/identities` auth | `Authorization: Bearer <admin JWT>` only | Either `Authorization: Bearer …` *or* `x-api-key: …` |
 | `POST /v1/tokens` auth | `Authorization: Bearer <admin JWT>` only | Either `Authorization: Bearer …` *or* `x-api-key: …` |
 
+## Repo split
+
+Important context: `@relayauth/server` (the npm package, source in this
+relayauth repo) provides the Hono routes + storage *interfaces*. The
+*deployed* worker lives in `cloud/packages/relayauth/` and provides the
+Cloudflare-specific implementations (D1 storage, KV revocation, Durable
+Objects, worker entrypoint, db migrations).
+
+So most phases below have **two PRs each**: one in this repo for the
+route/storage-interface layer, one in cloud for the D1 migration +
+Cloudflare adapter implementation. `cloud/packages/relayauth` then bumps
+the `@relayauth/server` dep to pick up the route changes; SST deploys
+the new worker.
+
 ## Implementation plan
 
 Phased to keep production verifiable at every step.
 
+### Phase 0 — `/v1/tokens` route
+
+Precondition for everything else. Without a working token endpoint, API
+keys have nothing useful to authenticate to. Self-contained PR in
+relayauth, no behavior change for existing consumers (which all use the
+legacy HS256 helper today).
+
+**New file `packages/server/src/routes/tokens.ts`:**
+
+- `POST /v1/tokens` (auth: bearer or x-api-key — bearer-only initially,
+  x-api-key wired in Phase 1)
+  Body: `{ identityId, scopes?, audience?, expiresIn? }`
+  Looks up identity, builds claims per `specs/token-format.md`, signs
+  using whichever helper is active (HS256 today, RS256 after Phase 2),
+  persists to `tokens` table for revocation lookups, returns
+  `{ accessToken, refreshToken?, expiresAt }`.
+
+- `POST /v1/tokens/refresh` — refresh-token exchange (defer if not yet
+  needed; consumers using sage-style "mint a fresh access token per
+  call" don't need refresh).
+
+- `POST /v1/tokens/revoke` — write to revocations table.
+
+- `GET /v1/tokens/introspect` — returns claims if token is currently
+  valid; 404 / 410 otherwise.
+
+Wire into `server.ts` alongside existing `app.route("/v1/...", ...)`
+calls. Tests in `__tests__/tokens-issue.test.ts`.
+
 ### Phase 1 — API key endpoint + storage
 
-PR 1 in relayauth.
+PR 1 in relayauth, depends on Phase 0.
 
 **Schema (new migration `0002_api_keys.sql`):**
 
