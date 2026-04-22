@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-04-21T09:52:43.009Z",
+  "lastUpdated": "2026-04-22T19:50:27.168Z",
   "trajectories": {
     "traj_a11zh8l3gbp5": {
       "title": "Work on the relay: combine relayauth + relayfile for agent sandboxing",
@@ -911,6 +911,12 @@
       "startedAt": "2026-04-21T09:04:23.560Z",
       "completedAt": "2026-04-21T09:52:42.995Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relayauth/.trajectories/completed/2026-04/traj_v5az2xzbci6k.json"
+    },
+    "traj_nvsjbqvuvvpd": {
+      "title": "121-sdk-dual-verify-phase3a-workflow",
+      "status": "active",
+      "startedAt": "2026-04-22T19:50:13.498Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relayauth/.trajectories/active/traj_nvsjbqvuvvpd.json"
     }
   }
 }
