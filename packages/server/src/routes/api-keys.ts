@@ -1,4 +1,4 @@
-import { matchScope } from "@relayauth/sdk";
+import { matchScope, RelayAuthError, validateSubset } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import { extractPrefix, generateApiKey, hashApiKey } from "../lib/api-keys.js";
@@ -56,6 +56,19 @@ apiKeys.post("/", async (c) => {
     : [];
   if (scopes.length === 0) {
     return c.json({ error: "scopes is required" }, 400);
+  }
+
+  // P0-2: prevent scope escalation. The caller must not be able to mint an api-key
+  // with scopes broader than its own grant. validateSubset throws a RelayAuthError
+  // with code="scope_escalation" when any requested scope is not covered by the
+  // caller's scopes.
+  try {
+    validateSubset(auth.claims.scopes, scopes);
+  } catch (error) {
+    if (error instanceof RelayAuthError && error.code === "scope_escalation") {
+      return c.json({ error: error.message, code: "scope_escalation" }, 403);
+    }
+    return c.json({ error: "invalid_scope", code: "invalid_scope" }, 400);
   }
 
   try {

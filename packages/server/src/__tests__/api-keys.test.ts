@@ -170,6 +170,89 @@ test("a revoked API key returns 401 on subsequent POST /v1/identities requests",
   assert.notEqual(body.code, "missing_authorization");
 });
 
+function createNarrowCallerAuthHeader(scopes: string[]): HeadersInit {
+  return {
+    Authorization: `Bearer ${generateTestToken({
+      sub: "agent_narrow_caller",
+      org: "org_test",
+      wks: "ws_narrow",
+      sponsorId: "user_narrow_caller",
+      sponsorChain: ["user_narrow_caller", "agent_narrow_caller"],
+      scopes,
+    })}`,
+  };
+}
+
+test("POST /v1/api-keys rejects scope escalation: manage-only caller cannot mint scopes=['*']", async () => {
+  const app = createTestApp();
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/api-keys",
+      {
+        name: "escalation-attempt-star",
+        scopes: ["*"],
+      },
+      createNarrowCallerAuthHeader(["relayauth:api-key:manage:*"]),
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  const body = await assertJsonResponse<{ error: string; code?: string }>(response, 403);
+  assert.equal(body.code, "scope_escalation");
+});
+
+test("POST /v1/api-keys rejects partial scope escalation: narrow caller cannot widen via wildcard", async () => {
+  const app = createTestApp();
+
+  // Caller has read access to a SPECIFIC identity path — cannot mint a wildcard read.
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/api-keys",
+      {
+        name: "escalation-attempt-partial",
+        scopes: ["relayauth:identity:read:*"],
+      },
+      createNarrowCallerAuthHeader([
+        "relayauth:api-key:manage:*",
+        "relayauth:identity:read:specific-id",
+      ]),
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  const body = await assertJsonResponse<{ error: string; code?: string }>(response, 403);
+  assert.equal(body.code, "scope_escalation");
+});
+
+test("POST /v1/api-keys allows legitimate subset: wildcard-grant caller CAN mint a narrower scope", async () => {
+  const app = createTestApp();
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/api-keys",
+      {
+        name: "legit-subset",
+        scopes: ["relayauth:identity:read:specific-id"],
+      },
+      createNarrowCallerAuthHeader([
+        "relayauth:api-key:manage:*",
+        "relayauth:identity:read:*",
+      ]),
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  const body = await assertJsonResponse<ApiKeyCreateResponse>(response, 201);
+  assert.deepEqual(body.apiKey.scopes, ["relayauth:identity:read:specific-id"]);
+});
+
 test("GET /v1/api-keys never returns the plaintext key and only exposes the prefix", async () => {
   const app = createTestApp();
   const created = await createApiKey(app, {

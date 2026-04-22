@@ -113,7 +113,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
     await next();
   });
 
+  // Mount apiKeyAuth() on every path that accepts x-api-key. It must run BEFORE the
+  // global gate below so that, when an x-api-key is present, the middleware can rewrite
+  // the Authorization header into a short-lived HS256 bearer before the gate inspects it.
+  // Wildcard mounts are required so sub-paths (e.g. /v1/identities/:id) also run through
+  // the middleware — see P0-1 in PR #20.
   app.use("/v1/identities", apiKeyAuth());
+  app.use("/v1/identities/*", apiKeyAuth());
+  app.use("/v1/tokens", apiKeyAuth());
+  app.use("/v1/tokens/*", apiKeyAuth());
 
   app.use("*", async (c, next) => {
     if (isPublicPath(c.req.path)) {
@@ -121,7 +129,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
     }
 
     const authorization = c.req.header("Authorization");
+    const apiKey = c.req.header("x-api-key");
+
     if (!authorization) {
+      // Admit requests that carry an x-api-key: if apiKeyAuth() ran upstream it will
+      // have either rewritten the Authorization header (handled above) or returned a
+      // 401 itself. Reaching this point with only x-api-key means the path had no
+      // apiKeyAuth mount — defer to the per-route handler, which MUST validate the key.
+      if (apiKey && apiKey.trim()) {
+        return next();
+      }
+
       return c.json({ error: "Missing Authorization header", code: "missing_authorization" }, 401);
     }
 

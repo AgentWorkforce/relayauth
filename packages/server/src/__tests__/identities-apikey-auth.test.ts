@@ -97,6 +97,171 @@ test("POST /v1/identities with x-api-key missing required scope returns 403", as
   assert.equal(body.error, "insufficient_scope");
 });
 
+async function createIdentityForSubpathTests(
+  app: ReturnType<typeof createTestApp>,
+  apiKey: string,
+  name: string,
+): Promise<AgentIdentity> {
+  const response = await postIdentityWithApiKey(app, apiKey, name);
+  return assertJsonResponse<AgentIdentity>(response, 201);
+}
+
+test("PATCH /v1/identities/:id with only x-api-key reaches the handler (not 401)", async () => {
+  const app = createTestApp();
+  const created = await createApiKey(app, {
+    name: "patch-identity-key",
+    scopes: ["relayauth:identity:manage:*"],
+  });
+  const identity = await createIdentityForSubpathTests(app, created.key, "svc-patch-target");
+
+  const response = await app.request(
+    createTestRequest(
+      "PATCH",
+      `/v1/identities/${identity.id}`,
+      { name: "svc-patched-via-api-key" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  assert.notEqual(
+    response.status,
+    401,
+    "x-api-key must reach the PATCH handler instead of being rejected by the global gate",
+  );
+  // With identity:manage:*, PATCH should succeed.
+  const body = await assertJsonResponse<AgentIdentity>(response, 200);
+  assert.equal(body.name, "svc-patched-via-api-key");
+});
+
+test("DELETE /v1/identities/:id with only x-api-key reaches the handler (not 401)", async () => {
+  const app = createTestApp();
+  const created = await createApiKey(app, {
+    name: "delete-identity-key",
+    scopes: ["relayauth:identity:manage:*"],
+  });
+  const identity = await createIdentityForSubpathTests(app, created.key, "svc-delete-target");
+
+  const response = await app.request(
+    createTestRequest(
+      "DELETE",
+      `/v1/identities/${identity.id}`,
+      undefined,
+      {
+        "x-api-key": created.key,
+        "x-confirm-delete": "true",
+      },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  assert.notEqual(
+    response.status,
+    401,
+    "x-api-key must reach the DELETE handler instead of being rejected by the global gate",
+  );
+  assert.equal(response.status, 204);
+});
+
+test("POST /v1/identities/:id/suspend with only x-api-key reaches the handler (not 401)", async () => {
+  const app = createTestApp();
+  const created = await createApiKey(app, {
+    name: "suspend-identity-key",
+    scopes: ["relayauth:identity:manage:*"],
+  });
+  const identity = await createIdentityForSubpathTests(app, created.key, "svc-suspend-target");
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      `/v1/identities/${identity.id}/suspend`,
+      { reason: "test-suspend-via-api-key" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  assert.notEqual(
+    response.status,
+    401,
+    "x-api-key must reach the suspend handler instead of being rejected by the global gate",
+  );
+  const body = await assertJsonResponse<AgentIdentity>(response, 200);
+  assert.equal(body.status, "suspended");
+});
+
+test("POST /v1/identities/:id/retire with only x-api-key reaches the handler (not 401)", async () => {
+  const app = createTestApp();
+  const created = await createApiKey(app, {
+    name: "retire-identity-key",
+    scopes: ["relayauth:identity:manage:*"],
+  });
+  const identity = await createIdentityForSubpathTests(app, created.key, "svc-retire-target");
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      `/v1/identities/${identity.id}/retire`,
+      { reason: "test-retire-via-api-key" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  assert.notEqual(
+    response.status,
+    401,
+    "x-api-key must reach the retire handler instead of being rejected by the global gate",
+  );
+  const body = await assertJsonResponse<AgentIdentity>(response, 200);
+  assert.equal(body.status, "retired");
+});
+
+test("POST /v1/identities/:id/reactivate with only x-api-key reaches the handler (not 401)", async () => {
+  const app = createTestApp();
+  const created = await createApiKey(app, {
+    name: "reactivate-identity-key",
+    scopes: ["relayauth:identity:manage:*"],
+  });
+  const identity = await createIdentityForSubpathTests(app, created.key, "svc-reactivate-target");
+
+  // Suspend first so there's something to reactivate.
+  const suspendResponse = await app.request(
+    createTestRequest(
+      "POST",
+      `/v1/identities/${identity.id}/suspend`,
+      { reason: "preparing-for-reactivate-test" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+  await assertJsonResponse(suspendResponse, 200);
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      `/v1/identities/${identity.id}/reactivate`,
+      {},
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  assert.notEqual(
+    response.status,
+    401,
+    "x-api-key must reach the reactivate handler instead of being rejected by the global gate",
+  );
+  const body = await assertJsonResponse<AgentIdentity>(response, 200);
+  assert.equal(body.status, "active");
+});
+
 test("POST /v1/identities with revoked x-api-key returns 401", async () => {
   const app = createTestApp();
   const created = await createApiKey(app, {
