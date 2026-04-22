@@ -551,6 +551,204 @@ test("POST /v1/tokens/refresh", async (t) => {
       assert.match(JSON.stringify(body), /revoked/i);
     });
   });
+
+  await t.test("revokes the old refresh JTI after a successful refresh", async () => {
+    const { app, identity } = await createHarness();
+    const { pair, accessClaims, refreshClaims } = createLegacyPhase0TokenPair(identity);
+    await seedActiveTokens(app, identity.id, [accessClaims.jti, refreshClaims.jti]);
+
+    assert.deepEqual(await listRevokedTokenIds(app), []);
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: { refreshToken: pair.refreshToken },
+    });
+    await assertJsonResponse<TokenPair>(response, 200);
+
+    const revoked = await listRevokedTokenIds(app);
+    assert.ok(
+      revoked.includes(refreshClaims.jti),
+      `old refresh JTI ${refreshClaims.jti} should be in the revocation list but got ${JSON.stringify(revoked)}`,
+    );
+  });
+
+  await t.test("detects refresh-token re-use and cascade-revokes the session", async () => {
+    const { app, identity } = await createHarness();
+    const { pair, accessClaims, refreshClaims } = createLegacyPhase0TokenPair(identity);
+    await seedActiveTokens(app, identity.id, [accessClaims.jti, refreshClaims.jti]);
+
+    const firstResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: { refreshToken: pair.refreshToken },
+    });
+    const firstBody = await assertJsonResponse<TokenPair>(firstResponse, 200);
+    const secondRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(firstBody.refreshToken, 1);
+
+    // Replay the original refresh token (single-use violation).
+    const replayResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: { refreshToken: pair.refreshToken },
+    });
+    await assertJsonResponse<ErrorBody>(replayResponse, 401, (body) => {
+      assert.match(JSON.stringify(body), /revoked/i);
+    });
+
+    // The newly issued refresh token should ALSO be unusable now because the
+    // session was cascade-revoked.
+    const followupResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: { refreshToken: firstBody.refreshToken },
+    });
+    await assertJsonResponse<ErrorBody>(followupResponse, 401);
+
+    const revoked = await listRevokedTokenIds(app);
+    assert.ok(revoked.includes(refreshClaims.jti), "original refresh JTI must be revoked");
+    assert.ok(
+      revoked.includes(secondRefreshClaims.jti),
+      `second refresh JTI ${secondRefreshClaims.jti} must be revoked after re-use detection (got ${JSON.stringify(revoked)})`,
+    );
+  });
+
+  await t.test("rejects a refresh token signed with the wrong issuer", async () => {
+    const { app, identity } = await createHarness();
+    const now = Math.floor(Date.now() / 1000);
+    const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
+    const jti = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
+    await seedActiveTokens(app, identity.id, [jti]);
+
+    const evilRefresh = signLegacyHs256Jwt({
+      sub: identity.id,
+      org: identity.orgId,
+      wks: identity.workspaceId,
+      scopes: ["relayauth:token:refresh"],
+      sponsorId: identity.sponsorId,
+      sponsorChain: [...identity.sponsorChain],
+      token_type: "refresh",
+      iss: "https://evil.example",
+      aud: ["relayauth"],
+      exp: now + 3600,
+      iat: now,
+      jti,
+      sid,
+    });
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: { refreshToken: evilRefresh },
+    });
+    await assertJsonResponse<ErrorBody>(response, 401);
+  });
+
+  await t.test("rejects a refresh token with a non-relayauth audience", async () => {
+    const { app, identity } = await createHarness();
+    const now = Math.floor(Date.now() / 1000);
+    const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
+    const jti = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
+    await seedActiveTokens(app, identity.id, [jti]);
+
+    const wrongAudRefresh = signLegacyHs256Jwt({
+      sub: identity.id,
+      org: identity.orgId,
+      wks: identity.workspaceId,
+      scopes: ["relayauth:token:refresh"],
+      sponsorId: identity.sponsorId,
+      sponsorChain: [...identity.sponsorChain],
+      token_type: "refresh",
+      iss: "https://relayauth.dev",
+      aud: ["not-relayauth"],
+      exp: now + 3600,
+      iat: now,
+      jti,
+      sid,
+    });
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: { refreshToken: wrongAudRefresh },
+    });
+    await assertJsonResponse<ErrorBody>(response, 401);
+  });
+
+  await t.test("rejects a refresh token whose exp is beyond clock-skew in the past", async () => {
+    const { app, identity } = await createHarness();
+    const past = Math.floor(Date.now() / 1000) - 1000;
+    const expiredRefresh = signLegacyHs256Jwt({
+      sub: identity.id,
+      org: identity.orgId,
+      wks: identity.workspaceId,
+      scopes: ["relayauth:token:refresh"],
+      sponsorId: identity.sponsorId,
+      sponsorChain: [...identity.sponsorChain],
+      token_type: "refresh",
+      iss: "https://relayauth.dev",
+      aud: ["relayauth"],
+      exp: past + 60, // exp 120s before "now"
+      iat: past,
+      jti: `tok_${crypto.randomUUID().replace(/-/g, "")}`,
+    });
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: { refreshToken: expiredRefresh },
+    });
+    await assertJsonResponse<ErrorBody>(response, 401, (body) => {
+      assert.match(JSON.stringify(body), /expired|invalid/i);
+    });
+  });
+
+  await t.test("accepts a refresh token whose exp is within the 60s clock-skew allowance", async () => {
+    const { app, identity } = await createHarness();
+    const now = Math.floor(Date.now() / 1000);
+    const jti = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
+    const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
+    await seedActiveTokens(app, identity.id, [jti]);
+
+    const skewedRefresh = signLegacyHs256Jwt({
+      sub: identity.id,
+      org: identity.orgId,
+      wks: identity.workspaceId,
+      scopes: ["relayauth:token:refresh"],
+      sponsorId: identity.sponsorId,
+      sponsorChain: [...identity.sponsorChain],
+      token_type: "refresh",
+      iss: "https://relayauth.dev",
+      aud: ["relayauth"],
+      exp: now - 30, // 30s past exp, should be accepted within skew
+      iat: now - 120,
+      jti,
+      sid,
+    });
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: { refreshToken: skewedRefresh },
+    });
+    await assertJsonResponse<TokenPair>(response, 200);
+  });
+});
+
+test("POST /v1/tokens enforces max sponsor-chain depth", async (t) => {
+  await t.test("rejects issuance when identity.sponsorChain exceeds 10", async () => {
+    const deepChain = Array.from({ length: 11 }, (_, index) =>
+      index === 10 ? "agent_deep_subject" : `user_ancestor_${index}`,
+    );
+    const deepIdentity = createStoredIdentity({
+      id: "agent_deep_subject",
+      name: "Deep Subject",
+      orgId: "org_tokens_route",
+      workspaceId: "ws_tokens_route",
+      sponsorId: "user_ancestor_0",
+      sponsorChain: deepChain,
+      scopes: ["specialist:invoke"],
+    });
+
+    const { app, authHeaders } = await createHarness({ identity: deepIdentity });
+
+    const response = await requestRoute(app, "POST", "/v1/tokens", {
+      body: {
+        identityId: deepIdentity.id,
+        scopes: ["specialist:invoke"],
+        audience: ["specialist"],
+      },
+      headers: authHeaders,
+    });
+
+    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+      assert.match(JSON.stringify(body), /delegation|depth|chain/i);
+    });
+  });
 });
 
 test("POST /v1/tokens/revoke", async (t) => {

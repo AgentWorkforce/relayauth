@@ -63,6 +63,10 @@ const tokens = new Hono<AppEnv>();
 
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 3600;
 const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 24 * 3600;
+const CLOCK_SKEW_SECONDS = 60;
+const MAX_SPONSOR_CHAIN_DEPTH = 10;
+const EXPECTED_ISSUER = "https://relayauth.dev";
+const REFRESH_AUDIENCE = "relayauth";
 
 const SELECT_TOKEN_BY_ID_SQL = `
   SELECT id, token_id, jti, identity_id, status, session_id, expires_at
@@ -129,6 +133,15 @@ tokens.post("/", async (c) => {
   if (!scopesWithinGrant(accessScopes, identity.scopes)) {
     return c.json({ error: "insufficient_scope" }, 403);
   }
+  if (identity.sponsorChain.length > MAX_SPONSOR_CHAIN_DEPTH) {
+    return c.json(
+      {
+        error: "invalid_request",
+        error_description: "delegation chain exceeds maximum depth",
+      },
+      400,
+    );
+  }
   const accessAudience = normalizeAudience(body.audience, accessScopes);
   const accessExpiresIn = normalizeExpiresIn(body.expiresIn);
 
@@ -163,11 +176,22 @@ tokens.post("/refresh", async (c) => {
     return c.json({ error: "Invalid refresh token" }, 401);
   }
 
-  if (await isTokenRevoked(storage, verification.claims.jti)) {
+  const presentedJti = verification.claims.jti;
+  const presentedSid = verification.claims.sid;
+
+  // Re-use detection: if the presented refresh JTI is already revoked, the
+  // caller is attempting to use a single-use refresh token twice. Per
+  // specs/token-format.md:361-369, this must cascade-revoke the session and
+  // emit an audit event.
+  if (await isTokenRevoked(storage, presentedJti)) {
+    const reuseIdentity = await storage.identities.get(verification.claims.sub);
+    if (reuseIdentity) {
+      await cascadeRevokeSession(storage, reuseIdentity, presentedSid, presentedJti);
+    }
     return c.json({ error: "Refresh token has been revoked" }, 401);
   }
 
-  const storedRefreshToken = await findStoredTokenById(storage, verification.claims.jti);
+  const storedRefreshToken = await findStoredTokenById(storage, presentedJti);
   if (!storedRefreshToken || storedRefreshToken.status !== "active") {
     return c.json({ error: "Refresh token not found" }, 401);
   }
@@ -177,13 +201,34 @@ tokens.post("/refresh", async (c) => {
     return c.json({ error: "identity_not_found" }, 404);
   }
 
+  if (identity.sponsorChain.length > MAX_SPONSOR_CHAIN_DEPTH) {
+    return c.json(
+      {
+        error: "invalid_request",
+        error_description: "delegation chain exceeds maximum depth",
+      },
+      400,
+    );
+  }
+
   const tokenPair = await issueTokenPair(storage, c.env, identity, {
     accessScopes: normalizeScopes(undefined, identity.scopes),
     accessAudience: normalizeAudience(undefined, identity.scopes),
     accessExpiresIn: DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
-    sessionId: verification.claims.sid,
+    sessionId: presentedSid,
     action: "token.refreshed",
   });
+
+  // Single-use enforcement: revoke the previous refresh JTI after we have
+  // successfully issued and persisted the new pair. If this revoke fails the
+  // new pair is already persisted — we log the audit and still surface the
+  // error so callers don't see a successful rotation that left the old JTI
+  // active.
+  try {
+    await revokePreviousRefreshJti(storage, identity, presentedJti, verification.claims.exp);
+  } catch (error) {
+    return c.json({ error: "refresh_rotation_failed" }, 500);
+  }
 
   return c.json(tokenPair, 200);
 });
@@ -306,7 +351,7 @@ async function issueTokenPair(
     sponsorId: identity.sponsorId,
     sponsorChain: [...identity.sponsorChain],
     token_type: "access",
-    iss: "https://relayauth.dev",
+    iss: EXPECTED_ISSUER,
     aud: options.accessAudience,
     exp: issuedAtSeconds + options.accessExpiresIn,
     iat: issuedAtSeconds,
@@ -322,8 +367,8 @@ async function issueTokenPair(
     sponsorId: identity.sponsorId,
     sponsorChain: [...identity.sponsorChain],
     token_type: "refresh",
-    iss: "https://relayauth.dev",
-    aud: ["relayauth"],
+    iss: EXPECTED_ISSUER,
+    aud: [REFRESH_AUDIENCE],
     exp: issuedAtSeconds + DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     iat: issuedAtSeconds,
     jti: createTokenId(),
@@ -440,6 +485,78 @@ async function isTokenRevoked(storage: SqlBackedStorage, jti: string): Promise<b
   return false;
 }
 
+async function revokePreviousRefreshJti(
+  storage: SqlBackedStorage,
+  identity: StoredIdentity,
+  previousJti: string,
+  previousExp: number,
+): Promise<void> {
+  const jti = normalizeOptionalString(previousJti);
+  if (!jti) {
+    return;
+  }
+
+  const revokedAt = new Date().toISOString();
+  await storage.revocations.revokeIdentityTokens(identity.id, [jti], revokedAt);
+  if (typeof storage.revocations.revoke === "function") {
+    const expiresAt = Number.isFinite(previousExp) && previousExp > 0
+      ? previousExp
+      : Math.floor(Date.now() / 1000) + DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
+    await storage.revocations.revoke(jti, expiresAt);
+  }
+
+  await writeTokenAudit(storage, {
+    action: "token.revoked",
+    identity,
+    tokenId: jti,
+  });
+}
+
+async function cascadeRevokeSession(
+  storage: SqlBackedStorage,
+  identity: StoredIdentity,
+  sessionId: string | undefined,
+  presentedJti: string,
+): Promise<void> {
+  const revokedAt = new Date().toISOString();
+  const jtis = new Set<string>();
+  const normalizedPresentedJti = normalizeOptionalString(presentedJti);
+  if (normalizedPresentedJti) {
+    jtis.add(normalizedPresentedJti);
+  }
+
+  const normalizedSessionId = normalizeOptionalString(sessionId);
+  if (normalizedSessionId) {
+    const sessionTokens = await findTargetTokensBySessionId(storage, normalizedSessionId);
+    for (const row of sessionTokens) {
+      const identifier = getTokenIdentifier(row);
+      if (identifier) {
+        jtis.add(identifier);
+      }
+    }
+  }
+
+  if (jtis.size === 0) {
+    return;
+  }
+
+  const tokenIds = [...jtis];
+  await storage.revocations.revokeIdentityTokens(identity.id, tokenIds, revokedAt);
+  if (typeof storage.revocations.revoke === "function") {
+    const farFuture = Math.floor(Date.now() / 1000) + (365 * 24 * 3600);
+    for (const tokenId of tokenIds) {
+      await storage.revocations.revoke(tokenId, farFuture);
+    }
+  }
+
+  await writeTokenAudit(storage, {
+    action: "token.revoked",
+    identity,
+    tokenId: normalizedPresentedJti ?? tokenIds[0] ?? identity.id,
+    actorId: "refresh_reuse_detected",
+  });
+}
+
 async function verifyLegacyToken(
   token: string,
   signingKey: string,
@@ -468,13 +585,35 @@ async function verifyLegacyToken(
     return { ok: false, error: "Invalid token" };
   }
 
-  const now = Math.floor(Date.now() / 1000);
-  if (typeof claims.nbf === "number" && claims.nbf > now) {
+  // Per specs/token-format.md:130-133, verifiers must enforce iss, aud, and
+  // temporal claims with a 60 second clock-skew allowance.
+  if (claims.iss !== EXPECTED_ISSUER) {
     return { ok: false, error: "Invalid token" };
   }
 
-  if (claims.exp <= now) {
+  const now = Math.floor(Date.now() / 1000);
+  // nbf: the token must not be used before its not-before time, with +60s skew
+  if (typeof claims.nbf === "number" && claims.nbf > now + CLOCK_SKEW_SECONDS) {
+    return { ok: false, error: "Invalid token" };
+  }
+
+  // exp must be strictly greater than iat
+  if (claims.exp <= claims.iat) {
+    return { ok: false, error: "Invalid token" };
+  }
+
+  // exp: allow up to CLOCK_SKEW_SECONDS past the listed expiry
+  if (claims.exp <= now - CLOCK_SKEW_SECONDS) {
     return { ok: false, error: "Token expired" };
+  }
+
+  // Refresh tokens are spec'd single-audience `["relayauth"]`; access tokens
+  // must list `relayauth` in their audience list for this issuer endpoint.
+  if (!claims.aud.includes(REFRESH_AUDIENCE) && claims.token_type === "refresh") {
+    return { ok: false, error: "Invalid token" };
+  }
+  if (claims.token_type === "refresh" && (claims.aud.length !== 1 || claims.aud[0] !== REFRESH_AUDIENCE)) {
+    return { ok: false, error: "Invalid token" };
   }
 
   return { ok: true, claims };
@@ -488,6 +627,9 @@ function isValidClaims(value: RelayAuthTokenClaims): boolean {
     && Array.isArray(value.sponsorChain)
     && Array.isArray(value.scopes)
     && Array.isArray(value.aud)
+    && value.aud.length > 0
+    && value.aud.every((entry) => typeof entry === "string" && entry.length > 0)
+    && typeof value.iss === "string"
     && typeof value.jti === "string"
     && typeof value.iat === "number"
     && typeof value.exp === "number"
