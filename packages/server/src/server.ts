@@ -5,9 +5,11 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 
 import type { AppConfig, AppEnv } from "./env.js";
+import { apiKeyAuth } from "./middleware/api-key-auth.js";
 import auditExport from "./routes/audit-export.js";
 import auditQuery from "./routes/audit-query.js";
 import auditWebhooks from "./routes/audit-webhooks.js";
+import apiKeys from "./routes/api-keys.js";
 import dashboardStats from "./routes/dashboard-stats.js";
 import discovery, { apiDiscovery } from "./routes/discovery.js";
 import jwks from "./routes/jwks.js";
@@ -111,6 +113,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
     await next();
   });
 
+  app.use("/v1/identities", apiKeyAuth());
+
   app.use("*", async (c, next) => {
     if (isPublicPath(c.req.path)) {
       return next();
@@ -151,6 +155,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.route("/.well-known", discovery);
   app.route("/.well-known", jwks);
   app.route("/v1/discovery", apiDiscovery);
+  app.route("/v1/api-keys", apiKeys);
   app.route("/v1/audit", auditWebhooks);
   app.route("/v1/audit", auditExport);
   app.route("/v1/audit", auditQuery);

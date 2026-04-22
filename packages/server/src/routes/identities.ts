@@ -3,11 +3,12 @@ import type {
   CreateIdentityInput,
   IdentityStatus,
   IdentityType,
+  RelayAuthTokenClaims,
 } from "@relayauth/types";
 import { matchScope } from "@relayauth/sdk";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
-import { authenticateAndAuthorize, decodeBase64UrlJson } from "../lib/auth.js";
+import { authenticateAndAuthorize, authenticateBearerOrApiKey, authorizeClaims, decodeBase64UrlJson } from "../lib/auth.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 import type { IdentityBudget, StoredIdentity } from "../storage/identity-types.js";
 import { isStorageError, type AuthStorage } from "../storage/index.js";
@@ -184,11 +185,9 @@ identities.get("/:id", async (c) => {
 });
 
 identities.patch("/:id", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+  const auth = await authenticateBearerOrApiKeyAndAuthorize(
+    c,
     "relayauth:identity:manage:*",
-    matchScope,
   );
   if (!auth.ok) {
     return c.json({ error: auth.error }, auth.status);
@@ -224,11 +223,9 @@ identities.patch("/:id", async (c) => {
 });
 
 identities.delete("/:id", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+  const auth = await authenticateBearerOrApiKeyAndAuthorize(
+    c,
     "relayauth:identity:manage:*",
-    matchScope,
   );
   if (!auth.ok) {
     return c.json({ error: auth.error }, auth.status);
@@ -266,11 +263,9 @@ identities.delete("/:id", async (c) => {
 });
 
 identities.post("/:id/suspend", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+  const auth = await authenticateBearerOrApiKeyAndAuthorize(
+    c,
     "relayauth:identity:manage:*",
-    matchScope,
   );
   if (!auth.ok) {
     return c.json({ error: auth.error }, auth.status);
@@ -341,11 +336,9 @@ identities.post("/:id/suspend", async (c) => {
 });
 
 identities.post("/:id/retire", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+  const auth = await authenticateBearerOrApiKeyAndAuthorize(
+    c,
     "relayauth:identity:manage:*",
-    matchScope,
   );
   if (!auth.ok) {
     return c.json({ error: auth.error }, auth.status);
@@ -383,11 +376,9 @@ identities.post("/:id/retire", async (c) => {
 });
 
 identities.post("/:id/reactivate", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+  const auth = await authenticateBearerOrApiKeyAndAuthorize(
+    c,
     "relayauth:identity:manage:*",
-    matchScope,
   );
   if (!auth.ok) {
     return c.json({ error: auth.error }, auth.status);
@@ -412,11 +403,9 @@ identities.post("/:id/reactivate", async (c) => {
 });
 
 identities.post("/", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+  const auth = await authenticateBearerOrApiKeyAndAuthorize(
+    c,
     "relayauth:identity:manage:*",
-    matchScope,
   );
   if (!auth.ok) {
     return c.json({ error: auth.error }, auth.status);
@@ -480,6 +469,25 @@ identities.post("/", async (c) => {
     return c.json({ error: message }, 500);
   }
 });
+
+async function authenticateBearerOrApiKeyAndAuthorize(
+  c: Context<AppEnv>,
+  requiredScope: string,
+): Promise<
+  | { ok: true; claims: RelayAuthTokenClaims }
+  | { ok: false; error: string; code: string; status: 401 | 403 }
+> {
+  const auth = await authenticateBearerOrApiKey(
+    c.req.raw,
+    c.env.SIGNING_KEY,
+    c.get("storage"),
+  );
+  if (!auth.ok) {
+    return auth;
+  }
+
+  return authorizeClaims(auth.claims, requiredScope, matchScope);
+}
 
 function normalizeIdentityType(type: IdentityType | undefined): IdentityType {
   return type === "human" || type === "service" ? type : "agent";
