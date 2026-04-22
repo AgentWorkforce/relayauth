@@ -5,9 +5,11 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 
 import type { AppConfig, AppEnv } from "./env.js";
+import { apiKeyAuth } from "./middleware/api-key-auth.js";
 import auditExport from "./routes/audit-export.js";
 import auditQuery from "./routes/audit-query.js";
 import auditWebhooks from "./routes/audit-webhooks.js";
+import apiKeys from "./routes/api-keys.js";
 import dashboardStats from "./routes/dashboard-stats.js";
 import discovery, { apiDiscovery } from "./routes/discovery.js";
 import jwks from "./routes/jwks.js";
@@ -111,11 +113,28 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
     await next();
   });
 
+  // Mount apiKeyAuth() on every path that accepts x-api-key. It must run BEFORE the
+  // global gate below so that, when an x-api-key is present, the middleware can rewrite
+  // the Authorization header into a short-lived HS256 bearer before the gate inspects it.
+  // Wildcard mounts are required so sub-paths (e.g. /v1/identities/:id) also run through
+  // the middleware — see P0-1 in PR #20.
+  app.use("/v1/identities", apiKeyAuth());
+  app.use("/v1/identities/*", apiKeyAuth());
+  app.use("/v1/tokens", apiKeyAuth());
+  app.use("/v1/tokens/*", apiKeyAuth());
+
   app.use("*", async (c, next) => {
     if (isPublicPath(c.req.path)) {
       return next();
     }
 
+    // x-api-key is accepted only via apiKeyAuth() middleware, which is mounted on
+    // every path that supports it (see mounts above) and rewrites Authorization
+    // into a synthesized Bearer on success. The gate therefore only needs to
+    // check Authorization — reaching here without one means neither credential
+    // was presented, or the request hit a path that doesn't accept x-api-key.
+    // DO NOT admit raw x-api-key here: a new route added without mounting
+    // apiKeyAuth() would silently accept unvalidated keys.
     const authorization = c.req.header("Authorization");
     if (!authorization) {
       return c.json({ error: "Missing Authorization header", code: "missing_authorization" }, 401);
@@ -151,6 +170,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.route("/.well-known", discovery);
   app.route("/.well-known", jwks);
   app.route("/v1/discovery", apiDiscovery);
+  app.route("/v1/api-keys", apiKeys);
   app.route("/v1/audit", auditWebhooks);
   app.route("/v1/audit", auditExport);
   app.route("/v1/audit", auditQuery);

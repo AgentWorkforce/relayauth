@@ -14,6 +14,11 @@ import type {
   IdentityBudgetUsage,
   StoredIdentity,
 } from "./identity-types.js";
+import type {
+  CreateApiKeyInput,
+  ListApiKeysOptions,
+  StoredApiKey,
+} from "./api-key-types.js";
 
 export type ExtendedAuditAction =
   | AuditAction
@@ -186,6 +191,15 @@ export interface ContextStorage {
   getWorkspace(workspaceId: string): Promise<WorkspaceContextRecord | null>;
 }
 
+export interface ApiKeyStorage {
+  create(input: CreateApiKeyInput): Promise<StoredApiKey>;
+  get(id: string): Promise<StoredApiKey | null>;
+  getByHash(keyHash: string): Promise<StoredApiKey | null>;
+  list(orgId: string, options?: ListApiKeysOptions): Promise<StoredApiKey[]>;
+  revoke(id: string, revokedAt: string): Promise<StoredApiKey>;
+  touchLastUsed(id: string, usedAt: string): Promise<void>;
+}
+
 export interface AuthStorage {
   identities: IdentityStorage;
   tokens: TokenStorage;
@@ -195,6 +209,7 @@ export interface AuthStorage {
   audit: AuditStorage;
   auditWebhooks: AuditWebhookStorage;
   contexts: ContextStorage;
+  apiKeys: ApiKeyStorage;
 }
 
 export class StorageError extends Error {
@@ -212,4 +227,13 @@ export function isStorageError(error: unknown): error is StorageError {
   return error instanceof StorageError;
 }
 
-export type { IdentityBudget, IdentityBudgetUsage, StoredIdentity, PolicyCondition, PolicyEffect };
+export type {
+  CreateApiKeyInput,
+  IdentityBudget,
+  IdentityBudgetUsage,
+  ListApiKeysOptions,
+  PolicyCondition,
+  PolicyEffect,
+  StoredApiKey,
+  StoredIdentity,
+};

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type {
   AgentIdentity,
   AuditAction,
@@ -8,11 +9,17 @@ import type {
   Role,
 } from "@relayauth/types";
 import type {
+  CreateApiKeyInput,
+  ListApiKeysOptions,
+  StoredApiKey,
+} from "./api-key-types.js";
+import type {
   IdentityBudget,
   IdentityBudgetUsage,
   StoredIdentity,
 } from "./identity-types.js";
 import type {
+  ApiKeyStorage,
   AuditEntryRecord,
   AuditStorage,
   AuditWebhookStorage,
@@ -230,6 +237,25 @@ const SCHEMA_SQL = `
     org_id TEXT PRIMARY KEY,
     retention_days INTEGER NOT NULL DEFAULT 90
   );
+
+  CREATE TABLE IF NOT EXISTS api_keys (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    prefix TEXT NOT NULL,
+    key_hash TEXT NOT NULL UNIQUE,
+    scopes_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_api_keys_org_created
+    ON api_keys (org_id, created_at DESC, id DESC);
+
+  CREATE INDEX IF NOT EXISTS idx_api_keys_prefix
+    ON api_keys (prefix);
 `;
 
 const INSERT_IDENTITY_SQL = `
@@ -430,6 +456,88 @@ const DELETE_POLICY_SQL = `
   UPDATE policies
   SET deleted_at = ?
   WHERE id = ? AND org_id = ? AND deleted_at IS NULL
+`;
+
+const INSERT_API_KEY_SQL = `
+  INSERT INTO api_keys (
+    id,
+    org_id,
+    name,
+    prefix,
+    key_hash,
+    scopes_json,
+    created_at,
+    updated_at,
+    last_used_at,
+    revoked_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+const SELECT_API_KEY_SQL = `
+  SELECT
+    id,
+    org_id,
+    name,
+    prefix,
+    key_hash,
+    scopes_json,
+    created_at,
+    updated_at,
+    last_used_at,
+    revoked_at
+  FROM api_keys
+  WHERE id = ?
+  LIMIT 1
+`;
+
+const SELECT_API_KEY_BY_HASH_SQL = `
+  SELECT
+    id,
+    org_id,
+    name,
+    prefix,
+    key_hash,
+    scopes_json,
+    created_at,
+    updated_at,
+    last_used_at,
+    revoked_at
+  FROM api_keys
+  WHERE key_hash = ?
+  LIMIT 1
+`;
+
+const LIST_API_KEYS_SQL = `
+  SELECT
+    id,
+    org_id,
+    name,
+    prefix,
+    key_hash,
+    scopes_json,
+    created_at,
+    updated_at,
+    last_used_at,
+    revoked_at
+  FROM api_keys
+  WHERE org_id = ?
+  ORDER BY created_at DESC, id DESC
+`;
+
+const UPDATE_API_KEY_REVOKED_SQL = `
+  UPDATE api_keys
+  SET revoked_at = COALESCE(revoked_at, ?),
+      updated_at = ?
+  WHERE id = ?
+`;
+
+const UPDATE_API_KEY_LAST_USED_SQL = `
+  UPDATE api_keys
+  SET last_used_at = ?,
+      updated_at = ?
+  WHERE id = ?
+    AND (last_used_at IS NULL OR last_used_at < ?)
 `;
 
 const LIST_ACTIVE_TOKENS_SQL = `
@@ -670,6 +778,18 @@ type PolicyRow = {
   created_at?: string;
   deleted_at?: string | null;
 };
+type ApiKeyRow = {
+  id?: string;
+  org_id?: string;
+  name?: string;
+  prefix?: string;
+  key_hash?: string;
+  scopes_json?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+};
 type AuditRow = {
   id?: string;
   action?: AuditAction | string;
@@ -746,6 +866,7 @@ type MemoryState = {
   identities: Map<string, StoredIdentity>;
   roles: Map<string, Role>;
   policies: Map<string, Policy>;
+  apiKeys: Map<string, StoredApiKey>;
   auditLogs: AuditEntryRecord[];
   auditWebhooks: Map<string, AuditWebhookRecord>;
   organizations: Map<string, OrganizationContextRecord>;
@@ -771,6 +892,7 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
     revocations,
     roles: new SqliteRoleStorage(provider),
     policies: new SqlitePolicyStorage(provider),
+    apiKeys: new SqliteApiKeyStorage(provider),
     audit: new SqliteAuditStorage(provider),
     auditWebhooks: new SqliteAuditWebhookStorage(provider),
     contexts: new SqliteContextStorage(provider),
@@ -1340,6 +1462,170 @@ class SqliteRevocationStorage implements RevocationStorage {
   }
 }
 
+class SqliteApiKeyStorage implements ApiKeyStorage {
+  constructor(private readonly provider: BackendProvider) {}
+
+  async create(input: CreateApiKeyInput): Promise<StoredApiKey> {
+    const timestamp = nowIso();
+    const normalized = normalizeStoredApiKey({
+      id: createGeneratedApiKeyId(),
+      ...input,
+      createdAt: input.createdAt ?? timestamp,
+      updatedAt: input.updatedAt ?? input.createdAt ?? timestamp,
+      revokedAt: null,
+    });
+    const backend = await this.provider.getBackend();
+
+    if (backend.kind === "memory") {
+      backend.state.apiKeys.set(normalized.id, cloneApiKey(normalized));
+      return cloneApiKey(normalized);
+    }
+
+    backend.db.prepare(INSERT_API_KEY_SQL).run(...toApiKeyParams(normalized));
+    return this.getRequired(normalized.id);
+  }
+
+  async get(id: string): Promise<StoredApiKey | null> {
+    const apiKeyId = normalizeOptionalString(id);
+    if (!apiKeyId) {
+      return null;
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const apiKey = backend.state.apiKeys.get(apiKeyId);
+      return apiKey ? cloneApiKey(apiKey) : null;
+    }
+
+    return hydrateApiKey(backend.db.prepare<ApiKeyRow>(SELECT_API_KEY_SQL).get(apiKeyId));
+  }
+
+  async getByHash(keyHash: string): Promise<StoredApiKey | null> {
+    const normalizedKeyHash = normalizeOptionalString(keyHash);
+    if (!normalizedKeyHash) {
+      return null;
+    }
+
+    const backend = await this.provider.getBackend();
+
+    if (backend.kind === "memory") {
+      let match: StoredApiKey | null = null;
+      for (const apiKey of backend.state.apiKeys.values()) {
+        if (constantTimeEquals(normalizedKeyHash, apiKey.keyHash)) {
+          match = cloneApiKey(apiKey);
+        }
+      }
+      return match;
+    }
+
+    const apiKey = hydrateApiKey(
+      backend.db.prepare<ApiKeyRow>(SELECT_API_KEY_BY_HASH_SQL).get(normalizedKeyHash),
+    );
+    if (!apiKey || !constantTimeEquals(normalizedKeyHash, apiKey.keyHash)) {
+      return null;
+    }
+
+    return apiKey;
+  }
+
+  async list(orgId: string, options: ListApiKeysOptions = {}): Promise<StoredApiKey[]> {
+    const normalizedOrgId = requireString(orgId, "orgId is required");
+    const limit = normalizeLimit(options.limit);
+    const cursorId = normalizeOptionalString(options.cursorId);
+    const includeRevoked = options.includeRevoked !== false;
+    const backend = await this.provider.getBackend();
+
+    if (backend.kind === "memory") {
+      return [...backend.state.apiKeys.values()]
+        .filter((apiKey) => apiKey.orgId === normalizedOrgId)
+        .filter((apiKey) => includeRevoked || !apiKey.revokedAt)
+        .sort(compareApiKeyDesc)
+        .filter((apiKey) => {
+          if (!cursorId) {
+            return true;
+          }
+
+          return compareApiKeyCursor(apiKey, backend.state.apiKeys.get(cursorId) ?? null) < 0;
+        })
+        .slice(0, limit)
+        .map((apiKey) => cloneApiKey(apiKey));
+    }
+
+    const rows = backend.db.prepare<ApiKeyRow>(LIST_API_KEYS_SQL).all(normalizedOrgId);
+    const cursorApiKey = cursorId ? await this.get(cursorId) : null;
+
+    return rows
+      .map((row) => hydrateApiKey(row))
+      .filter((apiKey): apiKey is StoredApiKey => apiKey !== null)
+      .filter((apiKey) => includeRevoked || !apiKey.revokedAt)
+      .sort(compareApiKeyDesc)
+      .filter((apiKey) => compareApiKeyCursor(apiKey, cursorApiKey) < 0)
+      .slice(0, limit)
+      .map((apiKey) => cloneApiKey(apiKey));
+  }
+
+  async revoke(id: string, revokedAt: string): Promise<StoredApiKey> {
+    const current = await this.getRequired(id);
+    if (current.revokedAt) {
+      return current;
+    }
+
+    const timestamp = normalizeTimestamp(revokedAt);
+    const backend = await this.provider.getBackend();
+    const next = normalizeStoredApiKey({
+      ...current,
+      updatedAt: timestamp,
+      revokedAt: timestamp,
+    });
+
+    if (backend.kind === "memory") {
+      backend.state.apiKeys.set(next.id, cloneApiKey(next));
+      return cloneApiKey(next);
+    }
+
+    backend.db.prepare(UPDATE_API_KEY_REVOKED_SQL).run(timestamp, timestamp, next.id);
+    return this.getRequired(next.id);
+  }
+
+  async touchLastUsed(id: string, usedAt: string): Promise<void> {
+    const apiKeyId = requireString(id, "id is required");
+    const timestamp = normalizeTimestamp(usedAt);
+    const threshold = apiKeyTouchThreshold(timestamp);
+    const backend = await this.provider.getBackend();
+
+    if (backend.kind === "memory") {
+      const current = backend.state.apiKeys.get(apiKeyId);
+      if (!current) {
+        return;
+      }
+
+      const lastUsedAt = parseTimestampMs(current.lastUsedAt);
+      const nextUsedAt = parseTimestampMs(timestamp) ?? Date.now();
+      if (lastUsedAt !== undefined && nextUsedAt - lastUsedAt < 60_000) {
+        return;
+      }
+
+      backend.state.apiKeys.set(apiKeyId, cloneApiKey(normalizeStoredApiKey({
+        ...current,
+        updatedAt: timestamp,
+        lastUsedAt: timestamp,
+      })));
+      return;
+    }
+
+    backend.db.prepare(UPDATE_API_KEY_LAST_USED_SQL).run(timestamp, timestamp, apiKeyId, threshold);
+  }
+
+  private async getRequired(id: string): Promise<StoredApiKey> {
+    const apiKey = await this.get(id);
+    if (!apiKey) {
+      throw new StorageError("api_key_not_found", 404, "api_key_not_found");
+    }
+
+    return apiKey;
+  }
+}
+
 class SqliteRoleStorage implements RoleStorage {
   constructor(private readonly provider: BackendProvider) {}
 
@@ -1846,6 +2132,7 @@ function createMemoryBackend(): BackendContext {
       identities: new Map<string, StoredIdentity>(),
       roles: new Map<string, Role>(),
       policies: new Map<string, Policy>(),
+      apiKeys: new Map<string, StoredApiKey>(),
       auditLogs: [],
       auditWebhooks: new Map<string, AuditWebhookRecord>(),
       organizations: new Map<string, OrganizationContextRecord>(),
@@ -2429,6 +2716,81 @@ function comparePolicyDesc(left: Policy, right: Policy): number {
   return right.priority - left.priority || left.id.localeCompare(right.id);
 }
 
+function normalizeStoredApiKey(apiKey: StoredApiKey): StoredApiKey {
+  return {
+    id: requireString(apiKey.id, "api key id is required"),
+    orgId: requireString(apiKey.orgId, "orgId is required"),
+    name: requireString(apiKey.name, "name is required"),
+    prefix: requireString(apiKey.prefix, "prefix is required"),
+    keyHash: requireString(apiKey.keyHash, "keyHash is required"),
+    scopes: normalizeStringArray(apiKey.scopes),
+    createdAt: normalizeTimestamp(apiKey.createdAt),
+    updatedAt: normalizeTimestamp(apiKey.updatedAt),
+    ...(normalizeOptionalString(apiKey.lastUsedAt) ? { lastUsedAt: apiKey.lastUsedAt } : {}),
+    ...(apiKey.revokedAt === null ? { revokedAt: null } : {}),
+    ...(normalizeOptionalString(apiKey.revokedAt ?? undefined) ? { revokedAt: apiKey.revokedAt ?? undefined } : {}),
+  };
+}
+
+function hydrateApiKey(row: ApiKeyRow | undefined): StoredApiKey | null {
+  const id = normalizeOptionalString(row?.id);
+  const orgId = normalizeOptionalString(row?.org_id);
+  const name = normalizeOptionalString(row?.name);
+  const prefix = normalizeOptionalString(row?.prefix);
+  const keyHash = normalizeOptionalString(row?.key_hash);
+  const createdAt = normalizeOptionalString(row?.created_at);
+  const updatedAt = normalizeOptionalString(row?.updated_at);
+  if (!id || !orgId || !name || !prefix || !keyHash || !createdAt || !updatedAt) {
+    return null;
+  }
+
+  return normalizeStoredApiKey({
+    id,
+    orgId,
+    name,
+    prefix,
+    keyHash,
+    scopes: normalizeStringArray(parseJson<unknown[]>(row?.scopes_json ?? "[]", [])),
+    createdAt,
+    updatedAt,
+    ...(normalizeOptionalString(row?.last_used_at) ? { lastUsedAt: row?.last_used_at ?? undefined } : {}),
+    ...(row?.revoked_at === null ? { revokedAt: null } : {}),
+    ...(normalizeOptionalString(row?.revoked_at) ? { revokedAt: row?.revoked_at ?? undefined } : {}),
+  });
+}
+
+function toApiKeyParams(apiKey: StoredApiKey): unknown[] {
+  return [
+    apiKey.id,
+    apiKey.orgId,
+    apiKey.name,
+    apiKey.prefix,
+    apiKey.keyHash,
+    JSON.stringify(apiKey.scopes),
+    apiKey.createdAt,
+    apiKey.updatedAt,
+    apiKey.lastUsedAt ?? null,
+    apiKey.revokedAt ?? null,
+  ];
+}
+
+function compareApiKeyDesc(left: StoredApiKey, right: StoredApiKey): number {
+  return right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
+}
+
+function compareApiKeyCursor(apiKey: StoredApiKey, cursor: StoredApiKey | null): number {
+  if (!cursor) {
+    return -1;
+  }
+
+  const createdComparison = apiKey.createdAt.localeCompare(cursor.createdAt);
+  if (createdComparison !== 0) {
+    return createdComparison;
+  }
+
+  return apiKey.id.localeCompare(cursor.id);
+}
+
 function normalizeAuditWriteEntry(entry: AuditLogWriteEntry): AuditEntryRecord {
   const createdAt = new Date().toISOString();
 
@@ -2957,6 +3319,10 @@ function cloneStoredIdentity(identity: StoredIdentity): StoredIdentity {
   return JSON.parse(JSON.stringify(identity)) as StoredIdentity;
 }
 
+function cloneApiKey(apiKey: StoredApiKey): StoredApiKey {
+  return JSON.parse(JSON.stringify(apiKey)) as StoredApiKey;
+}
+
 function cloneRole(role: Role): Role {
   return JSON.parse(JSON.stringify(role)) as Role;
 }
@@ -3010,6 +3376,34 @@ function nowIso(): string {
 
 function nowUnixSeconds(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+function parseTimestampMs(value: string | undefined | null): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function apiKeyTouchThreshold(usedAt: string): string {
+  const parsed = parseTimestampMs(usedAt) ?? Date.now();
+  return new Date(parsed - 60_000).toISOString();
+}
+
+function constantTimeEquals(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function createGeneratedApiKeyId(): string {
+  return `ak_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
 function createGeneratedIdentityId(): string {
