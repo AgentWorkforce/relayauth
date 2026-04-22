@@ -1,5 +1,8 @@
 import { pemToArrayBuffer } from "./sign-rs256.js";
 
+export { rfc7638Thumbprint } from "./sign-rs256.js";
+export type { RsaThumbprintJwk } from "./sign-rs256.js";
+
 export type RsaPublicJwk = JsonWebKey & {
   kty: "RSA";
   n: string;

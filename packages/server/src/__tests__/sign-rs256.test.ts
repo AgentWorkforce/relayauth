@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { createHmac, createPublicKey, generateKeyPairSync } from "node:crypto";
+import { createHash, createHmac, createPublicKey, generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 import { RelayAuthError } from "../../../sdk/typescript/src/errors.js";
 import { TokenVerifier } from "../../../sdk/typescript/src/verify.js";
+import { rfc7638Thumbprint } from "../lib/jwk.js";
+import { importRsaPrivateKey, keyIdFromPublicJwk } from "../lib/sign-rs256.js";
 
 type SignRs256Module = {
   signRs256: (
@@ -298,6 +300,145 @@ test("signToken(claims, env) rejects unknown RELAYAUTH_SIGNING_ALG values with a
         error instanceof Error ? error.message : String(error),
         /Unsupported signing algorithm: ES256/,
       );
+      return true;
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// kid derivation: RFC 7638 JWK thumbprint
+// ---------------------------------------------------------------------------
+
+test("rfc7638Thumbprint matches the RFC 7638 §3.1 known-answer vector", async () => {
+  // Exact RSA key from RFC 7638 §3.1. The RFC states the thumbprint is
+  // NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs (base64url of the SHA-256
+  // digest of the canonical form).
+  const rfcJwk = {
+    kty: "RSA" as const,
+    n: "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4"
+      + "cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiF"
+      + "V4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6C"
+      + "f0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9"
+      + "c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTW"
+      + "hAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1"
+      + "jF44-csFCur-kEgU8awapJzKnqDKgw",
+    e: "AQAB",
+  };
+
+  const thumbprint = await rfc7638Thumbprint(rfcJwk);
+
+  assert.equal(thumbprint, "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
+});
+
+test("keyIdFromPublicJwk is deterministic: two calls on the same JWK yield the same kid", async () => {
+  const { publicJwk } = createRsaFixture();
+  const jwk = { kty: "RSA" as const, n: publicJwk.n as string, e: publicJwk.e as string };
+
+  const first = await keyIdFromPublicJwk(jwk);
+  const second = await keyIdFromPublicJwk(jwk);
+
+  assert.equal(first, second);
+  // Regression: kid must NOT embed the current YYYY-MM month. The old buggy
+  // kid format was `<stage>-<YYYY-MM>-<hash8>`; RFC 7638 thumbprints don't
+  // contain literal dash-separated month segments.
+  assert.doesNotMatch(
+    first,
+    /^[a-z0-9-]+-\d{4}-\d{2}-[0-9a-f]{8}$/u,
+    "kid must not use the legacy YYYY-MM-embedded format",
+  );
+});
+
+test("keyIdFromPublicJwk is time-independent: kid is stable across month rollover", async (t) => {
+  const { publicJwk } = createRsaFixture();
+  const jwk = { kty: "RSA" as const, n: publicJwk.n as string, e: publicJwk.e as string };
+
+  // Mock Date to return a timestamp in January 2026.
+  const RealDate = Date;
+  const januaryMs = RealDate.UTC(2026, 0, 31, 23, 59, 59);
+  class MockDateJan extends RealDate {
+    constructor(...args: ConstructorParameters<typeof Date>) {
+      if (args.length === 0) {
+        super(januaryMs);
+      } else {
+        super(...(args as [number]));
+      }
+    }
+    static now() {
+      return januaryMs;
+    }
+  }
+  globalThis.Date = MockDateJan as unknown as DateConstructor;
+  let kidJan: string;
+  try {
+    kidJan = await keyIdFromPublicJwk(jwk);
+  } finally {
+    globalThis.Date = RealDate;
+  }
+
+  // Mock Date to return a timestamp in February 2026 (the next month).
+  const februaryMs = RealDate.UTC(2026, 1, 1, 0, 0, 1);
+  class MockDateFeb extends RealDate {
+    constructor(...args: ConstructorParameters<typeof Date>) {
+      if (args.length === 0) {
+        super(februaryMs);
+      } else {
+        super(...(args as [number]));
+      }
+    }
+    static now() {
+      return februaryMs;
+    }
+  }
+  globalThis.Date = MockDateFeb as unknown as DateConstructor;
+  let kidFeb: string;
+  try {
+    kidFeb = await keyIdFromPublicJwk(jwk);
+  } finally {
+    globalThis.Date = RealDate;
+  }
+
+  t.diagnostic(`kid(Jan)=${kidJan} kid(Feb)=${kidFeb}`);
+  assert.equal(kidJan, kidFeb, "kid must NOT change across month boundaries");
+});
+
+test("keyIdFromPublicJwk agrees with manually computed RFC 7638 thumbprint (hash of canonical JSON)", async () => {
+  const { publicJwk } = createRsaFixture();
+  const n = publicJwk.n as string;
+  const e = publicJwk.e as string;
+
+  const canonical = `{"e":"${e}","kty":"RSA","n":"${n}"}`;
+  const expected = createHash("sha256").update(canonical).digest("base64url");
+
+  const kid = await keyIdFromPublicJwk({ kty: "RSA", n, e });
+
+  assert.equal(kid, expected);
+});
+
+test("signRs256 header.kid matches the RFC 7638 thumbprint of the public JWK (sign-kid == jwks-kid)", async () => {
+  const { signRs256 } = await loadSignRs256Module();
+  const { privateKeyPem, publicJwk } = createRsaFixture();
+  const expectedKid = await rfc7638Thumbprint({
+    kty: "RSA",
+    n: publicJwk.n as string,
+    e: publicJwk.e as string,
+  });
+
+  const token = await signRs256(createClaims({ jti: "tok_kid_match" }), privateKeyPem, expectedKid);
+  const header = decodeBase64UrlJson<{ kid?: string }>(token.split(".")[0]);
+
+  assert.equal(header.kid, expectedKid);
+});
+
+test("importRsaPrivateKey rejects RSA keys smaller than 2048 bits with a clear error", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 1024 });
+  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+
+  await assert.rejects(
+    () => importRsaPrivateKey(privateKeyPem),
+    (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      assert.match(message, /1024 bits/);
+      assert.match(message, /at least 2048/i);
       return true;
     },
   );
