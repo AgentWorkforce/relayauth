@@ -107,6 +107,9 @@ CREATE TABLE IF NOT EXISTS tokens (
   token_id TEXT,
   jti TEXT,
   identity_id TEXT NOT NULL,
+  session_id TEXT,
+  issued_at INTEGER,
+  expires_at INTEGER,
   status TEXT NOT NULL DEFAULT 'active',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
