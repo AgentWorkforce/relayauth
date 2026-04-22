@@ -287,3 +287,26 @@ test("POST /v1/identities with revoked x-api-key returns 401", async () => {
   assert.match(body.error, /api key|revoked|invalid/i);
   assert.notEqual(body.code, "missing_authorization");
 });
+
+test("global gate rejects a request that carries only x-api-key to a path without apiKeyAuth mount", async () => {
+  const app = createTestApp();
+  const created = await createApiKey(app, {
+    name: "unmounted-path-probe",
+    scopes: ["relayauth:identity:manage:*"],
+  });
+
+  const response = await app.request(
+    createTestRequest("GET", "/v1/this-route-does-not-exist-but-is-not-public", undefined, {
+      "x-api-key": created.key,
+    }),
+    undefined,
+    app.bindings,
+  );
+
+  const body = await assertJsonResponse<{ code: string }>(response, 401);
+  assert.equal(
+    body.code,
+    "missing_authorization",
+    "raw x-api-key must not bypass the global gate on routes that don't mount apiKeyAuth()",
+  );
+});

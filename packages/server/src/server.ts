@@ -128,18 +128,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
       return next();
     }
 
+    // x-api-key is accepted only via apiKeyAuth() middleware, which is mounted on
+    // every path that supports it (see mounts above) and rewrites Authorization
+    // into a synthesized Bearer on success. The gate therefore only needs to
+    // check Authorization — reaching here without one means neither credential
+    // was presented, or the request hit a path that doesn't accept x-api-key.
+    // DO NOT admit raw x-api-key here: a new route added without mounting
+    // apiKeyAuth() would silently accept unvalidated keys.
     const authorization = c.req.header("Authorization");
-    const apiKey = c.req.header("x-api-key");
-
     if (!authorization) {
-      // Admit requests that carry an x-api-key: if apiKeyAuth() ran upstream it will
-      // have either rewritten the Authorization header (handled above) or returned a
-      // 401 itself. Reaching this point with only x-api-key means the path had no
-      // apiKeyAuth mount — defer to the per-route handler, which MUST validate the key.
-      if (apiKey && apiKey.trim()) {
-        return next();
-      }
-
       return c.json({ error: "Missing Authorization header", code: "missing_authorization" }, 401);
     }
 
