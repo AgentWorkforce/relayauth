@@ -308,18 +308,16 @@ specialist tools work end-to-end.
 | `apiKey` storage compromise | Plaintext key is hashed (SHA-256) before persistence; only the hash + 8-char prefix is kept. Compromised DB cannot recover keys |
 | Admin bearer token bootstrap is manual | Document it once in `docs/admin-bootstrap.md`; future creation flows through the API key surface |
 | Existing HS256 in-flight tokens during cutover | 1-hour TTL + dual-accept window in Phase 3 |
-| RelayAuth deploy path is unclear | Phase 0: spec out + ship a deploy workflow before cutover. (Out of scope here but called out below.) |
+| Deploying server-side route changes | Already automated. The deployed RelayAuth Worker lives at `cloud/packages/relayauth/`, declared in `cloud/infra/relayauth.ts` and deployed by the same `npx sst deploy` step the rest of cloud runs on every push to main (see `cloud/.github/workflows/deploy.yml`). Each phase PR that bumps `@relayauth/server` in `cloud/packages/relayauth/package.json` rolls forward automatically when the bump commit lands. |
 
 ## Open questions for the spec review
 
 1. **Where is the production RSA key actually generated?** Options: human runs `openssl genrsa -out private.pem 4096` and `wrangler secret put RELAYAUTH_SIGNING_KEY_PEM`, or workers code generates on first boot and writes to KV. The first is auditable; the second is closer to "self-bootstrapping".
 2. **Should `POST /v1/api-keys` itself accept `x-api-key` auth (so an existing key can mint a downstream key)?** Spec currently says bearer-only to keep the bootstrap chain explicit. Easy to relax later.
 3. **Audit:** every token mint and every API key use should land in `audit_logs`. The schema already supports this; just need to wire the new endpoints in.
-4. **Production deploy path:** the relayauth repo has no CD workflow today. Specifying that is out of scope here but is a hard prerequisite for landing this safely. A separate spec issue should track it.
+4. ~~**Production deploy path:** the relayauth repo has no CD workflow today.~~ Resolved during spec review: the deployed RelayAuth Worker is built from `cloud/packages/relayauth/`, declared in `cloud/infra/relayauth.ts`, and deployed by `cloud/.github/workflows/deploy.yml` via `npx sst deploy` on every push to main. Each phase PR that bumps the `@relayauth/server` dep in `cloud/packages/relayauth/package.json` triggers a relayauth Worker redeploy automatically. No separate CD work needed.
 
 ## Out of scope (followups)
-
-- RelayAuth production CD pipeline (currently manual).
 - Customer-facing rate limits on API key creation.
 - API key UI in the relayauth landing/admin dashboard.
 - Multi-issuer / per-tenant signing keys.
