@@ -179,6 +179,9 @@ const SCHEMA_SQL = `
     token_id TEXT,
     jti TEXT,
     identity_id TEXT NOT NULL,
+    session_id TEXT,
+    issued_at INTEGER,
+    expires_at INTEGER,
     status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -893,6 +896,7 @@ class BackendProvider {
         db.pragma("journal_mode = WAL");
         db.pragma("foreign_keys = ON");
         db.exec(SCHEMA_SQL);
+        ensureTokensSchema(db);
         ensureRevokedTokensSchema(db);
         return { kind: "sqlite", db };
       } catch {
@@ -1934,6 +1938,27 @@ function ensureRevokedTokensSchema(db: SqliteDatabase): void {
   }
 
   db.exec("DROP TABLE revoked_tokens__legacy");
+}
+
+function ensureTokensSchema(db: SqliteDatabase): void {
+  const tokenColumns = new Set(
+    db.prepare<TableInfoRow>("PRAGMA table_info(tokens)")
+      .all()
+      .map((row) => normalizeOptionalString(row.name))
+      .filter((name): name is string => Boolean(name)),
+  );
+
+  if (!tokenColumns.has("session_id")) {
+    db.exec("ALTER TABLE tokens ADD COLUMN session_id TEXT");
+  }
+
+  if (!tokenColumns.has("issued_at")) {
+    db.exec("ALTER TABLE tokens ADD COLUMN issued_at INTEGER");
+  }
+
+  if (!tokenColumns.has("expires_at")) {
+    db.exec("ALTER TABLE tokens ADD COLUMN expires_at INTEGER");
+  }
 }
 
 function pruneExpiredRevocations(backend: BackendContext): void {

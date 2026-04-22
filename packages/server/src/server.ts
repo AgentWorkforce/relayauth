@@ -17,12 +17,14 @@ import observerApp from "./routes/observer.js";
 import policies from "./routes/policies.js";
 import roleAssignments from "./routes/role-assignments.js";
 import roles from "./routes/roles.js";
+import tokens from "./routes/tokens.js";
 import type { AuthStorage } from "./storage/index.js";
 
 const PUBLIC_PATHS = new Set([
   "/health",
   "/.well-known/agent-configuration",
   "/v1/discovery/agent-card",
+  "/v1/tokens/refresh",
 ]);
 const BRIDGE_RATE_LIMIT = 30;
 const BRIDGE_RATE_WINDOW_MS = 60_000;
@@ -159,6 +161,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.route("/v1/policies", policies);
   app.route("/v1/roles", roles);
   app.route("/v1/stats", dashboardStats);
+  app.route("/v1/tokens", tokens);
 
   return app;
 }
