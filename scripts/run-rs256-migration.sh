@@ -258,14 +258,26 @@ run_phase() {
   done
 
   set_state "$id" "running"
-  if agent-relay run "workflows/${file}.ts"; then
-    set_state "$id" "passed"
-    echo "  ✓ $id workflow passed"
-  else
+  # agent-relay run exits 0 even when the internal DAG has failed steps,
+  # so we also scan its streamed output for failure markers. The tee into
+  # /dev/tty keeps the live log visible to the operator.
+  local run_log
+  run_log="$(mktemp -t rs256-phase-${id}.XXXXXX.log)"
+  local run_rc=0
+  agent-relay run "workflows/${file}.ts" 2>&1 | tee "$run_log" >/dev/tty
+  run_rc="${PIPESTATUS[0]}"
+
+  if [ "$run_rc" -ne 0 ] \
+      || grep -qE '^\[run:failed\]|workflow\] FAILED:|: failed$' "$run_log"; then
     set_state "$id" "failed"
     echo "  ✗ $id workflow failed — see output above. Re-run this script to retry; branch is preserved."
+    echo "     (log: $run_log)"
     exit 1
   fi
+
+  set_state "$id" "passed"
+  echo "  ✓ $id workflow passed"
+  rm -f "$run_log"
 
   # Commit + PR each affected repo. If --skip-pr, commit only.
   for repo in $(phase_repo_paths "$repos"); do

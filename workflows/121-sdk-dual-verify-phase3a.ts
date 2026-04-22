@@ -32,14 +32,14 @@ async function main() {
 
     .step('read-spec', { type: 'deterministic', command: `cat ${RELAYAUTH}/specs/api-keys-and-rs256-migration.md ${RELAYAUTH}/specs/token-format.md`, captureOutput: true })
 
-    .step('read-verifier', { type: 'deterministic', command: `cat ${RELAYAUTH}/packages/sdk/src/verify.ts`, captureOutput: true })
+    .step('read-verifier', { type: 'deterministic', command: `cat ${RELAYAUTH}/packages/sdk/typescript/src/verify.ts`, captureOutput: true })
 
-    .step('read-tests', { type: 'deterministic', command: `cat ${RELAYAUTH}/packages/sdk/src/__tests__/verify.test.ts 2>/dev/null || echo NO_EXISTING_TESTS`, captureOutput: true })
+    .step('read-tests', { type: 'deterministic', command: `cat ${RELAYAUTH}/packages/sdk/typescript/src/__tests__/verify.test.ts 2>/dev/null || echo NO_EXISTING_TESTS`, captureOutput: true })
 
     .step('write-tests', {
       agent: 'implementer',
       dependsOn: ['read-spec', 'read-verifier', 'read-tests'],
-      task: `Write failing tests at ${RELAYAUTH}/packages/sdk/src/__tests__/verify-dual-alg.test.ts.
+      task: `Write failing tests at ${RELAYAUTH}/packages/sdk/typescript/src/__tests__/verify-dual-alg.test.ts.
 
 Spec:
 {{steps.read-spec.output}}
@@ -56,16 +56,16 @@ Required tests:
 6. Kid pinning: header.kid must reference a key actually in the JWKS; missing kid → reject.
 7. After Phase 3 sunset (HS256 dropped from accept list via env flag RELAYAUTH_VERIFIER_ACCEPT_HS256=false), HS256 tokens are rejected.
 
-Use vitest or whatever the @relayauth/sdk package uses (check package.json).`,
+The @relayauth/sdk package uses node --test with the tsx loader (see packages/sdk/typescript/package.json). Match that runner — do not introduce vitest.`,
       verification: { type: 'exit_code' },
     })
 
-    .step('verify-tests', { type: 'deterministic', dependsOn: ['write-tests'], command: `test -f ${RELAYAUTH}/packages/sdk/src/__tests__/verify-dual-alg.test.ts && echo OK || (echo MISSING; exit 1)`, captureOutput: true })
+    .step('verify-tests', { type: 'deterministic', dependsOn: ['write-tests'], command: `test -f ${RELAYAUTH}/packages/sdk/typescript/src/__tests__/verify-dual-alg.test.ts && echo OK || (echo MISSING; exit 1)`, captureOutput: true })
 
     .step('implement', {
       agent: 'implementer',
       dependsOn: ['verify-tests'],
-      task: `Update ${RELAYAUTH}/packages/sdk/src/verify.ts to accept both RS256 and HS256.
+      task: `Update ${RELAYAUTH}/packages/sdk/typescript/src/verify.ts to accept both RS256 and HS256.
 
 Changes:
 1. resolveVerificationAlgorithm now returns:
@@ -85,7 +85,7 @@ Backwards compatibility: existing TokenVerifier API surface unchanged. New behav
     .step('self-review', {
       agent: 'implementer',
       dependsOn: ['implement'],
-      task: `Self-review ${RELAYAUTH}/packages/sdk/src/verify.ts.
+      task: `Self-review ${RELAYAUTH}/packages/sdk/typescript/src/verify.ts.
 
 Walk through:
 1. Alg confusion — if a token says HS256 and the JWKS has an RS256 key at the same kid, the code must NOT use the RSA public material as an HMAC key. Confirm the alg check happens BEFORE key import.
@@ -98,7 +98,7 @@ End with "self-review clean" or P0/P1 list.`,
       verification: { type: 'exit_code' },
     })
 
-    .step('run-tests', { type: 'deterministic', dependsOn: ['self-review'], command: `cd ${RELAYAUTH} && npx vitest run packages/sdk/src/__tests__/verify-dual-alg.test.ts 2>&1 | tail -40; echo "EXIT: $?"`, captureOutput: true, failOnError: false })
+    .step('run-tests', { type: 'deterministic', dependsOn: ['self-review'], command: `cd ${RELAYAUTH} && node --test --import tsx packages/sdk/typescript/src/__tests__/verify-dual-alg.test.ts 2>&1 | tail -40; echo "EXIT: $?"`, captureOutput: true, failOnError: false })
 
     .step('typecheck', { type: 'deterministic', dependsOn: ['run-tests'], command: `cd ${RELAYAUTH} && npx turbo typecheck --filter=@relayauth/sdk 2>&1 | tail -30; echo "EXIT: $?"`, captureOutput: true, failOnError: false })
 
@@ -144,7 +144,7 @@ Output: VERDICT, breaking changes (if any), required-consumer-updates.`,
 
     .step('fix', { agent: 'implementer', dependsOn: ['synthesize'], task: `Apply: {{steps.synthesize.output}}`, verification: { type: 'exit_code' } })
 
-    .step('rerun-tests', { type: 'deterministic', dependsOn: ['fix'], command: `cd ${RELAYAUTH} && npx vitest run packages/sdk/src/__tests__/verify-dual-alg.test.ts 2>&1 | tail -40; echo "EXIT: $?"`, captureOutput: true, failOnError: false })
+    .step('rerun-tests', { type: 'deterministic', dependsOn: ['fix'], command: `cd ${RELAYAUTH} && node --test --import tsx packages/sdk/typescript/src/__tests__/verify-dual-alg.test.ts 2>&1 | tail -40; echo "EXIT: $?"`, captureOutput: true, failOnError: false })
 
     .step('rerun-typecheck', { type: 'deterministic', dependsOn: ['rerun-tests'], command: `cd ${RELAYAUTH} && npx turbo typecheck --filter=@relayauth/sdk 2>&1 | tail -30; echo "EXIT: $?"`, captureOutput: true, failOnError: false })
 
