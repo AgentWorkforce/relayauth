@@ -208,6 +208,10 @@ export async function startServer(options: StartServerOptions = {}) {
     INTERNAL_SECRET: internalSecret,
     BASE_URL: options.config?.BASE_URL ?? process.env.BASE_URL ?? `http://127.0.0.1:${port}`,
     ALLOWED_ORIGINS: options.config?.ALLOWED_ORIGINS ?? process.env.ALLOWED_ORIGINS,
+    RELAYAUTH_SIGNING_ALG: options.config?.RELAYAUTH_SIGNING_ALG ?? process.env.RELAYAUTH_SIGNING_ALG,
+    RELAYAUTH_SIGNING_KEY_PEM_PUBLIC:
+      options.config?.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC ?? process.env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC,
+    RELAYAUTH_ENV_STAGE: options.config?.RELAYAUTH_ENV_STAGE ?? process.env.RELAYAUTH_ENV_STAGE,
   };
 
   const app = createApp({
