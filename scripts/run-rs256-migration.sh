@@ -267,8 +267,16 @@ run_phase() {
   agent-relay run "workflows/${file}.ts" 2>&1 | tee "$run_log" >/dev/tty
   run_rc="${PIPESTATUS[0]}"
 
+  # Failure signals we scan for (in addition to a non-zero exit from the runner):
+  #   - [run:failed] / [workflow] FAILED: — internal DAG failure events
+  #   - : failed$ — master-executor-style trailer
+  #   - Node runtime errors at parse/load time (ReferenceError, TypeError,
+  #     SyntaxError) — these happen before the workflow runtime starts, so
+  #     neither marker above fires and agent-relay's wrapper has swallowed
+  #     the exit code to 0. Caught the hard way in phase 122 on 2026-04-23.
   if [ "$run_rc" -ne 0 ] \
-      || grep -qE '^\[run:failed\]|workflow\] FAILED:|: failed$' "$run_log"; then
+      || grep -qE '^\[run:failed\]|workflow\] FAILED:|: failed$' "$run_log" \
+      || grep -qE '^(ReferenceError|TypeError|SyntaxError|RangeError): ' "$run_log"; then
     set_state "$id" "failed"
     echo "  ✗ $id workflow failed — see output above. Re-run this script to retry; branch is preserved."
     echo "     (log: $run_log)"

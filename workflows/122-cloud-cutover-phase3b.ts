@@ -130,7 +130,7 @@ Do NOT change the verifier-side flag yet. HS256 tokens still in flight must cont
     .step('step3-soak-window', {
       type: 'deterministic',
       dependsOn: ['step2-human-gate'],
-      command: `echo "===== SOAK WINDOW ====="; echo "Waiting 90 minutes (1h token TTL + 30min margin) before sunsetting HS256."; echo "Use this window to monitor:"; echo "  - sage tail — confirm specialist tools work over this window"; echo "  - cloud + relayauth Cloudflare tails — no verification spikes"; echo ""; echo "If any failures appear, touch ${RELAYAUTH}/.cutover-soak-aborted to abort."; for i in $(seq 1 90); do sleep 60; if [ -f ${RELAYAUTH}/.cutover-soak-aborted ]; then echo SOAK_ABORTED; exit 1; fi; if [ $((i % 15)) -eq 0 ]; then echo "soak: ${i}/90 min"; fi; done; echo OK_SOAK_COMPLETE`,
+      command: `echo "===== SOAK WINDOW ====="; echo "Waiting 90 minutes (1h token TTL + 30min margin) before sunsetting HS256."; echo "Use this window to monitor:"; echo "  - sage tail — confirm specialist tools work over this window"; echo "  - cloud + relayauth Cloudflare tails — no verification spikes"; echo ""; echo "If any failures appear, touch ${RELAYAUTH}/.cutover-soak-aborted to abort."; for i in $(seq 1 90); do sleep 60; if [ -f ${RELAYAUTH}/.cutover-soak-aborted ]; then echo SOAK_ABORTED; exit 1; fi; if [ $((i % 15)) -eq 0 ]; then echo "soak: \${i}/90 min"; fi; done; echo OK_SOAK_COMPLETE`,
       captureOutput: true,
       failOnError: true,
     })
