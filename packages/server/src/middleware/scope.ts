@@ -51,8 +51,17 @@ function createScopeMiddleware(
 ): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     try {
-      const token = extractBearerToken(c.req.header("Authorization"));
-      const claims = await verifyHs256Token(token, c.env.SIGNING_KEY);
+      // Prefer claims injected by `apiKeyAuth()` when an x-api-key has already
+      // authenticated the request. Otherwise verify the Authorization bearer
+      // token. This replaces the old in-place header rewrite approach, which
+      // is unsafe in Cloudflare Workers (Request.headers is immutable).
+      const apiKeyClaims = c.get("apiKeyClaims");
+      const claims = apiKeyClaims
+        ? apiKeyClaims
+        : await verifyHs256Token(
+            extractBearerToken(c.req.header("Authorization")),
+            c.env.SIGNING_KEY,
+          );
       const scopeChecker = ScopeChecker.fromToken(claims);
 
       setScopeVariable(c, "identity", claims);

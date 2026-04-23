@@ -1,8 +1,21 @@
-import type { RelayAuthTokenClaims } from "@relayauth/types";
 import type { MiddlewareHandler } from "hono";
 import type { AppEnv } from "../env.js";
 import { authenticateBearerOrApiKey } from "../lib/auth.js";
 
+/**
+ * Middleware that authenticates an x-api-key header (if present) and stores
+ * the resulting claims on Hono's context. Downstream helpers in
+ * `../lib/auth.ts` (authenticateFromContext, authenticateAndAuthorizeFromContext)
+ * consult `c.get("apiKeyClaims")` BEFORE parsing the Authorization header, so
+ * routes behind this middleware transparently accept either credential.
+ *
+ * IMPORTANT: this middleware MUST NOT mutate `c.req.raw.headers`. In
+ * Cloudflare Workers, `Request.headers` is immutable, and any call to
+ * `.set()` on it throws `TypeError: Can't modify immutable headers`.
+ * That's the bug this implementation was written to fix; if you reintroduce
+ * header mutation the regression test in `__tests__/api-key-auth.test.ts`
+ * will fail.
+ */
 export function apiKeyAuth(): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const apiKey = c.req.header("x-api-key");
@@ -21,47 +34,10 @@ export function apiKeyAuth(): MiddlewareHandler<AppEnv> {
     }
 
     if (auth.via === "api_key") {
-      c.req.raw.headers.set(
-        "authorization",
-        `Bearer ${await signHs256Token(auth.claims, c.env.SIGNING_KEY)}`,
-      );
+      c.set("apiKeyClaims", auth.claims);
+      c.set("apiKeyVia", "api_key");
     }
 
     await next();
   };
-}
-
-async function signHs256Token(claims: RelayAuthTokenClaims, signingKey: string): Promise<string> {
-  const header = { alg: "HS256", typ: "JWT" };
-  const encodedHeader = encodeBase64Url(JSON.stringify(header));
-  const encodedPayload = encodeBase64Url(JSON.stringify(claims));
-  const unsigned = `${encodedHeader}.${encodedPayload}`;
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(signingKey),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(unsigned),
-  );
-
-  return `${unsigned}.${encodeBase64Url(new Uint8Array(signature))}`;
-}
-
-function encodeBase64Url(value: string | Uint8Array): string {
-  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  return btoa(binary)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
 }
