@@ -37,6 +37,7 @@ type CachedJwks = {
 type VerifierJwk = JsonWebKey & {
   alg?: string;
   crv?: string;
+  k?: string;
   kid?: string;
   use?: string;
 };
@@ -176,8 +177,10 @@ export class TokenVerifier {
         return false;
       }
 
+      const verifyAlgorithm: AlgorithmIdentifier = header.alg === "HS256" ? "HMAC" : algorithm;
+
       return await crypto.subtle.verify(
-        algorithm,
+        verifyAlgorithm,
         key,
         decodeBase64UrlToArrayBuffer(parts[2]),
         new TextEncoder().encode(`${parts[0]}.${parts[1]}`),
@@ -281,13 +284,13 @@ function invalidTokenError(): RelayAuthError {
   return new RelayAuthError("Invalid access token", "invalid_token", 401);
 }
 
-function isSupportedAlgorithm(alg: string | undefined): alg is "RS256" | "EdDSA" {
-  return alg === "RS256" || alg === "EdDSA";
+function isSupportedAlgorithm(alg: string | undefined): alg is "RS256" | "EdDSA" | "HS256" {
+  return alg === "RS256" || alg === "EdDSA" || (alg === "HS256" && isHs256VerificationAccepted());
 }
 
 function resolveVerificationAlgorithm(
   alg: string | undefined,
-): AlgorithmIdentifier | RsaHashedImportParams | null {
+): AlgorithmIdentifier | RsaHashedImportParams | HmacImportParams | null {
   switch (alg) {
     case "RS256":
       return {
@@ -298,6 +301,13 @@ function resolveVerificationAlgorithm(
       return {
         name: "Ed25519",
       };
+    case "HS256":
+      return isHs256VerificationAccepted()
+        ? {
+            name: "HMAC",
+            hash: "SHA-256",
+          }
+        : null;
     default:
       return null;
   }
@@ -313,6 +323,21 @@ async function importVerificationKey(
   }
 
   try {
+    if (alg === "HS256") {
+      const symmetricJwk = jwk as VerifierJwk;
+      if (typeof symmetricJwk.k !== "string" || symmetricJwk.k.length === 0) {
+        throw invalidTokenError();
+      }
+
+      return await crypto.subtle.importKey(
+        "raw",
+        decodeBase64UrlToArrayBuffer(symmetricJwk.k),
+        algorithm,
+        false,
+        ["verify"],
+      );
+    }
+
     return await crypto.subtle.importKey("jwk", jwk, algorithm, false, ["verify"]);
   } catch {
     throw invalidTokenError();
@@ -340,7 +365,7 @@ function matchesJwk(key: JsonWebKey, kid: string | undefined, alg: string | unde
     return false;
   }
 
-  if (alg && candidate.alg && candidate.alg !== alg) {
+  if (alg && candidate.alg !== alg) {
     return false;
   }
 
@@ -356,7 +381,16 @@ function matchesJwk(key: JsonWebKey, kid: string | undefined, alg: string | unde
     return candidate.kty === "OKP" && candidate.crv === "Ed25519";
   }
 
+  if (alg === "HS256") {
+    return candidate.kty === "oct";
+  }
+
   return false;
+}
+
+function isHs256VerificationAccepted(): boolean {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+  return env?.RELAYAUTH_VERIFIER_ACCEPT_HS256 !== "false";
 }
 
 function isRelayAuthTokenClaims(value: unknown): value is RelayAuthTokenClaims {

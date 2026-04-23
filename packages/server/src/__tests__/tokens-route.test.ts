@@ -259,21 +259,35 @@ async function assertPhase0LegacyHs256Algorithm(token: string, audience: string[
     kid: "dev-key",
   });
 
-  const verifier = new TokenVerifier({
-    jwksUrl: "https://relayauth.test/.well-known/jwks.json",
-    issuer: "https://relayauth.dev",
-    audience,
-  });
+  // Phase 121 added dual-verify to @relayauth/sdk: HS256 is accepted by default
+  // during the migration window. This assertion is checking the *post-sunset*
+  // posture — that a verifier with HS256 acceptance disabled rejects these
+  // legacy tokens. That matches what phase 122 flips in production.
+  const previousFlag = process.env.RELAYAUTH_VERIFIER_ACCEPT_HS256;
+  process.env.RELAYAUTH_VERIFIER_ACCEPT_HS256 = "false";
+  try {
+    const verifier = new TokenVerifier({
+      jwksUrl: "https://relayauth.test/.well-known/jwks.json",
+      issuer: "https://relayauth.dev",
+      audience,
+    });
 
-  await assert.rejects(
-    () => verifier.verify(token),
-    (error: unknown) => {
-      assert.ok(error instanceof RelayAuthError);
-      assert.equal(error.code, "invalid_token");
-      return true;
-    },
-    "spec-compliant verifiers should reject legacy HS256 tokens until RS256 lands",
-  );
+    await assert.rejects(
+      () => verifier.verify(token),
+      (error: unknown) => {
+        assert.ok(error instanceof RelayAuthError);
+        assert.equal(error.code, "invalid_token");
+        return true;
+      },
+      "spec-compliant verifiers (HS256 acceptance disabled) should reject legacy HS256 tokens",
+    );
+  } finally {
+    if (previousFlag === undefined) {
+      delete process.env.RELAYAUTH_VERIFIER_ACCEPT_HS256;
+    } else {
+      process.env.RELAYAUTH_VERIFIER_ACCEPT_HS256 = previousFlag;
+    }
+  }
 }
 
 async function createHarness({
