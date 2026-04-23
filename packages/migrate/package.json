@@ -13,6 +13,10 @@
       "types": "./dist/runners/node-sqlite.d.ts",
       "import": "./dist/runners/node-sqlite.js"
     },
+    "./d1": {
+      "types": "./dist/runners/d1.d.ts",
+      "import": "./dist/runners/d1.js"
+    },
     "./fs": {
       "types": "./dist/sources/fs.d.ts",
       "import": "./dist/sources/fs.js"
