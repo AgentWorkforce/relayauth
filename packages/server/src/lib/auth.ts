@@ -1,9 +1,11 @@
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 import { parseScope } from "@relayauth/sdk";
+import type { Context } from "hono";
 
 import { hashApiKey } from "./api-keys.js";
 import { decodeBase64UrlJson, verifyHs256Signature } from "./jwt.js";
 import { emitObserverEvent, now as observerNow } from "./events.js";
+import type { AppEnv } from "../env.js";
 import type { AuthStorage, ApiKeyStorage } from "../storage/index.js";
 import type { StoredApiKey } from "../storage/api-key-types.js";
 
@@ -139,6 +141,50 @@ export async function authenticateAndAuthorize(
   | { ok: false; error: string; code: string; status: 401 | 403 }
 > {
   const auth = await authenticate(authorization, signingKey);
+  if (!auth.ok) {
+    return auth;
+  }
+
+  return authorizeClaims(auth.claims, requiredScope, matchScopeFn);
+}
+
+/**
+ * Context-aware variant of `authenticate`. Resolves claims from either
+ * `c.get("apiKeyClaims")` (populated by the `apiKeyAuth()` middleware when
+ * an x-api-key successfully authenticated) OR by parsing and verifying the
+ * Authorization bearer token.
+ *
+ * Callers inside route handlers should prefer this over `authenticate(...)`
+ * because it transparently accepts both credentials without requiring the
+ * middleware to rewrite the Authorization header (which is impossible in
+ * Cloudflare Workers — Request.headers is immutable).
+ */
+export async function authenticateFromContext(
+  c: Context<AppEnv>,
+  signingKey: string,
+): Promise<AuthenticateSuccess | AuthenticateFailure> {
+  const apiKeyClaims = c.get("apiKeyClaims");
+  if (apiKeyClaims) {
+    return { ok: true, claims: apiKeyClaims, via: "api_key" };
+  }
+
+  return authenticate(c.req.header("authorization"), signingKey);
+}
+
+/**
+ * Context-aware variant of `authenticateAndAuthorize`. See
+ * `authenticateFromContext` for rationale.
+ */
+export async function authenticateAndAuthorizeFromContext(
+  c: Context<AppEnv>,
+  signingKey: string,
+  requiredScope: string,
+  matchScopeFn: (required: string, granted: string[]) => boolean,
+): Promise<
+  | { ok: true; claims: RelayAuthTokenClaims }
+  | { ok: false; error: string; code: string; status: 401 | 403 }
+> {
+  const auth = await authenticateFromContext(c, signingKey);
   if (!auth.ok) {
     return auth;
   }

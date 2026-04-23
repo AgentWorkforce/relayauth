@@ -8,7 +8,7 @@ import type {
 import { matchScope } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
-import { authenticateAndAuthorize, authenticateBearerOrApiKey, authorizeClaims, decodeBase64UrlJson } from "../lib/auth.js";
+import { authenticateAndAuthorizeFromContext, authenticateBearerOrApiKey, authorizeClaims, decodeBase64UrlJson } from "../lib/auth.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 import type { IdentityBudget, StoredIdentity } from "../storage/identity-types.js";
 import { isStorageError, type AuthStorage } from "../storage/index.js";
@@ -126,8 +126,8 @@ const INSERT_AUDIT_EVENT_SQL = `
 `;
 
 identities.get("/", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     c.env.SIGNING_KEY,
     "relayauth:identity:read:*",
     matchScope,
@@ -161,8 +161,8 @@ identities.get("/", async (c) => {
 });
 
 identities.get("/:id", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     c.env.SIGNING_KEY,
     "relayauth:identity:read:*",
     matchScope,
@@ -477,6 +477,14 @@ async function authenticateBearerOrApiKeyAndAuthorize(
   | { ok: true; claims: RelayAuthTokenClaims }
   | { ok: false; error: string; code: string; status: 401 | 403 }
 > {
+  // If `apiKeyAuth()` middleware already authenticated an x-api-key, it
+  // stashed the claims on the context — prefer those to avoid re-running the
+  // api-key hash/lookup. See ../middleware/api-key-auth.ts.
+  const apiKeyClaims = c.get("apiKeyClaims");
+  if (apiKeyClaims) {
+    return authorizeClaims(apiKeyClaims, requiredScope, matchScope);
+  }
+
   const auth = await authenticateBearerOrApiKey(
     c.req.raw,
     c.env.SIGNING_KEY,

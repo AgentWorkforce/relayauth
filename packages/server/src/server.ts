@@ -114,10 +114,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   });
 
   // Mount apiKeyAuth() on every path that accepts x-api-key. It must run BEFORE the
-  // global gate below so that, when an x-api-key is present, the middleware can rewrite
-  // the Authorization header into a short-lived HS256 bearer before the gate inspects it.
-  // Wildcard mounts are required so sub-paths (e.g. /v1/identities/:id) also run through
-  // the middleware — see P0-1 in PR #20.
+  // global gate below so that, when an x-api-key is present, the middleware can
+  // authenticate it and stash the resulting claims on Hono's context
+  // (`c.set("apiKeyClaims", ...)` / `c.set("apiKeyVia", "api_key")`). The gate
+  // below consults that context when deciding whether to admit the request.
+  //
+  // The old implementation rewrote `c.req.raw.headers.set("authorization", ...)`
+  // to synthesize a Bearer for the gate to see, but Cloudflare Workers'
+  // Request.headers is immutable — that mutation threw
+  // `TypeError: Can't modify immutable headers` and 500'd every x-api-key
+  // request in production. Context-based signaling avoids that.
+  //
+  // Wildcard mounts are required so sub-paths (e.g. /v1/identities/:id) also run
+  // through the middleware — see P0-1 in PR #20.
   app.use("/v1/identities", apiKeyAuth());
   app.use("/v1/identities/*", apiKeyAuth());
   app.use("/v1/tokens", apiKeyAuth());
@@ -128,13 +137,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
       return next();
     }
 
-    // x-api-key is accepted only via apiKeyAuth() middleware, which is mounted on
-    // every path that supports it (see mounts above) and rewrites Authorization
-    // into a synthesized Bearer on success. The gate therefore only needs to
-    // check Authorization — reaching here without one means neither credential
-    // was presented, or the request hit a path that doesn't accept x-api-key.
-    // DO NOT admit raw x-api-key here: a new route added without mounting
-    // apiKeyAuth() would silently accept unvalidated keys.
+    // If apiKeyAuth() upstream authenticated an x-api-key, let the request
+    // through — the downstream route handler will read the claims via
+    // `c.get("apiKeyClaims")`. DO NOT fall back to raw `c.req.header("x-api-key")`
+    // here: a new route added without mounting apiKeyAuth() would silently
+    // accept unvalidated keys.
+    if (c.get("apiKeyVia") === "api_key") {
+      return next();
+    }
+
     const authorization = c.req.header("Authorization");
     if (!authorization) {
       return c.json({ error: "Missing Authorization header", code: "missing_authorization" }, 401);

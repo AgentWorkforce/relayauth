@@ -1,3 +1,4 @@
+import type { RelayAuthTokenClaims } from "@relayauth/types";
 import type { AuthStorage } from "./storage/index.js";
 
 export type AppConfig = {
@@ -17,5 +18,13 @@ export type AppEnv = {
   Variables: {
     requestId: string;
     storage: AuthStorage;
+    // Populated by apiKeyAuth() middleware when an x-api-key successfully
+    // authenticates. Downstream auth helpers read this BEFORE falling back
+    // to parsing the Authorization header. We use context instead of
+    // rewriting `c.req.raw.headers.set("authorization", ...)` because
+    // Cloudflare Workers' Request.headers are immutable and throw
+    // "Can't modify immutable headers" on mutation.
+    apiKeyClaims?: RelayAuthTokenClaims;
+    apiKeyVia?: "api_key";
   };
 };
