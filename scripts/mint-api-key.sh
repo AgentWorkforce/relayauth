@@ -21,9 +21,16 @@
 # Usage:
 #   ./scripts/mint-api-key.sh \
 #     --name sage-relayfile-minter \
-#     --scopes-json '["relayauth:identity:create:*","relayauth:token:create:*","relayfile:fs:read:*","relayfile:fs:write:*"]' \
+#     --scopes-json '["relayauth:identity:manage:*","relayauth:token:create:*","relayfile:fs:read:*","relayfile:fs:write:*"]' \
 #     --to-gh-secret AgentWorkforce/cloud:SAGE_RELAYAUTH_API_KEY \
 #     --revoke-prior ak_3a7317be58de40f39ef18028393fd0f9
+#
+# Scope-picking note
+#   Scope actions are NOT commutative. The matcher treats `manage` as
+#   implying `create/read/write/delete`, but not the reverse — an
+#   api-key with `identity:create:*` cannot call a route that requires
+#   `identity:manage:*`. Always check the required-scope string at the
+#   route you need to call (see docs/operations/api-key-minting.md).
 #
 #   Common flags:
 #     --name <string>             Required. api-key name (operator-readable).

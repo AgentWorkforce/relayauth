@@ -20,7 +20,7 @@ which is the wrong scope set entirely).
 ./scripts/mint-api-key.sh \
   --name sage-relayfile-minter \
   --scopes-json '[
-    "relayauth:identity:create:*",
+    "relayauth:identity:manage:*",
     "relayauth:token:create:*",
     "relayfile:fs:read:*",
     "relayfile:fs:write:*"
@@ -58,12 +58,22 @@ So sage's api-key needs:
 
 ```json
 [
-  "relayauth:identity:create:*",
+  "relayauth:identity:manage:*",
   "relayauth:token:create:*",
   "relayfile:fs:read:*",
   "relayfile:fs:write:*"
 ]
 ```
+
+Note: `POST /v1/identities` requires `relayauth:identity:manage:*`, not
+`create:*`. The scope matcher treats `manage` as implying
+`create/read/write/delete` (one-way). An api-key with only `create:*`
+gets 403 insufficient_scope on the route that demands `manage:*`. The
+same check-the-route pattern applies to every other scope string you're
+tempted to pick: grep `authenticateAndAuthorizeFromContext` /
+`authenticateBearerOrApiKeyAndAuthorize` in the route handler you
+intend to call, and match that exact scope string (or a broader
+superset).
 
 The relayfile scopes are required because the new identity sage creates
 inherits its own scopes from its sponsor's scope set (the api-key's
