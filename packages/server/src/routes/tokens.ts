@@ -3,7 +3,7 @@ import { matchScope } from "@relayauth/sdk";
 import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
-import { authenticateAndAuthorize } from "../lib/auth.js";
+import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
 import { decodeBase64UrlJson, verifyHs256Signature } from "../lib/jwt.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { AuthStorage, RevocationStorage } from "../storage/index.js";
@@ -103,8 +103,8 @@ const INSERT_TOKEN_SQL = `
 `;
 
 tokens.post("/", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     c.env.SIGNING_KEY,
     "relayauth:token:create:*",
     matchScope,
@@ -234,8 +234,8 @@ tokens.post("/refresh", async (c) => {
 });
 
 tokens.post("/revoke", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     c.env.SIGNING_KEY,
     "relayauth:token:manage:*",
     matchScope,
@@ -290,8 +290,8 @@ tokens.post("/revoke", async (c) => {
 });
 
 tokens.get("/introspect", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     c.env.SIGNING_KEY,
     "relayauth:token:read:*",
     matchScope,

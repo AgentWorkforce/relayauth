@@ -25,7 +25,7 @@ const roleAssignments = new Hono<AppEnv>();
 
 roleAssignments.post("/:id/roles", async (c) => {
   const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
+    c,
     c.env.SIGNING_KEY,
     ["relayauth:identity:manage:*", "relayauth:role:manage:*"],
   );
@@ -81,7 +81,7 @@ roleAssignments.post("/:id/roles", async (c) => {
 
 roleAssignments.delete("/:id/roles/:roleId", async (c) => {
   const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
+    c,
     c.env.SIGNING_KEY,
     ["relayauth:identity:manage:*", "relayauth:role:manage:*"],
   );
@@ -133,7 +133,7 @@ roleAssignments.delete("/:id/roles/:roleId", async (c) => {
 
 roleAssignments.get("/:id/roles", async (c) => {
   const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
+    c,
     c.env.SIGNING_KEY,
     ["relayauth:identity:read:*", "relayauth:role:read:*"],
   );
@@ -163,14 +163,14 @@ roleAssignments.get("/:id/roles", async (c) => {
 export default roleAssignments;
 
 async function authenticateAndAuthorize(
-  authorization: string | undefined,
+  c: Context<AppEnv>,
   signingKey: string,
   requiredScopes: string[],
 ): Promise<
   | { ok: true; claims: RelayAuthTokenClaims }
   | { ok: false; error: string; status: 401 | 403 }
 > {
-  const auth = await authenticate(authorization, signingKey);
+  const auth = await authenticate(c, signingKey);
   if (!auth.ok) {
     return auth;
   }
@@ -186,12 +186,21 @@ async function authenticateAndAuthorize(
 }
 
 async function authenticate(
-  authorization: string | undefined,
+  c: Context<AppEnv>,
   signingKey: string,
 ): Promise<
   | { ok: true; claims: RelayAuthTokenClaims }
   | { ok: false; error: string; status: 401 }
 > {
+  // Prefer claims injected by `apiKeyAuth()` middleware on successful x-api-key
+  // authentication. See ../middleware/api-key-auth.ts for why we use the
+  // context instead of rewriting the Authorization header.
+  const apiKeyClaims = c.get("apiKeyClaims");
+  if (apiKeyClaims) {
+    return { ok: true, claims: apiKeyClaims };
+  }
+
+  const authorization = c.req.header("authorization");
   if (!authorization) {
     emitTokenInvalid("missing_authorization");
     return { ok: false, error: "Missing Authorization header", status: 401 };
