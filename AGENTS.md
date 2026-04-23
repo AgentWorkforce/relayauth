@@ -167,3 +167,33 @@ Your trajectory helps others understand:
 
 Future agents can query past trajectories to learn from your decisions.
 <!-- prpm:snippet:end @agent-workforce/trail-snippet@1.1.2 -->
+
+# Repository Rules
+
+## No Cloudflare dependencies in `@relayauth/*`
+
+`@relayauth/*` is published OSS and must stay platform-agnostic. The server
+runtime is pure Node.js + better-sqlite3, and the SDK/types packages are
+runtime-neutral. Cloudflare-specific code was intentionally removed from this
+repo in commit `7bfd40c` (refactor: remove Cloudflare deps from OSS) and must
+not be reintroduced.
+
+Rules for agents touching this repo:
+
+- Do not import `cloudflare:workers`, `@cloudflare/workers-types`, D1, KV,
+  Durable Object, or R2 types/APIs anywhere under `packages/`.
+- Do not add `DurableObject`-extending classes, `D1Database` references, or
+  KV/DO bindings to `AppEnv`/`AppConfig` or any published type.
+- `packages/server/src/storage/` holds the pure interface contracts
+  (`interface.ts`) and the Node/SQLite implementation (`sqlite.ts`). Adapters
+  for Cloudflare primitives live in the **cloud** repo
+  (`AgentWorkforce/cloud`, under `packages/relayauth/`), not here.
+- If a consumer needs a Cloudflare-shaped adapter, extend the `@relayauth/*`
+  interface here (typed in terms of plain Node APIs), publish, and implement
+  the adapter in the cloud repo.
+- Leftover `dist/durable-objects/` artifacts from before the OSS refactor
+  should be scrubbed in any working tree — they are gitignored but can
+  confuse local test runs and publishing if stale.
+
+See also: `AgentWorkforce/cloud` → `AGENTS.md` "RelayAuth ↔ Cloud Separation"
+for the mirror rule on the cloud side.
