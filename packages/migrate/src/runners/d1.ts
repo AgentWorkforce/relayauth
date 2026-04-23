@@ -84,23 +84,101 @@ export function createD1Runner(db: D1DatabaseLike): MigrationRunner {
 }
 
 /**
- * Strip `--`-prefixed line comments and split the remaining SQL on `;`,
- * returning one trimmed statement per element with empty entries dropped.
+ * Split a SQL migration into individual statements.
+ *
+ * Walks the input character-by-character tracking whether the cursor is
+ * inside a single-quoted string (`'...'` with `''` as the SQL standard
+ * escape), a double-quoted identifier (`"..."` with `""` as escape), or an
+ * ordinary region. Outside strings, `--` begins a line comment that runs
+ * to the next newline, and `;` terminates a statement. Inside a string or
+ * identifier those characters are literal.
+ *
+ * Not supported (migrations that need these should fail loudly during
+ * review rather than silently corrupt at runtime):
+ *   - `/* ... *` `/` block comments — not used by relayauth migrations today.
+ *   - Backslash escapes inside strings — SQLite doesn't honor them.
  *
  * Exported for the test suite — consumers should call {@link createD1Runner}
  * rather than invoking the splitter directly.
  */
 export function splitSqlStatements(sql: string): string[] {
-  const stripped = sql
-    .split("\n")
-    .map((line) => {
-      const idx = line.indexOf("--");
-      return idx >= 0 ? line.slice(0, idx) : line;
-    })
-    .join("\n");
+  const statements: string[] = [];
+  let current = "";
+  let mode: "normal" | "single" | "double" | "line-comment" = "normal";
 
-  return stripped
-    .split(";")
-    .map((chunk) => chunk.trim())
-    .filter((chunk) => chunk.length > 0);
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+
+    if (mode === "line-comment") {
+      if (ch === "\n") {
+        mode = "normal";
+        current += ch;
+      }
+      continue;
+    }
+
+    if (mode === "single") {
+      current += ch;
+      if (ch === "'") {
+        if (next === "'") {
+          // Escaped quote — consume both and stay inside the string.
+          current += next;
+          i++;
+        } else {
+          mode = "normal";
+        }
+      }
+      continue;
+    }
+
+    if (mode === "double") {
+      current += ch;
+      if (ch === '"') {
+        if (next === '"') {
+          current += next;
+          i++;
+        } else {
+          mode = "normal";
+        }
+      }
+      continue;
+    }
+
+    if (ch === "-" && next === "-") {
+      mode = "line-comment";
+      i++;
+      continue;
+    }
+
+    if (ch === "'") {
+      mode = "single";
+      current += ch;
+      continue;
+    }
+
+    if (ch === '"') {
+      mode = "double";
+      current += ch;
+      continue;
+    }
+
+    if (ch === ";") {
+      const trimmed = current.trim();
+      if (trimmed.length > 0) {
+        statements.push(trimmed);
+      }
+      current = "";
+      continue;
+    }
+
+    current += ch;
+  }
+
+  const tail = current.trim();
+  if (tail.length > 0) {
+    statements.push(tail);
+  }
+
+  return statements;
 }

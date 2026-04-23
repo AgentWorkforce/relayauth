@@ -197,6 +197,39 @@ test("splitSqlStatements strips -- comments and splits on unquoted semicolons", 
   ]);
 });
 
+test("splitSqlStatements preserves -- inside single-quoted strings", () => {
+  const sql = "INSERT INTO t (val) VALUES ('foo--bar'); INSERT INTO t (val) VALUES ('baz');";
+  assert.deepEqual(splitSqlStatements(sql), [
+    "INSERT INTO t (val) VALUES ('foo--bar')",
+    "INSERT INTO t (val) VALUES ('baz')",
+  ]);
+});
+
+test("splitSqlStatements preserves semicolons inside single-quoted strings", () => {
+  const sql = "INSERT INTO t (val) VALUES ('hello; world'); INSERT INTO t (val) VALUES ('x');";
+  assert.deepEqual(splitSqlStatements(sql), [
+    "INSERT INTO t (val) VALUES ('hello; world')",
+    "INSERT INTO t (val) VALUES ('x')",
+  ]);
+});
+
+test("splitSqlStatements handles '' escape inside single-quoted strings", () => {
+  // 'it''s fine' is the SQL standard for a string containing a literal quote.
+  const sql = "INSERT INTO t (val) VALUES ('it''s; fine'); INSERT INTO t (val) VALUES ('y');";
+  assert.deepEqual(splitSqlStatements(sql), [
+    "INSERT INTO t (val) VALUES ('it''s; fine')",
+    "INSERT INTO t (val) VALUES ('y')",
+  ]);
+});
+
+test("splitSqlStatements preserves semicolons and -- inside double-quoted identifiers", () => {
+  const sql = 'CREATE TABLE "weird;name--here" (id TEXT); CREATE INDEX idx ON "weird;name--here" (id);';
+  assert.deepEqual(splitSqlStatements(sql), [
+    'CREATE TABLE "weird;name--here" (id TEXT)',
+    'CREATE INDEX idx ON "weird;name--here" (id)',
+  ]);
+});
+
 test("recordApplied is idempotent on duplicate ids", async () => {
   const db = new DatabaseSync(":memory:");
   try {
