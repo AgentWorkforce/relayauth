@@ -98,6 +98,55 @@ test("JWKS returns both the legacy HS256 metadata and the RSA public JWK during 
   assert.equal("d" in (rsaKey ?? {}), false, "the RSA JWK must not contain private key material");
 });
 
+test("JWKS suppresses the HS256 metadata once SIGNING_KEY is unbound (post-sunset)", async () => {
+  const storage = createTestStorage();
+  const app = createApp({ storage });
+  try {
+    // Mirror a deployment that has retired HS256 by removing the SIGNING_KEY
+    // worker binding while keeping SIGNING_KEY_ID for legacy kid accounting.
+    const response = await app.request(
+      createTestRequest("GET", "/.well-known/jwks.json"),
+      undefined,
+      {
+        SIGNING_KEY_ID: "legacy-production",
+        INTERNAL_SECRET: "internal-test-secret",
+        RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: createPublicKeyPem(),
+      } as AppEnv["Bindings"],
+    );
+    const body = await assertJsonResponse<{ keys: JsonWebKey[] }>(response, 200);
+
+    assert.equal(body.keys.length, 1, "expected only the RSA key once HS256 is unbound");
+    assert.equal(body.keys[0]?.kty, "RSA");
+    assert.equal(body.keys[0]?.alg, "RS256");
+    assert.equal(
+      body.keys.some((key) => key.alg === "HS256"),
+      false,
+      "JWKS must not advertise HS256 when no HS256 secret is configured",
+    );
+  } finally {
+    await storage.close();
+  }
+});
+
+test("JWKS returns an empty key set when neither HS256 nor RS256 material is configured", async () => {
+  const storage = createTestStorage();
+  const app = createApp({ storage });
+  try {
+    const response = await app.request(
+      createTestRequest("GET", "/.well-known/jwks.json"),
+      undefined,
+      {
+        SIGNING_KEY_ID: "legacy-production",
+        INTERNAL_SECRET: "internal-test-secret",
+      } as AppEnv["Bindings"],
+    );
+    const body = await assertJsonResponse<{ keys: JsonWebKey[] }>(response, 200);
+    assert.deepEqual(body.keys, []);
+  } finally {
+    await storage.close();
+  }
+});
+
 test("JWKS RSA `kid` is the RFC 7638 JWK thumbprint (deterministic, no YYYY-MM component)", async () => {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
