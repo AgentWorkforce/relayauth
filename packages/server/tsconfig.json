@@ -15,6 +15,7 @@
     "src/__tests__/**"
   ],
   "references": [
+    { "path": "../migrate" },
     { "path": "../types" },
     { "path": "../sdk/typescript" }
   ]

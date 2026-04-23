@@ -1,4 +1,11 @@
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { dirname as pathDirname, resolve as pathResolve } from "node:path";
+import {
+  createFsMigrationSource,
+  createNodeSqliteRunner,
+  runMigrations,
+} from "@relayauth/migrate";
 import type {
   AgentIdentity,
   AuditAction,
@@ -84,179 +91,32 @@ export type SqliteStorage = AuthStorage & {
   close(): Promise<void> | void;
 };
 
-const SCHEMA_SQL = `
-  CREATE TABLE IF NOT EXISTS identities (
-    id TEXT PRIMARY KEY,
-    data TEXT NOT NULL,
-    name TEXT NOT NULL,
-    type TEXT NOT NULL DEFAULT 'agent',
-    org_id TEXT NOT NULL,
-    workspace_id TEXT NOT NULL,
-    sponsor_id TEXT NOT NULL,
-    sponsor_chain_json TEXT NOT NULL DEFAULT '[]',
-    scopes_json TEXT NOT NULL DEFAULT '[]',
-    roles_json TEXT NOT NULL DEFAULT '[]',
-    budget_json TEXT,
-    budget_usage_json TEXT,
-    status TEXT NOT NULL DEFAULT 'active',
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    last_active_at TEXT,
-    suspended_at TEXT,
-    suspend_reason TEXT
-  );
+// Schema lives in packages/server/src/db/migrations/*.sql and is applied via
+// `@relayauth/migrate`.
+//
+// `import.meta.url` under tsx/tsc points at src/storage/sqlite.ts; resolving
+// `../db/migrations` off that lands at packages/server/src/db/migrations at
+// runtime, and at dist/db/migrations post-build (since we copy migrations into
+// dist via the build step — see packages/server/package.json).
+const MIGRATIONS_DIR = pathResolve(
+  pathDirname(fileURLToPath(import.meta.url)),
+  "..",
+  "db",
+  "migrations",
+);
 
-  CREATE INDEX IF NOT EXISTS idx_identities_org_created
-    ON identities (org_id, created_at DESC, id DESC);
-  CREATE INDEX IF NOT EXISTS idx_identities_org_sponsor
-    ON identities (org_id, sponsor_id);
-  CREATE INDEX IF NOT EXISTS idx_identities_org_name
-    ON identities (org_id, name);
-
-  CREATE TABLE IF NOT EXISTS roles (
-    id TEXT PRIMARY KEY,
-    data TEXT NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT NOT NULL,
-    scopes_json TEXT NOT NULL DEFAULT '[]',
-    org_id TEXT NOT NULL,
-    workspace_id TEXT,
-    built_in INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_roles_org_name
-    ON roles (org_id, name, workspace_id);
-
-  CREATE TABLE IF NOT EXISTS policies (
-    id TEXT PRIMARY KEY,
-    data TEXT NOT NULL,
-    name TEXT NOT NULL,
-    effect TEXT NOT NULL,
-    scopes_json TEXT NOT NULL DEFAULT '[]',
-    conditions_json TEXT NOT NULL DEFAULT '[]',
-    priority INTEGER NOT NULL DEFAULT 0,
-    org_id TEXT NOT NULL,
-    workspace_id TEXT,
-    created_at TEXT NOT NULL,
-    deleted_at TEXT
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_policies_org_workspace_priority
-    ON policies (org_id, workspace_id, priority DESC, id ASC);
-
-  CREATE TABLE IF NOT EXISTS audit_logs (
-    id TEXT PRIMARY KEY,
-    action TEXT NOT NULL,
-    identity_id TEXT,
-    org_id TEXT NOT NULL,
-    workspace_id TEXT,
-    plane TEXT,
-    resource TEXT,
-    result TEXT NOT NULL,
-    metadata_json TEXT,
-    ip TEXT,
-    user_agent TEXT,
-    timestamp TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_audit_logs_org_timestamp
-    ON audit_logs (org_id, timestamp DESC, id DESC);
-  CREATE INDEX IF NOT EXISTS idx_audit_logs_identity_timestamp
-    ON audit_logs (identity_id, timestamp DESC);
-
-  CREATE TABLE IF NOT EXISTS audit_events (
-    id TEXT PRIMARY KEY,
-    org_id TEXT NOT NULL,
-    workspace_id TEXT,
-    identity_id TEXT,
-    action TEXT NOT NULL,
-    reason TEXT,
-    payload TEXT,
-    created_at TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_audit_events_org_created
-    ON audit_events (org_id, created_at DESC, id DESC);
-
-  CREATE TABLE IF NOT EXISTS tokens (
-    id TEXT PRIMARY KEY,
-    token_id TEXT,
-    jti TEXT,
-    identity_id TEXT NOT NULL,
-    session_id TEXT,
-    issued_at INTEGER,
-    expires_at INTEGER,
-    status TEXT NOT NULL DEFAULT 'active',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_tokens_identity_status
-    ON tokens (identity_id, status);
-
-  CREATE TABLE IF NOT EXISTS org_budgets (
-    org_id TEXT PRIMARY KEY,
-    budget TEXT,
-    budget_json TEXT,
-    default_budget TEXT,
-    settings_json TEXT,
-    data TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS organizations (
-    id TEXT PRIMARY KEY,
-    org_id TEXT,
-    scopes_json TEXT NOT NULL DEFAULT '[]',
-    roles_json TEXT NOT NULL DEFAULT '[]'
-  );
-
-  CREATE TABLE IF NOT EXISTS workspaces (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT,
-    org_id TEXT NOT NULL,
-    scopes_json TEXT NOT NULL DEFAULT '[]',
-    roles_json TEXT NOT NULL DEFAULT '[]'
-  );
-
-  CREATE TABLE IF NOT EXISTS audit_webhooks (
-    id TEXT PRIMARY KEY,
-    org_id TEXT NOT NULL,
-    url TEXT NOT NULL,
-    secret TEXT NOT NULL,
-    events_json TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_audit_webhooks_org_created
-    ON audit_webhooks (org_id, created_at DESC, id DESC);
-
-  CREATE TABLE IF NOT EXISTS audit_retention_config (
-    org_id TEXT PRIMARY KEY,
-    retention_days INTEGER NOT NULL DEFAULT 90
-  );
-
-  CREATE TABLE IF NOT EXISTS api_keys (
-    id TEXT PRIMARY KEY,
-    org_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    prefix TEXT NOT NULL,
-    key_hash TEXT NOT NULL UNIQUE,
-    scopes_json TEXT NOT NULL DEFAULT '[]',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    last_used_at TEXT,
-    revoked_at TEXT
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_api_keys_org_created
-    ON api_keys (org_id, created_at DESC, id DESC);
-
-  CREATE INDEX IF NOT EXISTS idx_api_keys_prefix
-    ON api_keys (prefix);
-`;
+async function runBootstrapMigrations(db: {
+  exec(sql: string): unknown;
+  prepare<Row extends Record<string, unknown> = Record<string, unknown>>(sql: string): {
+    run(...params: unknown[]): unknown;
+    get(...params: unknown[]): Row | undefined;
+    all(...params: unknown[]): Row[];
+  };
+}): Promise<void> {
+  const runner = createNodeSqliteRunner(db);
+  const source = createFsMigrationSource(MIGRATIONS_DIR);
+  await runMigrations(runner, source);
+}
 
 const INSERT_IDENTITY_SQL = `
   INSERT INTO identities (
@@ -544,18 +404,6 @@ const LIST_ACTIVE_TOKENS_SQL = `
   SELECT id, jti, token_id
   FROM tokens
   WHERE identity_id = ? AND status = 'active'
-`;
-
-const CREATE_REVOKED_TOKENS_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS revoked_tokens (
-    jti TEXT PRIMARY KEY,
-    expires_at INTEGER NOT NULL
-  )
-`;
-
-const CREATE_REVOKED_TOKENS_EXPIRES_INDEX_SQL = `
-  CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires_at
-    ON revoked_tokens (expires_at)
 `;
 
 const UPSERT_REVOKED_TOKEN_SQL = `
@@ -1017,7 +865,7 @@ class BackendProvider {
         const db = new Database(this.dbPath);
         db.pragma("journal_mode = WAL");
         db.pragma("foreign_keys = ON");
-        db.exec(SCHEMA_SQL);
+        await runBootstrapMigrations(db);
         ensureTokensSchema(db);
         ensureRevokedTokensSchema(db);
         return { kind: "sqlite", db };
@@ -2181,6 +2029,17 @@ async function getRevocationRecord(
   return { expiresAt };
 }
 
+/**
+ * Runtime safety check for the `revoked_tokens` schema shape.
+ *
+ * The canonical DDL now lives in
+ * `packages/server/src/db/migrations/0001_local_bootstrap.sql` and is applied
+ * via `@relayauth/migrate` before this helper runs. This function guards
+ * against an extremely old on-disk database that shipped with an alternative
+ * `revoked_tokens` schema (e.g. a `token_id` column instead of `jti`), which
+ * `CREATE TABLE IF NOT EXISTS` would silently pass through. In that case we
+ * throw a clear error rather than silently reading/writing the wrong columns.
+ */
 function ensureRevokedTokensSchema(db: SqliteDatabase): void {
   const revokedTokensTable = db.prepare<TableInfoRow>(`
     SELECT name
@@ -2189,10 +2048,12 @@ function ensureRevokedTokensSchema(db: SqliteDatabase): void {
     LIMIT 1
   `).get();
 
+  // Post-migration, the table must exist. If it doesn't, the migration run
+  // silently failed upstream; surface that rather than masking it.
   if (!normalizeOptionalString(revokedTokensTable?.name)) {
-    db.exec(CREATE_REVOKED_TOKENS_TABLE_SQL);
-    db.exec(CREATE_REVOKED_TOKENS_EXPIRES_INDEX_SQL);
-    return;
+    throw new Error(
+      "revoked_tokens table missing after bootstrap migration — did @relayauth/migrate fail to apply 0001_local_bootstrap?",
+    );
   }
 
   const columns = new Set(
@@ -2203,28 +2064,14 @@ function ensureRevokedTokensSchema(db: SqliteDatabase): void {
   );
 
   if (columns.has("jti") && columns.has("expires_at")) {
-    db.exec(CREATE_REVOKED_TOKENS_EXPIRES_INDEX_SQL);
     return;
   }
 
-  db.exec("DROP TABLE IF EXISTS revoked_tokens__legacy");
-  db.exec("ALTER TABLE revoked_tokens RENAME TO revoked_tokens__legacy");
-  db.exec(CREATE_REVOKED_TOKENS_TABLE_SQL);
-  db.exec(CREATE_REVOKED_TOKENS_EXPIRES_INDEX_SQL);
-
-  const sourceTokenColumn = columns.has("jti") ? "jti" : columns.has("token_id") ? "token_id" : null;
-  const sourceExpirySql = columns.has("expires_at") ? `COALESCE(expires_at, ${MAX_REVOCATION_EXPIRY})` : `${MAX_REVOCATION_EXPIRY}`;
-
-  if (sourceTokenColumn) {
-    db.exec(`
-      INSERT OR IGNORE INTO revoked_tokens (jti, expires_at)
-      SELECT ${sourceTokenColumn}, ${sourceExpirySql}
-      FROM revoked_tokens__legacy
-      WHERE ${sourceTokenColumn} IS NOT NULL AND TRIM(${sourceTokenColumn}) <> ''
-    `);
-  }
-
-  db.exec("DROP TABLE revoked_tokens__legacy");
+  throw new Error(
+    "revoked_tokens table has a legacy column shape (missing jti or expires_at). " +
+      "This database predates the @relayauth/migrate bootstrap — manually rebuild " +
+      "revoked_tokens with (jti TEXT PRIMARY KEY, expires_at INTEGER NOT NULL).",
+  );
 }
 
 function ensureTokensSchema(db: SqliteDatabase): void {
