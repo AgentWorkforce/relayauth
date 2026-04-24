@@ -26,7 +26,7 @@ export function apiKeyAuth(): MiddlewareHandler<AppEnv> {
     const auth = await authenticateBearerOrApiKey(
       c.req.header("authorization"),
       apiKey,
-      c.env.SIGNING_KEY,
+      c.env,
       c.get("storage"),
     );
     if (!auth.ok) {

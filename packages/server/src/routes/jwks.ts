@@ -19,22 +19,6 @@ const jwks = new Hono<AppEnv>();
 jwks.get("/jwks.json", async (c) => {
   const keys: PublishedJwk[] = [];
 
-  // HS256 is published as algorithm metadata (kid only — never the secret;
-  // publishing the symmetric key would allow token forgery). It only appears
-  // when the deployment actually has an HS256 signing secret bound; otherwise
-  // the entry is misleading because no token can be signed or verified with
-  // an algorithm the server isn't configured for. This gate is what lets a
-  // deployment retire HS256 by simply unbinding SIGNING_KEY.
-  const hs256Secret = c.env.SIGNING_KEY?.trim();
-  if (hs256Secret) {
-    keys.push({
-      kty: "oct",
-      use: "sig",
-      alg: "HS256",
-      kid: c.env.SIGNING_KEY_ID,
-    });
-  }
-
   const rsaPublicPem = c.env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
   if (rsaPublicPem) {
     const rsaKeyWithPlaceholderKid = await rsaPublicJwkFromPem(rsaPublicPem, "");

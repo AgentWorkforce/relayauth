@@ -3,20 +3,12 @@ import { parseScope } from "@relayauth/sdk";
 import type { Context } from "hono";
 
 import { hashApiKey } from "./api-keys.js";
-import { decodeBase64UrlJson, verifyHs256Signature } from "./jwt.js";
+import { decodeBase64UrlJson } from "./jwt.js";
 import { emitObserverEvent, now as observerNow } from "./events.js";
+import { verifyRs256Token } from "./token-verifier.js";
 import type { AppEnv } from "../env.js";
 import type { AuthStorage, ApiKeyStorage } from "../storage/index.js";
 import type { StoredApiKey } from "../storage/api-key-types.js";
-
-// NOTE: This module duplicates some JWT verification logic from @relayauth/core TokenVerifier.
-// This is intentional: core uses asymmetric JWKS (RS256/EdDSA) while this uses symmetric HMAC (HS256).
-// TODO: Extract shared claims validation into @relayauth/core to reduce duplication.
-
-type JwtHeader = {
-  alg?: string;
-  typ?: string;
-};
 
 type AuthenticateFailure = {
   ok: false;
@@ -33,7 +25,7 @@ type AuthenticateSuccess = {
 
 export async function authenticate(
   authorization: string | undefined,
-  signingKey: string,
+  env: AppEnv["Bindings"],
 ): Promise<
   | AuthenticateSuccess
   | AuthenticateFailure
@@ -49,7 +41,7 @@ export async function authenticate(
     return { ok: false, error: "Invalid Authorization header", code: "invalid_authorization", status: 401 };
   }
 
-  const claims = await verifyToken(token, signingKey);
+  const claims = await verifyToken(token, env);
   if (!claims) {
     return { ok: false, error: "Invalid access token", code: "invalid_token", status: 401 };
   }
@@ -59,30 +51,30 @@ export async function authenticate(
 
 export async function authenticateBearerOrApiKey(
   request: Request,
-  signingKey: string,
+  env: AppEnv["Bindings"],
   storage: ApiKeyStorage | AuthStorage,
 ): Promise<AuthenticateSuccess | AuthenticateFailure>;
 export async function authenticateBearerOrApiKey(
   authorization: string | undefined,
   apiKey: string | undefined,
-  signingKey: string,
+  env: AppEnv["Bindings"],
   storage: ApiKeyStorage | AuthStorage,
 ): Promise<AuthenticateSuccess | AuthenticateFailure>;
 export async function authenticateBearerOrApiKey(
   requestOrAuthorization: Request | string | undefined,
-  apiKeyOrSigningKey: string | undefined,
-  signingKeyOrStorage: string | ApiKeyStorage | AuthStorage,
+  apiKeyOrEnv: string | AppEnv["Bindings"] | undefined,
+  envOrStorage: AppEnv["Bindings"] | ApiKeyStorage | AuthStorage,
   maybeStorage?: ApiKeyStorage | AuthStorage,
 ): Promise<AuthenticateSuccess | AuthenticateFailure> {
-  const { authorization, apiKey, signingKey, storage } = resolveBearerOrApiKeyArgs(
+  const { authorization, apiKey, env, storage } = resolveBearerOrApiKeyArgs(
     requestOrAuthorization,
-    apiKeyOrSigningKey,
-    signingKeyOrStorage,
+    apiKeyOrEnv,
+    envOrStorage,
     maybeStorage,
   );
   const apiKeyStorage = resolveApiKeyStorage(storage);
   const bearerAuth = authorization
-    ? await authenticate(authorization, signingKey)
+    ? await authenticate(authorization, env)
     : null;
 
   if (bearerAuth?.ok) {
@@ -133,14 +125,14 @@ export async function authenticateBearerOrApiKey(
 
 export async function authenticateAndAuthorize(
   authorization: string | undefined,
-  signingKey: string,
+  env: AppEnv["Bindings"],
   requiredScope: string,
   matchScopeFn: (required: string, granted: string[]) => boolean,
 ): Promise<
   | { ok: true; claims: RelayAuthTokenClaims }
   | { ok: false; error: string; code: string; status: 401 | 403 }
 > {
-  const auth = await authenticate(authorization, signingKey);
+  const auth = await authenticate(authorization, env);
   if (!auth.ok) {
     return auth;
   }
@@ -161,14 +153,13 @@ export async function authenticateAndAuthorize(
  */
 export async function authenticateFromContext(
   c: Context<AppEnv>,
-  signingKey: string,
 ): Promise<AuthenticateSuccess | AuthenticateFailure> {
   const apiKeyClaims = c.get("apiKeyClaims");
   if (apiKeyClaims) {
     return { ok: true, claims: apiKeyClaims, via: "api_key" };
   }
 
-  return authenticate(c.req.header("authorization"), signingKey);
+  return authenticate(c.req.header("authorization"), c.env);
 }
 
 /**
@@ -177,14 +168,13 @@ export async function authenticateFromContext(
  */
 export async function authenticateAndAuthorizeFromContext(
   c: Context<AppEnv>,
-  signingKey: string,
   requiredScope: string,
   matchScopeFn: (required: string, granted: string[]) => boolean,
 ): Promise<
   | { ok: true; claims: RelayAuthTokenClaims }
   | { ok: false; error: string; code: string; status: 401 | 403 }
 > {
-  const auth = await authenticateFromContext(c, signingKey);
+  const auth = await authenticateFromContext(c);
   if (!auth.ok) {
     return auth;
   }
@@ -217,51 +207,24 @@ export function authorizeClaims(
   return { ok: true, claims };
 }
 
-async function verifyToken(token: string, signingKey: string): Promise<RelayAuthTokenClaims | null> {
+async function verifyToken(token: string, env: AppEnv["Bindings"]): Promise<RelayAuthTokenClaims | null> {
   const parts = token.split(".");
   if (parts.length !== 3) {
     emitTokenInvalid("malformed_token");
     return null;
   }
 
-  const [encodedHeader, encodedPayload, signature] = parts;
-  const header = decodeBase64UrlJson<JwtHeader>(encodedHeader);
+  const [, encodedPayload] = parts;
   const payload = decodeBase64UrlJson<RelayAuthTokenClaims>(encodedPayload);
-  if (!header || !payload || header.alg !== "HS256") {
-    emitTokenInvalid("invalid_header", payload);
+
+  try {
+    const claims = await verifyRs256Token(token, env);
+    emitTokenVerified(claims, Math.floor(Date.now() / 1000));
+    return claims;
+  } catch {
+    emitTokenInvalid("invalid_token", payload);
     return null;
   }
-
-  const isValidSignature = await verifyHs256Signature(
-    `${encodedHeader}.${encodedPayload}`,
-    signature,
-    signingKey,
-  );
-  if (!isValidSignature) {
-    emitTokenInvalid("invalid_signature", payload);
-    return null;
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp !== "number" || payload.exp <= now) {
-    emitTokenInvalid("token_expired", payload);
-    return null;
-  }
-
-  if (
-    typeof payload.sub !== "string" ||
-    typeof payload.org !== "string" ||
-    typeof payload.wks !== "string" ||
-    typeof payload.sponsorId !== "string" ||
-    !Array.isArray(payload.sponsorChain) ||
-    !Array.isArray(payload.scopes)
-  ) {
-    emitTokenInvalid("invalid_claims", payload);
-    return null;
-  }
-
-  emitTokenVerified(payload, now);
-  return payload;
 }
 
 function emitTokenVerified(claims: RelayAuthTokenClaims, nowSeconds: number): void {
@@ -378,28 +341,28 @@ export { decodeBase64UrlJson } from "./jwt.js";
 
 function resolveBearerOrApiKeyArgs(
   requestOrAuthorization: Request | string | undefined,
-  apiKeyOrSigningKey: string | undefined,
-  signingKeyOrStorage: string | ApiKeyStorage | AuthStorage,
+  apiKeyOrEnv: string | AppEnv["Bindings"] | undefined,
+  envOrStorage: AppEnv["Bindings"] | ApiKeyStorage | AuthStorage,
   maybeStorage?: ApiKeyStorage | AuthStorage,
 ): {
   authorization: string | undefined;
   apiKey: string | undefined;
-  signingKey: string;
+  env: AppEnv["Bindings"];
   storage: ApiKeyStorage | AuthStorage;
 } {
   if (requestOrAuthorization instanceof Request) {
     return {
       authorization: requestOrAuthorization.headers.get("authorization") ?? undefined,
       apiKey: requestOrAuthorization.headers.get("x-api-key") ?? undefined,
-      signingKey: apiKeyOrSigningKey ?? "",
-      storage: signingKeyOrStorage as ApiKeyStorage | AuthStorage,
+      env: apiKeyOrEnv as AppEnv["Bindings"],
+      storage: envOrStorage as ApiKeyStorage | AuthStorage,
     };
   }
 
   return {
     authorization: requestOrAuthorization,
-    apiKey: apiKeyOrSigningKey,
-    signingKey: signingKeyOrStorage as string,
+    apiKey: apiKeyOrEnv as string | undefined,
+    env: envOrStorage as AppEnv["Bindings"],
     storage: maybeStorage as ApiKeyStorage | AuthStorage,
   };
 }

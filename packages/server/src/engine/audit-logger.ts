@@ -4,7 +4,8 @@ import type { MiddlewareHandler } from "hono";
 import type { AppEnv } from "../env.js";
 import type { AuthStorage, AuditStorage } from "../storage/index.js";
 import { resolveAuditStorage, resolveContextStorage } from "../storage/index.js";
-import { decodeBase64UrlJson, verifyHs256Signature } from "../lib/jwt.js";
+import { decodeBase64UrlJson } from "../lib/jwt.js";
+import { verifyRs256Token } from "../lib/token-verifier.js";
 
 export type ExtendedAuditAction =
   | AuditAction
@@ -22,11 +23,6 @@ type AuditStorageSource = AuditStorage | Pick<AuthStorage, "audit">;
 type TokenValidationResult =
   | { ok: true; claims: RelayAuthTokenClaims }
   | { ok: false; claims?: RelayAuthTokenClaims; reason: string };
-
-type JwtHeader = {
-  alg?: string;
-  typ?: string;
-};
 
 const AUDIT_ACTIONS = new Set<ExtendedAuditAction>([
   "token.issued",
@@ -116,7 +112,7 @@ export function createAuditMiddleware(): MiddlewareHandler<AppEnv> {
     const authorization = c.req.header("Authorization");
 
     if (authorization) {
-      const validation = await validateAuthorizationHeader(authorization, c.env.SIGNING_KEY);
+      const validation = await validateAuthorizationHeader(authorization, c.env);
       if (validation.claims) {
         const { claims } = validation;
         const metadata: Record<string, string> = {
@@ -240,7 +236,7 @@ function validateOptionalString(value: unknown): string | undefined {
 
 async function validateAuthorizationHeader(
   authorization: string,
-  signingKey: string,
+  env: AppEnv["Bindings"],
 ): Promise<TokenValidationResult> {
   const [scheme, token] = authorization.split(/\s+/, 2);
   if (scheme !== "Bearer" || !token) {
@@ -252,39 +248,18 @@ async function validateAuthorizationHeader(
     return { ok: false, reason: "invalid_token_shape" };
   }
 
-  const [encodedHeader, encodedPayload, signature] = parts;
-  const header = decodeBase64UrlJson<JwtHeader>(encodedHeader);
+  const [, encodedPayload] = parts;
   const claims = decodeBase64UrlJson<RelayAuthTokenClaims>(encodedPayload);
-  if (!header || !claims || header.alg !== "HS256") {
-    return { ok: false, claims: claims ?? undefined, reason: "invalid_token_header" };
-  }
 
-  const isValidSignature = await verifyHs256Signature(
-    `${encodedHeader}.${encodedPayload}`,
-    signature,
-    signingKey,
-  );
-  if (!isValidSignature) {
-    return { ok: false, claims, reason: "invalid_token_signature" };
+  try {
+    const verifiedClaims = await verifyRs256Token(token, env);
+    return { ok: true, claims: verifiedClaims };
+  } catch {
+    if (!claims) {
+      return { ok: false, reason: "invalid_token_claims" };
+    }
+    return { ok: false, claims, reason: "invalid_token" };
   }
-
-  const now = Math.floor(Date.now() / 1000);
-  if (typeof claims.exp !== "number" || claims.exp <= now) {
-    return { ok: false, claims, reason: "token_expired" };
-  }
-
-  if (
-    typeof claims.sub !== "string" ||
-    typeof claims.org !== "string" ||
-    typeof claims.wks !== "string" ||
-    typeof claims.sponsorId !== "string" ||
-    !Array.isArray(claims.sponsorChain) ||
-    typeof claims.jti !== "string"
-  ) {
-    return { ok: false, claims, reason: "invalid_token_claims" };
-  }
-
-  return { ok: true, claims };
 }
 
 function extractClientIp(
