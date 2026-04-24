@@ -1,5 +1,5 @@
 import type { RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
-import { matchScope, type VerifyOptions } from "@relayauth/sdk";
+import { matchScope, TokenExpiredError, type VerifyOptions } from "@relayauth/sdk";
 import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
@@ -563,8 +563,11 @@ async function verifyToken(
       issuer: EXPECTED_ISSUER,
       ...options,
     });
-  } catch {
-    return { ok: false, error: "Invalid token" };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof TokenExpiredError ? "Token expired" : "Invalid token",
+    };
   }
 
   if (!isValidClaims(claims)) {

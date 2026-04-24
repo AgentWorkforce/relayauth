@@ -79,10 +79,16 @@ test("seed data script creates valid test identities", async () => {
 
 test("dev token generator produces valid JWT structure", async () => {
   await access(paths.tokenScript);
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 
   const token = execFileSync("bash", [paths.tokenScript], {
     cwd: repoRoot,
     encoding: "utf8",
+    env: {
+      ...process.env,
+      RELAYAUTH_SIGNING_KEY_PEM: privateKeyPem,
+    },
   }).trim();
 
   const parts = token.split(".");
@@ -92,14 +98,16 @@ test("dev token generator produces valid JWT structure", async () => {
   const header = decodeJwtPart(encodedHeader);
   const payload = decodeJwtPart(encodedPayload);
 
-  assert.deepEqual(header, { alg: "HS256", typ: "JWT", kid: "dev-key" });
+  assert.deepEqual(header, { alg: "RS256", typ: "JWT" });
   assert.match(signature, /^[A-Za-z0-9_-]+$/, "JWT signature should be base64url encoded");
 
-  const expectedSignature = crypto
-    .createHmac("sha256", "dev-secret")
-    .update(`${encodedHeader}.${encodedPayload}`)
-    .digest("base64url");
-  assert.equal(signature, expectedSignature, "JWT should be signed with the dev secret");
+  const validSignature = crypto.verify(
+    "RSA-SHA256",
+    Buffer.from(`${encodedHeader}.${encodedPayload}`),
+    publicKey,
+    Buffer.from(signature, "base64url"),
+  );
+  assert.equal(validSignature, true, "JWT should be signed with the configured RSA private key");
 
   assert.equal(payload.sub, "agent_dev_admin");
   assert.equal(payload.org, "org_dev");

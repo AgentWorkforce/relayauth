@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, createHmac, createPublicKey, generateKeyPairSync } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 import { RelayAuthError } from "../../../sdk/typescript/src/errors.js";
@@ -219,42 +219,21 @@ test("tampering with an RS256 token payload fails verification", async (t) => {
   );
 });
 
-test("signToken(claims, env) dispatches to RS256 when RELAYAUTH_SIGNING_ALG=RS256 and otherwise falls back to HS256", async (t) => {
+test("signToken(claims, env) signs RS256 tokens only", async () => {
   const { signToken } = await loadSignModule();
   const rs256Fixture = createRsaFixture();
   const rs256Claims = createClaims({ jti: "tok_dispatch_rs256" });
 
-  await t.test("RS256 path", async () => {
-    const token = await signToken(rs256Claims, {
-      SIGNING_KEY: "legacy-shared-secret",
-      SIGNING_KEY_ID: "legacy-production",
-      RELAYAUTH_SIGNING_ALG: "RS256",
-      RELAYAUTH_SIGNING_KEY_PEM: rs256Fixture.privateKeyPem,
-      RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: rs256Fixture.publicKeyPem,
-    });
-
-    const [encodedHeader] = token.split(".");
-    const header = decodeBase64UrlJson<{ alg?: string; kid?: string }>(encodedHeader);
-
-    assert.equal(header.alg, "RS256");
+  const token = await signToken(rs256Claims, {
+    RELAYAUTH_SIGNING_KEY_PEM: rs256Fixture.privateKeyPem,
+    RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: rs256Fixture.publicKeyPem,
   });
 
-  await t.test("HS256 fallback path", async () => {
-    const token = await signToken(createClaims({ jti: "tok_dispatch_hs256" }), {
-      SIGNING_KEY: "legacy-shared-secret",
-      SIGNING_KEY_ID: "legacy-production",
-    });
+  const [encodedHeader] = token.split(".");
+  const header = decodeBase64UrlJson<{ alg?: string; kid?: string }>(encodedHeader);
 
-    const [encodedHeader, encodedPayload, encodedSignature] = token.split(".");
-    const header = decodeBase64UrlJson<{ alg?: string; kid?: string }>(encodedHeader);
-    const expectedSignature = createHmac("sha256", "legacy-shared-secret")
-      .update(`${encodedHeader}.${encodedPayload}`)
-      .digest("base64url");
-
-    assert.equal(header.alg, "HS256");
-    assert.equal(header.kid, "legacy-production");
-    assert.equal(encodedSignature, expectedSignature);
-  });
+  assert.equal(header.alg, "RS256");
+  assert.ok(typeof header.kid === "string" && header.kid.length > 0);
 });
 
 test("signToken(claims, env) reads RELAYAUTH_SIGNING_KEY_PEM from process.env at RS256 sign time when bindings omit it", async () => {
@@ -266,9 +245,6 @@ test("signToken(claims, env) reads RELAYAUTH_SIGNING_KEY_PEM from process.env at
 
   try {
     const token = await signToken(createClaims({ jti: "tok_dispatch_process_env" }), {
-      SIGNING_KEY: "legacy-shared-secret",
-      SIGNING_KEY_ID: "legacy-production",
-      RELAYAUTH_SIGNING_ALG: "RS256",
       RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: rs256Fixture.publicKeyPem,
     });
 
@@ -286,19 +262,17 @@ test("signToken(claims, env) reads RELAYAUTH_SIGNING_KEY_PEM from process.env at
   }
 });
 
-test("signToken(claims, env) rejects unknown RELAYAUTH_SIGNING_ALG values with a clear error", async () => {
+test("signToken(claims, env) requires RS256 private key material", async () => {
   const { signToken } = await loadSignModule();
 
   await assert.rejects(
     () => signToken(createClaims({ jti: "tok_dispatch_invalid_alg" }), {
-      SIGNING_KEY: "legacy-shared-secret",
-      SIGNING_KEY_ID: "legacy-production",
-      RELAYAUTH_SIGNING_ALG: "ES256",
+      RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: createRsaFixture().publicKeyPem,
     }),
     (error) => {
       assert.match(
         error instanceof Error ? error.message : String(error),
-        /Unsupported signing algorithm: ES256/,
+        /RELAYAUTH_SIGNING_KEY_PEM must be set/,
       );
       return true;
     },

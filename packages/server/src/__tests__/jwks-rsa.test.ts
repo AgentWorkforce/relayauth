@@ -11,8 +11,6 @@ type ExtendedBindings = AppEnv["Bindings"] & Record<string, string | undefined>;
 
 function createBindings(overrides: Partial<ExtendedBindings> = {}): ExtendedBindings {
   return {
-    SIGNING_KEY: "legacy-shared-secret",
-    SIGNING_KEY_ID: "legacy-production",
     INTERNAL_SECRET: "internal-test-secret",
     ...overrides,
   };
@@ -69,82 +67,22 @@ test("JWKS publishes an RSA public JWK when RELAYAUTH_SIGNING_KEY_PEM_PUBLIC is 
   assert.equal("d" in rsaKey, false, "JWKS must never expose the private exponent");
 });
 
-test("JWKS keeps the existing HS256 metadata when RELAYAUTH_SIGNING_KEY_PEM_PUBLIC is unset", async () => {
+test("JWKS returns an empty key set when RELAYAUTH_SIGNING_KEY_PEM_PUBLIC is unset", async () => {
   const response = await requestJwks();
   const body = await assertJsonResponse<{ keys: JsonWebKey[] }>(response, 200);
 
-  assert.deepEqual(body.keys, [
-    {
-      kty: "oct",
-      use: "sig",
-      alg: "HS256",
-      kid: "legacy-production",
-    },
-  ]);
+  assert.deepEqual(body.keys, []);
 });
 
-test("JWKS returns both the legacy HS256 metadata and the RSA public JWK during the transition window", async () => {
+test("JWKS never advertises HS256 metadata", async () => {
   const response = await requestJwks({
     RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: createPublicKeyPem(),
   });
   const body = await assertJsonResponse<{ keys: JsonWebKey[] }>(response, 200);
-  const hs256Key = body.keys.find((key) => key.kty === "oct" && key.alg === "HS256");
-  const rsaKey = body.keys.find((key) => key.kty === "RSA" && key.alg === "RS256");
 
-  assert.ok(hs256Key, "expected the legacy HS256 metadata to remain published");
-  assert.equal(hs256Key?.kid, "legacy-production");
-  assert.ok(rsaKey, "expected the RSA public JWK to be published alongside the HS256 metadata");
-  assert.equal(rsaKey?.use, "sig");
-  assert.equal("d" in (rsaKey ?? {}), false, "the RSA JWK must not contain private key material");
-});
-
-test("JWKS suppresses the HS256 metadata once SIGNING_KEY is unbound (post-sunset)", async () => {
-  const storage = createTestStorage();
-  const app = createApp({ storage });
-  try {
-    // Mirror a deployment that has retired HS256 by removing the SIGNING_KEY
-    // worker binding while keeping SIGNING_KEY_ID for legacy kid accounting.
-    const response = await app.request(
-      createTestRequest("GET", "/.well-known/jwks.json"),
-      undefined,
-      {
-        SIGNING_KEY_ID: "legacy-production",
-        INTERNAL_SECRET: "internal-test-secret",
-        RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: createPublicKeyPem(),
-      } as AppEnv["Bindings"],
-    );
-    const body = await assertJsonResponse<{ keys: JsonWebKey[] }>(response, 200);
-
-    assert.equal(body.keys.length, 1, "expected only the RSA key once HS256 is unbound");
-    assert.equal(body.keys[0]?.kty, "RSA");
-    assert.equal(body.keys[0]?.alg, "RS256");
-    assert.equal(
-      body.keys.some((key) => key.alg === "HS256"),
-      false,
-      "JWKS must not advertise HS256 when no HS256 secret is configured",
-    );
-  } finally {
-    await storage.close();
-  }
-});
-
-test("JWKS returns an empty key set when neither HS256 nor RS256 material is configured", async () => {
-  const storage = createTestStorage();
-  const app = createApp({ storage });
-  try {
-    const response = await app.request(
-      createTestRequest("GET", "/.well-known/jwks.json"),
-      undefined,
-      {
-        SIGNING_KEY_ID: "legacy-production",
-        INTERNAL_SECRET: "internal-test-secret",
-      } as AppEnv["Bindings"],
-    );
-    const body = await assertJsonResponse<{ keys: JsonWebKey[] }>(response, 200);
-    assert.deepEqual(body.keys, []);
-  } finally {
-    await storage.close();
-  }
+  assert.equal(body.keys.some((key) => key.alg === "HS256" || key.kty === "oct"), false);
+  assert.equal(body.keys.length, 1);
+  assert.equal(body.keys[0]?.alg, "RS256");
 });
 
 test("JWKS RSA `kid` is the RFC 7638 JWK thumbprint (deterministic, no YYYY-MM component)", async () => {
@@ -197,9 +135,6 @@ test("Signed RS256 token header.kid equals the published JWKS RSA kid (month-rol
   };
 
   const token = await signToken(claims, {
-    SIGNING_KEY: "legacy-shared-secret",
-    SIGNING_KEY_ID: "legacy-production",
-    RELAYAUTH_SIGNING_ALG: "RS256",
     RELAYAUTH_SIGNING_KEY_PEM: privateKeyPem,
     RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: publicKeyPem,
   });

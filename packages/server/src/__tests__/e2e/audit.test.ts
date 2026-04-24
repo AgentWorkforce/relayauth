@@ -294,6 +294,10 @@ test("Audit & Observability E2E", async (t) => {
     const originalFetch = globalThis.fetch;
 
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.toString() : String(input);
+      if (url.startsWith("data:")) {
+        return originalFetch(input, init);
+      }
       const request = input instanceof Request ? input : new Request(String(input), init);
       const body = await request.text();
       requests.push({ request, body });

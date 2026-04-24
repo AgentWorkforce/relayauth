@@ -17,7 +17,10 @@ import { createSqliteStorage } from "../storage/sqlite.js";
 import type { IdentityBudget, StoredIdentity } from "../storage/identity-types.js";
 import { createApp } from "../server.js";
 
-type TestBindings = Pick<AppEnv["Bindings"], "SIGNING_KEY" | "SIGNING_KEY_ID" | "INTERNAL_SECRET">;
+type TestBindings = Pick<
+  AppEnv["Bindings"],
+  "INTERNAL_SECRET" | "RELAYAUTH_SIGNING_KEY_PEM" | "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC"
+>;
 
 type TestStorage = AuthStorage & Partial<ReturnType<typeof createSqliteStorage>>;
 
@@ -43,15 +46,24 @@ function base64UrlEncode(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
 }
 
-function signHs256(payload: Record<string, unknown>, secret: string): string {
-  const header = { alg: "HS256", typ: "JWT" };
+const TEST_RSA_KEY_PAIR = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+
+export const TEST_RS256_PRIVATE_KEY_PEM = TEST_RSA_KEY_PAIR.privateKey
+  .export({ type: "pkcs8", format: "pem" })
+  .toString();
+
+export const TEST_RS256_PUBLIC_KEY_PEM = TEST_RSA_KEY_PAIR.publicKey
+  .export({ type: "spki", format: "pem" })
+  .toString();
+
+function signRs256(payload: Record<string, unknown>): string {
+  const header = { alg: "RS256", typ: "JWT" };
   const encodedHeader = base64UrlEncode(JSON.stringify(header));
   const encodedPayload = base64UrlEncode(JSON.stringify(payload));
   const unsigned = `${encodedHeader}.${encodedPayload}`;
   const signature = crypto
-    .createHmac("sha256", secret)
-    .update(unsigned)
-    .digest("base64url");
+    .sign("RSA-SHA256", Buffer.from(unsigned), TEST_RS256_PRIVATE_KEY_PEM)
+    .toString("base64url");
   return `${unsigned}.${signature}`;
 }
 
@@ -78,7 +90,7 @@ export function createTestStorage(): TestStorage {
 
 export function generateTestToken(
   claims: Partial<RelayAuthTokenClaims> = {},
-  secret = "dev-secret",
+  _legacySecret = "dev-secret",
 ): string {
   const now = Math.floor(Date.now() / 1000);
   const sub = claims.sub ?? "agent_test";
@@ -106,7 +118,7 @@ export function generateTestToken(
     budget: claims.budget,
   };
 
-  return signHs256(payload, secret);
+  return signRs256(payload);
 }
 
 export function generateTestIdentity(overrides: Partial<AgentIdentity> = {}): AgentIdentity {
@@ -193,13 +205,13 @@ export function mockKV(): KVNamespace {
 export function createTestApp(bindingsOverrides: Partial<TestBindings> = {}): TestApp {
   const storage = createTestStorage();
   const bindings: TestBindings = {
-    SIGNING_KEY: bindingsOverrides.SIGNING_KEY ?? "dev-secret",
-    SIGNING_KEY_ID: bindingsOverrides.SIGNING_KEY_ID ?? "dev-key",
     INTERNAL_SECRET: bindingsOverrides.INTERNAL_SECRET ?? storage.INTERNAL_SECRET,
+    RELAYAUTH_SIGNING_KEY_PEM:
+      bindingsOverrides.RELAYAUTH_SIGNING_KEY_PEM ?? TEST_RS256_PRIVATE_KEY_PEM,
+    RELAYAUTH_SIGNING_KEY_PEM_PUBLIC:
+      bindingsOverrides.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC ?? TEST_RS256_PUBLIC_KEY_PEM,
   };
 
-  storage.SIGNING_KEY = bindings.SIGNING_KEY;
-  storage.SIGNING_KEY_ID = bindings.SIGNING_KEY_ID;
   storage.INTERNAL_SECRET = bindings.INTERNAL_SECRET;
 
   const app = createApp({
