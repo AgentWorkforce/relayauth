@@ -127,6 +127,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.use("/v1/identities/*", apiKeyAuth());
   app.use("/v1/tokens", apiKeyAuth());
   app.use("/v1/tokens/*", apiKeyAuth());
+  app.use("/v1/api-keys", apiKeyAuth());
+  app.use("/v1/api-keys/*", apiKeyAuth());
 
   app.use("*", async (c, next) => {
     if (isPublicPath(c.req.path)) {
