@@ -4,6 +4,8 @@ import { RelayAuthError, TokenExpiredError, TokenRevokedError } from "./errors.j
 import { ScopeChecker } from "./scopes.js";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_JWKS_TIMEOUT_MS = 5000;
+const DEFAULT_REVOCATION_TIMEOUT_MS = 5000;
 
 export interface VerifyOptions {
   jwksUrl?: string;
@@ -13,6 +15,8 @@ export interface VerifyOptions {
   cacheTtlMs?: number;
   checkRevocation?: boolean;
   revocationUrl?: string;
+  jwksTimeoutMs?: number;
+  revocationTimeoutMs?: number;
 }
 
 type JwtHeader = {
@@ -110,7 +114,11 @@ export class TokenVerifier {
 
     let response: Response;
     try {
-      response = await fetch(jwksUrl);
+      response = await fetch(jwksUrl, {
+        signal: AbortSignal.timeout(
+          normalizeTimeoutMs(this.options?.jwksTimeoutMs, DEFAULT_JWKS_TIMEOUT_MS),
+        ),
+      });
     } catch {
       throw new RelayAuthError("Failed to fetch JWKS", "jwks_fetch_failed", 502);
     }
@@ -256,7 +264,11 @@ export class TokenVerifier {
 
     let response: Response;
     try {
-      response = await fetch(url);
+      response = await fetch(url, {
+        signal: AbortSignal.timeout(
+          normalizeTimeoutMs(this.options?.revocationTimeoutMs, DEFAULT_REVOCATION_TIMEOUT_MS),
+        ),
+      });
     } catch {
       throw new RelayAuthError("Failed to check token revocation", "revocation_check_failed", 502);
     }
@@ -481,6 +493,14 @@ function normalizeCacheTtlMs(cacheTtlMs: number | undefined): number {
   }
 
   return Math.max(0, cacheTtlMs);
+}
+
+function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number): number {
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return fallback;
+  }
+
+  return timeoutMs;
 }
 
 function decodeBase64UrlJson<T>(value: string): T | null {
