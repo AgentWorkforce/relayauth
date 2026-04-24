@@ -2,7 +2,7 @@ import { matchScope, RelayAuthError, validateSubset } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import { extractPrefix, generateApiKey, hashApiKey } from "../lib/api-keys.js";
-import { authenticateAndAuthorize } from "../lib/auth.js";
+import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
 import { isStorageError } from "../storage/index.js";
 import type { StoredApiKey } from "../storage/api-key-types.js";
 
@@ -25,9 +25,8 @@ type ApiKeyResponse = {
 const apiKeys = new Hono<AppEnv>();
 
 apiKeys.post("/", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:api-key:manage:*",
     matchScope,
   );
@@ -94,9 +93,8 @@ apiKeys.post("/", async (c) => {
 });
 
 apiKeys.get("/", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:api-key:read:*",
     matchScope,
   );
@@ -133,9 +131,8 @@ apiKeys.get("/", async (c) => {
 });
 
 apiKeys.post("/:apiKeyId/revoke", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:api-key:manage:*",
     matchScope,
   );
