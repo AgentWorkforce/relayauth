@@ -4,7 +4,8 @@ import type { Context, MiddlewareHandler } from "hono";
 
 import type { AppEnv } from "../env.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
-import { decodeBase64UrlJson, verifyHs256Signature } from "../lib/jwt.js";
+import { decodeBase64UrlJson } from "../lib/jwt.js";
+import { verifyRs256Token } from "../lib/token-verifier.js";
 
 export type ScopeMiddlewareOptions = {
   onError?: (error: Error) => Response | Promise<Response> | void | Promise<void>;
@@ -15,12 +16,6 @@ type ScopeMode = "all" | "any";
 type ScopeContextVariables = {
   identity: RelayAuthTokenClaims;
   scopeChecker: ScopeChecker;
-};
-
-type JwtHeader = {
-  alg?: string;
-  kid?: string;
-  typ?: string;
 };
 
 export function requireScope(
@@ -58,9 +53,9 @@ function createScopeMiddleware(
       const apiKeyClaims = c.get("apiKeyClaims");
       const claims = apiKeyClaims
         ? apiKeyClaims
-        : await verifyHs256Token(
+        : await verifyBearerToken(
             extractBearerToken(c.req.header("Authorization")),
-            c.env.SIGNING_KEY,
+            c.env,
           );
       const scopeChecker = ScopeChecker.fromToken(claims);
 
@@ -182,9 +177,9 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-async function verifyHs256Token(
+async function verifyBearerToken(
   token: string,
-  signingKey: string,
+  env: AppEnv["Bindings"],
 ): Promise<RelayAuthTokenClaims> {
   const parts = token.split(".");
   if (parts.length !== 3) {
@@ -192,43 +187,17 @@ async function verifyHs256Token(
     throw new RelayAuthError("Invalid access token", "invalid_token", 401);
   }
 
-  const [encodedHeader, encodedPayload, signature] = parts;
-  const header = decodeBase64UrlJson<JwtHeader>(encodedHeader);
+  const [, encodedPayload] = parts;
   const payload = decodeBase64UrlJson<RelayAuthTokenClaims>(encodedPayload);
-  if (!header || !payload || header.alg !== "HS256") {
-    emitTokenInvalid("invalid_header", payload);
+
+  try {
+    const claims = await verifyRs256Token(token, env);
+    emitTokenVerified(claims, Math.floor(Date.now() / 1000));
+    return claims;
+  } catch {
+    emitTokenInvalid("invalid_token", payload);
     throw new RelayAuthError("Invalid access token", "invalid_token", 401);
   }
-
-  const isValid = await verifyHs256Signature(
-    `${encodedHeader}.${encodedPayload}`,
-    signature,
-    signingKey,
-  );
-  if (!isValid) {
-    emitTokenInvalid("invalid_signature", payload);
-    throw new RelayAuthError("Invalid access token", "invalid_token", 401);
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp !== "number" || payload.exp <= now) {
-    emitTokenInvalid("token_expired", payload);
-    throw new RelayAuthError("Token expired", "token_expired", 401);
-  }
-
-  if (
-    typeof payload.sub !== "string" ||
-    typeof payload.org !== "string" ||
-    typeof payload.wks !== "string" ||
-    typeof payload.sponsorId !== "string" ||
-    !Array.isArray(payload.sponsorChain)
-  ) {
-    emitTokenInvalid("invalid_claims", payload);
-    throw new RelayAuthError("Invalid access token", "invalid_token", 401);
-  }
-
-  emitTokenVerified(payload, now);
-  return payload;
 }
 
 function emitTokenVerified(claims: RelayAuthTokenClaims, nowSeconds: number): void {

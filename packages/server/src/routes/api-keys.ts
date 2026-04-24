@@ -27,7 +27,7 @@ const apiKeys = new Hono<AppEnv>();
 apiKeys.post("/", async (c) => {
   const auth = await authenticateAndAuthorize(
     c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+    c.env,
     "relayauth:api-key:manage:*",
     matchScope,
   );
@@ -96,7 +96,7 @@ apiKeys.post("/", async (c) => {
 apiKeys.get("/", async (c) => {
   const auth = await authenticateAndAuthorize(
     c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+    c.env,
     "relayauth:api-key:read:*",
     matchScope,
   );
@@ -135,7 +135,7 @@ apiKeys.get("/", async (c) => {
 apiKeys.post("/:apiKeyId/revoke", async (c) => {
   const auth = await authenticateAndAuthorize(
     c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+    c.env,
     "relayauth:api-key:manage:*",
     matchScope,
   );

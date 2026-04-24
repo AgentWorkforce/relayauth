@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
-import { generateTestToken } from "./test-helpers.js";
+import type { AppEnv } from "../env.js";
+import {
+  generateTestToken,
+  TEST_RS256_PRIVATE_KEY_PEM,
+  TEST_RS256_PUBLIC_KEY_PEM,
+} from "./test-helpers.js";
 
 type StoredApiKey = {
   id: string;
@@ -33,9 +38,15 @@ type AuthenticateSuccess = {
 type AuthenticateBearerOrApiKey = (
   authorization: string | undefined,
   apiKey: string | undefined,
-  signingKey: string,
+  env: AppEnv["Bindings"],
   apiKeys: ApiKeyStorageLike,
 ) => Promise<AuthenticateSuccess | AuthenticateFailure>;
+
+const TEST_BINDINGS: AppEnv["Bindings"] = {
+  INTERNAL_SECRET: "internal-test-secret",
+  RELAYAUTH_SIGNING_KEY_PEM: TEST_RS256_PRIVATE_KEY_PEM,
+  RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: TEST_RS256_PUBLIC_KEY_PEM,
+};
 
 function hashApiKey(apiKey: string): string {
   return crypto.createHash("sha256").update(apiKey).digest("hex");
@@ -110,7 +121,7 @@ test("changing one byte of the plaintext API key fails verification via SHA-256 
   const auth = await authenticateBearerOrApiKey(
     undefined,
     mutatedLastChar,
-    "dev-secret",
+    TEST_BINDINGS,
     storage,
   );
 
@@ -136,7 +147,7 @@ test("authenticateBearerOrApiKey accepts a valid bearer JWT and returns its clai
   const auth = await authenticateBearerOrApiKey(
     authorization,
     undefined,
-    "dev-secret",
+    TEST_BINDINGS,
     storage,
   );
 
@@ -159,7 +170,7 @@ test("authenticateBearerOrApiKey accepts a valid x-api-key and returns synthesiz
   const auth = await authenticateBearerOrApiKey(
     undefined,
     plaintext,
-    "dev-secret",
+    TEST_BINDINGS,
     storage,
   );
 
@@ -178,7 +189,7 @@ test("authenticateBearerOrApiKey returns 401 when neither bearer nor x-api-key i
   const auth = await authenticateBearerOrApiKey(
     undefined,
     undefined,
-    "dev-secret",
+    TEST_BINDINGS,
     storage,
   );
 
@@ -206,7 +217,7 @@ test("when both are present and conflict, a valid bearer wins and API-key lookup
   const auth = await authenticateBearerOrApiKey(
     authorization,
     "rak_test_auth_plaintext_fixture",
-    "dev-secret",
+    TEST_BINDINGS,
     storage,
   );
 
@@ -227,7 +238,7 @@ test("authenticateBearerOrApiKey updates last_used_at when an API key authentica
   const auth = await authenticateBearerOrApiKey(
     undefined,
     "rak_test_auth_plaintext_fixture",
-    "dev-secret",
+    TEST_BINDINGS,
     storage,
   );
 

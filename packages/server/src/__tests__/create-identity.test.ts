@@ -8,6 +8,7 @@ import {
   createTestApp,
   createTestRequest,
   generateTestIdentity,
+  generateTestToken,
   seedOrgBudget,
   seedStoredIdentity,
 } from "./test-helpers.js";
@@ -24,22 +25,6 @@ type CreatedIdentity = AgentIdentity & {
   workspaceId?: string;
   budget?: IdentityBudget;
 };
-
-function base64UrlEncode(value: string | Buffer): string {
-  return Buffer.from(value).toString("base64url");
-}
-
-function signHs256(payload: Record<string, unknown>, secret: string): string {
-  const header = { alg: "HS256", typ: "JWT" };
-  const encodedHeader = base64UrlEncode(JSON.stringify(header));
-  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
-  const unsigned = `${encodedHeader}.${encodedPayload}`;
-  const signature = crypto
-    .createHmac("sha256", secret)
-    .update(unsigned)
-    .digest("base64url");
-  return `${unsigned}.${signature}`;
-}
 
 function createAuthToken(overrides: Partial<RelayAuthTokenClaims> = {}): string {
   const now = Math.floor(Date.now() / 1000);
@@ -66,7 +51,7 @@ function createAuthToken(overrides: Partial<RelayAuthTokenClaims> = {}): string 
     budget: overrides.budget,
   };
 
-  return signHs256(payload as Record<string, unknown>, "dev-secret");
+  return generateTestToken(payload);
 }
 
 

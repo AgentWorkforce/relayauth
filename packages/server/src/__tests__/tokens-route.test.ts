@@ -4,8 +4,6 @@ import test from "node:test";
 
 import type { RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
 
-import { RelayAuthError } from "../../../sdk/typescript/src/errors.js";
-import { TokenVerifier } from "../../../sdk/typescript/src/verify.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import {
   assertJsonResponse,
@@ -15,6 +13,7 @@ import {
   listRevokedTokenIds,
   seedActiveTokens,
   seedStoredIdentity,
+  TEST_RS256_PRIVATE_KEY_PEM,
 } from "./test-helpers.js";
 
 type JwtHeader = {
@@ -33,28 +32,17 @@ function base64UrlEncode(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
 }
 
-function signLegacyHs256Jwt(
-  claims: RelayAuthTokenClaims,
-  {
-    secret = "dev-secret",
-    keyId = "dev-key",
-  }: {
-    secret?: string;
-    keyId?: string;
-  } = {},
-): string {
+function signRs256Jwt(claims: RelayAuthTokenClaims): string {
   const header = {
-    alg: "HS256",
+    alg: "RS256",
     typ: "JWT",
-    kid: keyId,
   };
   const encodedHeader = base64UrlEncode(JSON.stringify(header));
   const encodedPayload = base64UrlEncode(JSON.stringify(claims));
   const unsigned = `${encodedHeader}.${encodedPayload}`;
   const signature = crypto
-    .createHmac("sha256", secret)
-    .update(unsigned)
-    .digest("base64url");
+    .sign("RSA-SHA256", Buffer.from(unsigned), TEST_RS256_PRIVATE_KEY_PEM)
+    .toString("base64url");
 
   return `${unsigned}.${signature}`;
 }
@@ -84,7 +72,7 @@ function createAuthToken(overrides: Partial<RelayAuthTokenClaims> = {}): string 
   const sponsorId = overrides.sponsorId ?? "user_admin_worker";
   const sub = overrides.sub ?? "agent_admin_worker";
 
-  return signLegacyHs256Jwt({
+  return signRs256Jwt({
     sub,
     org: overrides.org ?? "org_tokens_route",
     wks: overrides.wks ?? "ws_tokens_route",
@@ -143,7 +131,7 @@ function createTokenClaims(
   };
 }
 
-function createLegacyPhase0TokenPair(
+function createRs256TokenPair(
   identity: StoredIdentity,
   {
     accessScopes = ["specialist:invoke"],
@@ -184,8 +172,8 @@ function createLegacyPhase0TokenPair(
 
   return {
     pair: {
-      accessToken: signLegacyHs256Jwt(accessClaims),
-      refreshToken: signLegacyHs256Jwt(refreshClaims),
+      accessToken: signRs256Jwt(accessClaims),
+      refreshToken: signRs256Jwt(refreshClaims),
       accessTokenExpiresAt: new Date(accessClaims.exp * 1000).toISOString(),
       refreshTokenExpiresAt: new Date(refreshClaims.exp * 1000).toISOString(),
       tokenType: "Bearer",
@@ -242,52 +230,19 @@ function assertTokenClaimsMatchSpec(
   assert.equal(typeof claims.iat, "number");
   assert.equal(typeof claims.exp, "number");
   assert.ok(claims.exp > claims.iat, "exp must be after iat");
-  assert.equal("workspace_id" in claims, false, "legacy workspace_id alias should not be present");
-  assert.equal("agent_name" in claims, false, "legacy agent_name alias should not be present");
-  assert.equal("sponsor" in claims, false, "legacy sponsor claim should not be present");
+  assert.equal("workspace_id" in claims, false, "RS256 workspace_id alias should not be present");
+  assert.equal("agent_name" in claims, false, "RS256 agent_name alias should not be present");
+  assert.equal("sponsor" in claims, false, "RS256 sponsor claim should not be present");
 
   if (tokenType === "refresh") {
     assert.deepEqual(claims.aud, ["relayauth"]);
   }
 }
 
-async function assertPhase0LegacyHs256Algorithm(token: string, audience: string[]): Promise<void> {
+function assertRs256Algorithm(token: string, _audience?: string[]): void {
   const header = decodeJwtJsonSegment<JwtHeader>(token, 0);
-  assert.deepEqual(header, {
-    alg: "HS256",
-    typ: "JWT",
-    kid: "dev-key",
-  });
-
-  // Phase 121 added dual-verify to @relayauth/sdk: HS256 is accepted by default
-  // during the migration window. This assertion is checking the *post-sunset*
-  // posture — that a verifier with HS256 acceptance disabled rejects these
-  // legacy tokens. That matches what phase 122 flips in production.
-  const previousFlag = process.env.RELAYAUTH_VERIFIER_ACCEPT_HS256;
-  process.env.RELAYAUTH_VERIFIER_ACCEPT_HS256 = "false";
-  try {
-    const verifier = new TokenVerifier({
-      jwksUrl: "https://relayauth.test/.well-known/jwks.json",
-      issuer: "https://relayauth.dev",
-      audience,
-    });
-
-    await assert.rejects(
-      () => verifier.verify(token),
-      (error: unknown) => {
-        assert.ok(error instanceof RelayAuthError);
-        assert.equal(error.code, "invalid_token");
-        return true;
-      },
-      "spec-compliant verifiers (HS256 acceptance disabled) should reject legacy HS256 tokens",
-    );
-  } finally {
-    if (previousFlag === undefined) {
-      delete process.env.RELAYAUTH_VERIFIER_ACCEPT_HS256;
-    } else {
-      process.env.RELAYAUTH_VERIFIER_ACCEPT_HS256 = previousFlag;
-    }
-  }
+  assert.equal(header.alg, "RS256");
+  assert.equal(header.typ, "JWT");
 }
 
 async function createHarness({
@@ -339,7 +294,7 @@ async function requestRoute(
 }
 
 test("POST /v1/tokens", async (t) => {
-  await t.test("issues a Phase 0 legacy HS256 token pair with token-format claim shape", async () => {
+  await t.test("issues a Phase 0 RS256 token pair with token-format claim shape", async () => {
     const { app, identity, authHeaders } = await createHarness();
 
     const response = await requestRoute(app, "POST", "/v1/tokens", {
@@ -378,8 +333,8 @@ test("POST /v1/tokens", async (t) => {
       expectedScopes: ["relayauth:token:refresh"],
     });
 
-    await assertPhase0LegacyHs256Algorithm(body.accessToken, ["specialist"]);
-    await assertPhase0LegacyHs256Algorithm(body.refreshToken, ["relayauth"]);
+    await assertRs256Algorithm(body.accessToken, ["specialist"]);
+    await assertRs256Algorithm(body.refreshToken, ["relayauth"]);
   });
 
   await t.test("returns 401 when Authorization is missing", async () => {
@@ -461,9 +416,9 @@ test("POST /v1/tokens", async (t) => {
 });
 
 test("POST /v1/tokens/refresh", async (t) => {
-  await t.test("refreshes a legacy HS256 token pair without requiring a bearer token", async () => {
+  await t.test("refreshes a RS256 token pair without requiring a bearer token", async () => {
     const { app, identity } = await createHarness();
-    const { pair, accessClaims, refreshClaims } = createLegacyPhase0TokenPair(identity);
+    const { pair, accessClaims, refreshClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti, refreshClaims.jti]);
 
     const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
@@ -494,8 +449,8 @@ test("POST /v1/tokens/refresh", async (t) => {
     assert.notEqual(nextAccessClaims.jti, accessClaims.jti);
     assert.notEqual(nextRefreshClaims.jti, refreshClaims.jti);
 
-    await assertPhase0LegacyHs256Algorithm(body.accessToken, ["specialist"]);
-    await assertPhase0LegacyHs256Algorithm(body.refreshToken, ["relayauth"]);
+    await assertRs256Algorithm(body.accessToken, ["specialist"]);
+    await assertRs256Algorithm(body.refreshToken, ["relayauth"]);
   });
 
   await t.test("returns 400 when refreshToken is missing", async () => {
@@ -527,7 +482,7 @@ test("POST /v1/tokens/refresh", async (t) => {
   await t.test("returns 401 when the refresh token is expired", async () => {
     const { app, identity } = await createHarness();
     const now = Math.floor(Date.now() / 1000) - (2 * 3600);
-    const { pair, refreshClaims } = createLegacyPhase0TokenPair(identity, {
+    const { pair, refreshClaims } = createRs256TokenPair(identity, {
       issuedAt: now,
       accessExpiresInSeconds: 60,
       refreshExpiresInSeconds: 60,
@@ -547,7 +502,7 @@ test("POST /v1/tokens/refresh", async (t) => {
 
   await t.test("returns 401 when the refresh token has been revoked", async () => {
     const { app, identity } = await createHarness();
-    const { pair, refreshClaims } = createLegacyPhase0TokenPair(identity);
+    const { pair, refreshClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [refreshClaims.jti]);
 
     const revocations = app.storage.revocations as typeof app.storage.revocations & {
@@ -568,7 +523,7 @@ test("POST /v1/tokens/refresh", async (t) => {
 
   await t.test("revokes the old refresh JTI after a successful refresh", async () => {
     const { app, identity } = await createHarness();
-    const { pair, accessClaims, refreshClaims } = createLegacyPhase0TokenPair(identity);
+    const { pair, accessClaims, refreshClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti, refreshClaims.jti]);
 
     assert.deepEqual(await listRevokedTokenIds(app), []);
@@ -587,7 +542,7 @@ test("POST /v1/tokens/refresh", async (t) => {
 
   await t.test("detects refresh-token re-use and cascade-revokes the session", async () => {
     const { app, identity } = await createHarness();
-    const { pair, accessClaims, refreshClaims } = createLegacyPhase0TokenPair(identity);
+    const { pair, accessClaims, refreshClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti, refreshClaims.jti]);
 
     const firstResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
@@ -626,7 +581,7 @@ test("POST /v1/tokens/refresh", async (t) => {
     const jti = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
     await seedActiveTokens(app, identity.id, [jti]);
 
-    const evilRefresh = signLegacyHs256Jwt({
+    const evilRefresh = signRs256Jwt({
       sub: identity.id,
       org: identity.orgId,
       wks: identity.workspaceId,
@@ -655,7 +610,7 @@ test("POST /v1/tokens/refresh", async (t) => {
     const jti = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
     await seedActiveTokens(app, identity.id, [jti]);
 
-    const wrongAudRefresh = signLegacyHs256Jwt({
+    const wrongAudRefresh = signRs256Jwt({
       sub: identity.id,
       org: identity.orgId,
       wks: identity.workspaceId,
@@ -680,7 +635,7 @@ test("POST /v1/tokens/refresh", async (t) => {
   await t.test("rejects a refresh token whose exp is beyond clock-skew in the past", async () => {
     const { app, identity } = await createHarness();
     const past = Math.floor(Date.now() / 1000) - 1000;
-    const expiredRefresh = signLegacyHs256Jwt({
+    const expiredRefresh = signRs256Jwt({
       sub: identity.id,
       org: identity.orgId,
       wks: identity.workspaceId,
@@ -710,7 +665,7 @@ test("POST /v1/tokens/refresh", async (t) => {
     const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
     await seedActiveTokens(app, identity.id, [jti]);
 
-    const skewedRefresh = signLegacyHs256Jwt({
+    const skewedRefresh = signRs256Jwt({
       sub: identity.id,
       org: identity.orgId,
       wks: identity.workspaceId,
@@ -720,7 +675,7 @@ test("POST /v1/tokens/refresh", async (t) => {
       token_type: "refresh",
       iss: "https://relayauth.dev",
       aud: ["relayauth"],
-      exp: now - 30, // 30s past exp, should be accepted within skew
+      exp: now - 20, // 20s past exp, should be accepted within verifier and route skew
       iat: now - 120,
       jti,
       sid,
@@ -768,7 +723,7 @@ test("POST /v1/tokens enforces max sponsor-chain depth", async (t) => {
 test("POST /v1/tokens/revoke", async (t) => {
   await t.test("revokes a token id and persists the revocation", async () => {
     const { app, identity, authHeaders } = await createHarness();
-    const { accessClaims } = createLegacyPhase0TokenPair(identity);
+    const { accessClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti]);
 
     const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
@@ -847,7 +802,7 @@ test("POST /v1/tokens/revoke", async (t) => {
 test("GET /v1/tokens/introspect", async (t) => {
   await t.test("returns raw claims for an active access token", async () => {
     const { app, identity, authHeaders } = await createHarness();
-    const { pair, accessClaims } = createLegacyPhase0TokenPair(identity);
+    const { pair, accessClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti]);
 
     const response = await requestRoute(
@@ -894,7 +849,7 @@ test("GET /v1/tokens/introspect", async (t) => {
   await t.test("returns null for an expired access token", async () => {
     const { app, identity, authHeaders } = await createHarness();
     const now = Math.floor(Date.now() / 1000) - (2 * 3600);
-    const { pair, accessClaims } = createLegacyPhase0TokenPair(identity, {
+    const { pair, accessClaims } = createRs256TokenPair(identity, {
       issuedAt: now,
       accessExpiresInSeconds: 60,
     });
@@ -915,7 +870,7 @@ test("GET /v1/tokens/introspect", async (t) => {
 
   await t.test("returns null for a revoked access token", async () => {
     const { app, identity, authHeaders } = await createHarness();
-    const { pair, accessClaims } = createLegacyPhase0TokenPair(identity);
+    const { pair, accessClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti]);
 
     const revocations = app.storage.revocations as typeof app.storage.revocations & {

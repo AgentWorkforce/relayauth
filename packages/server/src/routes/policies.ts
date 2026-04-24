@@ -30,7 +30,7 @@ const policies = new Hono<AppEnv>();
 policies.post("/", async (c) => {
   const auth = await authenticateAndAuthorize(
     c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+    c.env,
     "relayauth:policy:manage:*",
     matchScope,
   );
@@ -63,7 +63,7 @@ policies.post("/", async (c) => {
 policies.get("/", async (c) => {
   const auth = await authenticateAndAuthorize(
     c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+    c.env,
     "relayauth:policy:read:*",
     matchScope,
   );
@@ -90,7 +90,7 @@ policies.get("/", async (c) => {
 policies.get("/:id", async (c) => {
   const auth = await authenticateAndAuthorize(
     c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+    c.env,
     "relayauth:policy:read:*",
     matchScope,
   );
@@ -115,7 +115,7 @@ policies.get("/:id", async (c) => {
 policies.patch("/:id", async (c) => {
   const auth = await authenticateAndAuthorize(
     c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+    c.env,
     "relayauth:policy:manage:*",
     matchScope,
   );
@@ -150,7 +150,7 @@ policies.patch("/:id", async (c) => {
 policies.delete("/:id", async (c) => {
   const auth = await authenticateAndAuthorize(
     c.req.header("authorization"),
-    c.env.SIGNING_KEY,
+    c.env,
     "relayauth:policy:manage:*",
     matchScope,
   );

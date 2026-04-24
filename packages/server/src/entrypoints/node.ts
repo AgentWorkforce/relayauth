@@ -1,21 +1,7 @@
-import type { StartServerOptions } from "../server.js";
 import { startServer } from "../server.js";
 
-export type StartLocalServerOptions = StartServerOptions & {
-  signingKey?: string;
-};
+export type { StartServerOptions as StartLocalServerOptions } from "../server.js";
 
-/**
- * Backwards-compatible entry point. Accepts the old `signingKey` option
- * and maps it to the new config-based API.
- */
-export function startLocalServer(opts: StartLocalServerOptions = {}) {
-  const { signingKey, ...rest } = opts;
-  return startServer({
-    ...rest,
-    config: {
-      ...rest.config,
-      ...(signingKey !== undefined ? { SIGNING_KEY: signingKey } : {}),
-    },
-  });
+export function startLocalServer(opts: import("../server.js").StartServerOptions = {}) {
+  return startServer(opts);
 }

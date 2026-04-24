@@ -643,7 +643,7 @@ function createScopeIssuanceApp(storage: AuthStorage): Hono<AppEnv> {
   });
 
   app.post("/subagents", async (c) => {
-    const auth = await authenticate(c.req.header("Authorization"), c.env.SIGNING_KEY);
+    const auth = await authenticate(c.req.header("Authorization"), c.env);
     if (!auth.ok) {
       return c.json({ error: auth.error, code: "invalid_authorization" }, auth.status);
     }

@@ -31,9 +31,12 @@ npm install @relayauth/sdk
 ### Verify a token
 
 ```ts
-import { TokenVerifier } from "@relayauth/core";
+import { TokenVerifier } from "@relayauth/sdk";
 
-const verifier = new TokenVerifier({ signingKey: process.env.SIGNING_KEY! });
+const verifier = new TokenVerifier({
+  jwksUrl: "https://relayauth.example.com/.well-known/jwks.json",
+  issuer: "https://relayauth.dev",
+});
 const claims = await verifier.verify(token);
 // claims.scopes → ["relayfile:fs:read:/github/*", "relayfile:fs:write:/github/*/reviews/*"]
 ```
@@ -55,7 +58,7 @@ checker.check("relayfile:fs:write:/slack/channels/general/messages/reply.json");
 ### Generate a dev token
 
 ```bash
-SIGNING_KEY=my-secret \
+RELAYAUTH_SIGNING_KEY_PEM="$(cat private.pem)" \
 RELAYAUTH_SUB=review-agent \
 RELAYAUTH_SCOPES_JSON='["relayfile:fs:read:/github/*", "relayfile:fs:write:/github/*/reviews/*"]' \
   ./scripts/generate-dev-token.sh
@@ -65,7 +68,9 @@ RELAYAUTH_SCOPES_JSON='["relayfile:fs:read:/github/*", "relayfile:fs:write:/gith
 
 ```bash
 npm install
-SIGNING_KEY=my-secret npm run start
+RELAYAUTH_SIGNING_KEY_PEM="$(cat private.pem)" \
+RELAYAUTH_SIGNING_KEY_PEM_PUBLIC="$(cat public.pem)" \
+  npm run start
 ```
 
 ## Scope Format

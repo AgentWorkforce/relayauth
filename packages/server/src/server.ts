@@ -35,8 +35,6 @@ export type CreateAppOptions = {
   storage?: AuthStorage;
   config?: Partial<AppConfig>;
   defaultBindings?: Partial<AppConfig>;
-  signingKey?: string;
-  signingKeyId?: string;
   internalSecret?: string;
   baseUrl?: string;
   allowedOrigins?: string;
@@ -57,8 +55,6 @@ function normalizeConfig(options: CreateAppOptions): Partial<AppConfig> {
   return {
     ...(options.defaultBindings ?? {}),
     ...(options.config ?? {}),
-    ...(options.signingKey !== undefined ? { SIGNING_KEY: options.signingKey } : {}),
-    ...(options.signingKeyId !== undefined ? { SIGNING_KEY_ID: options.signingKeyId } : {}),
     ...(options.internalSecret !== undefined ? { INTERNAL_SECRET: options.internalSecret } : {}),
     ...(options.baseUrl !== undefined ? { BASE_URL: options.baseUrl } : {}),
     ...(options.allowedOrigins !== undefined ? { ALLOWED_ORIGINS: options.allowedOrigins } : {}),
@@ -214,12 +210,11 @@ export async function startServer(options: StartServerOptions = {}) {
       ? storage.INTERNAL_SECRET
       : "internal-test-secret");
   const config: AppConfig = {
-    SIGNING_KEY: options.config?.SIGNING_KEY ?? process.env.SIGNING_KEY ?? "dev-secret",
-    SIGNING_KEY_ID: options.config?.SIGNING_KEY_ID ?? process.env.SIGNING_KEY_ID ?? "dev-key",
     INTERNAL_SECRET: internalSecret,
     BASE_URL: options.config?.BASE_URL ?? process.env.BASE_URL ?? `http://127.0.0.1:${port}`,
     ALLOWED_ORIGINS: options.config?.ALLOWED_ORIGINS ?? process.env.ALLOWED_ORIGINS,
-    RELAYAUTH_SIGNING_ALG: options.config?.RELAYAUTH_SIGNING_ALG ?? process.env.RELAYAUTH_SIGNING_ALG,
+    RELAYAUTH_SIGNING_KEY_PEM:
+      options.config?.RELAYAUTH_SIGNING_KEY_PEM ?? process.env.RELAYAUTH_SIGNING_KEY_PEM,
     RELAYAUTH_SIGNING_KEY_PEM_PUBLIC:
       options.config?.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC ?? process.env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC,
     RELAYAUTH_ENV_STAGE: options.config?.RELAYAUTH_ENV_STAGE ?? process.env.RELAYAUTH_ENV_STAGE,

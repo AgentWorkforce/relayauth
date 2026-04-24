@@ -8,6 +8,8 @@ import { createSqliteStorage } from "../storage/sqlite.js";
 import {
   createTestRequest,
   generateTestToken,
+  TEST_RS256_PRIVATE_KEY_PEM,
+  TEST_RS256_PUBLIC_KEY_PEM,
 } from "./test-helpers.js";
 
 type ExtendedAuditAction =
@@ -51,9 +53,9 @@ function normalizeSql(query: string): string {
 
 function createBindings(overrides: Partial<AppEnv["Bindings"]> = {}): AppEnv["Bindings"] {
   return {
-    SIGNING_KEY: "dev-secret",
-    SIGNING_KEY_ID: "dev-key",
     INTERNAL_SECRET: "internal-test-secret",
+    RELAYAUTH_SIGNING_KEY_PEM: TEST_RS256_PRIVATE_KEY_PEM,
+    RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: TEST_RS256_PUBLIC_KEY_PEM,
     ...overrides,
   };
 }

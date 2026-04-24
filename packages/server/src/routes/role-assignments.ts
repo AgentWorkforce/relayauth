@@ -9,6 +9,7 @@ import {
 } from "../engine/role-assignments.js";
 import { getRole } from "../engine/roles.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
+import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { AuthStorage } from "../storage/index.js";
 
@@ -16,17 +17,12 @@ type AssignRoleRequest = {
   roleId?: string;
 };
 
-type JwtHeader = {
-  alg?: string;
-  typ?: string;
-};
-
 const roleAssignments = new Hono<AppEnv>();
 
 roleAssignments.post("/:id/roles", async (c) => {
   const auth = await authenticateAndAuthorize(
     c,
-    c.env.SIGNING_KEY,
+    c.env,
     ["relayauth:identity:manage:*", "relayauth:role:manage:*"],
   );
   if (!auth.ok) {
@@ -82,7 +78,7 @@ roleAssignments.post("/:id/roles", async (c) => {
 roleAssignments.delete("/:id/roles/:roleId", async (c) => {
   const auth = await authenticateAndAuthorize(
     c,
-    c.env.SIGNING_KEY,
+    c.env,
     ["relayauth:identity:manage:*", "relayauth:role:manage:*"],
   );
   if (!auth.ok) {
@@ -134,7 +130,7 @@ roleAssignments.delete("/:id/roles/:roleId", async (c) => {
 roleAssignments.get("/:id/roles", async (c) => {
   const auth = await authenticateAndAuthorize(
     c,
-    c.env.SIGNING_KEY,
+    c.env,
     ["relayauth:identity:read:*", "relayauth:role:read:*"],
   );
   if (!auth.ok) {
@@ -164,13 +160,13 @@ export default roleAssignments;
 
 async function authenticateAndAuthorize(
   c: Context<AppEnv>,
-  signingKey: string,
+  env: AppEnv["Bindings"],
   requiredScopes: string[],
 ): Promise<
   | { ok: true; claims: RelayAuthTokenClaims }
   | { ok: false; error: string; status: 401 | 403 }
 > {
-  const auth = await authenticate(c, signingKey);
+  const auth = await authenticate(c, env);
   if (!auth.ok) {
     return auth;
   }
@@ -187,7 +183,7 @@ async function authenticateAndAuthorize(
 
 async function authenticate(
   c: Context<AppEnv>,
-  signingKey: string,
+  env: AppEnv["Bindings"],
 ): Promise<
   | { ok: true; claims: RelayAuthTokenClaims }
   | { ok: false; error: string; status: 401 }
@@ -212,7 +208,7 @@ async function authenticate(
     return { ok: false, error: "Invalid Authorization header", status: 401 };
   }
 
-  const claims = await verifyToken(token, signingKey);
+  const claims = await verifyToken(token, env);
   if (!claims) {
     return { ok: false, error: "Invalid access token", status: 401 };
   }
@@ -220,50 +216,24 @@ async function authenticate(
   return { ok: true, claims };
 }
 
-async function verifyToken(token: string, signingKey: string): Promise<RelayAuthTokenClaims | null> {
+async function verifyToken(token: string, env: AppEnv["Bindings"]): Promise<RelayAuthTokenClaims | null> {
   const parts = token.split(".");
   if (parts.length !== 3) {
     emitTokenInvalid("malformed_token");
     return null;
   }
 
-  const [encodedHeader, encodedPayload, signature] = parts;
-  const header = decodeBase64UrlJson<JwtHeader>(encodedHeader);
+  const [, encodedPayload] = parts;
   const payload = decodeBase64UrlJson<RelayAuthTokenClaims>(encodedPayload);
-  if (!header || !payload || header.alg !== "HS256") {
-    emitTokenInvalid("invalid_header", payload);
+
+  try {
+    const claims = await verifyRs256Token(token, env);
+    emitTokenVerified(claims, Math.floor(Date.now() / 1000));
+    return claims;
+  } catch {
+    emitTokenInvalid("invalid_token", payload);
     return null;
   }
-
-  const isValidSignature = await verifyHs256Signature(
-    `${encodedHeader}.${encodedPayload}`,
-    signature,
-    signingKey,
-  );
-  if (!isValidSignature) {
-    emitTokenInvalid("invalid_signature", payload);
-    return null;
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp !== "number" || payload.exp <= now) {
-    emitTokenInvalid("token_expired", payload);
-    return null;
-  }
-
-  if (
-    typeof payload.sub !== "string" ||
-    typeof payload.org !== "string" ||
-    typeof payload.wks !== "string" ||
-    typeof payload.sponsorId !== "string" ||
-    !Array.isArray(payload.sponsorChain)
-  ) {
-    emitTokenInvalid("invalid_claims", payload);
-    return null;
-  }
-
-  emitTokenVerified(payload, now);
-  return payload;
 }
 
 function decodeBase64UrlJson<T>(value: string): T | null {
@@ -274,44 +244,10 @@ function decodeBase64UrlJson<T>(value: string): T | null {
   }
 }
 
-async function verifyHs256Signature(
-  value: string,
-  signature: string,
-  signingKey: string,
-): Promise<boolean> {
-  try {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(signingKey),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["verify"],
-    );
-
-    return crypto.subtle.verify(
-      "HMAC",
-      key,
-      decodeBase64UrlToBytes(signature),
-      new TextEncoder().encode(value),
-    );
-  } catch {
-    return false;
-  }
-}
-
 function decodeBase64Url(value: string): string {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
   return atob(padded);
-}
-
-function decodeBase64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
-  const decoded = decodeBase64Url(value);
-  const bytes = new Uint8Array(decoded.length);
-  for (let i = 0; i < decoded.length; i += 1) {
-    bytes[i] = decoded.charCodeAt(i);
-  }
-  return bytes;
 }
 
 function emitTokenVerified(claims: RelayAuthTokenClaims, nowSeconds: number): void {

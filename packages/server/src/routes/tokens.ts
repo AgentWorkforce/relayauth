@@ -1,10 +1,11 @@
 import type { RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
-import { matchScope } from "@relayauth/sdk";
+import { matchScope, TokenExpiredError, type VerifyOptions } from "@relayauth/sdk";
 import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
-import { decodeBase64UrlJson, verifyHs256Signature } from "../lib/jwt.js";
+import { signToken } from "../lib/sign.js";
+import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { AuthStorage, RevocationStorage } from "../storage/index.js";
 
@@ -23,12 +24,6 @@ type RevokeTokenRequest = {
   tokenId?: string;
   identityId?: string;
   sessionId?: string;
-};
-
-type JwtHeader = {
-  alg?: string;
-  typ?: string;
-  kid?: string;
 };
 
 type TokenRow = {
@@ -105,7 +100,6 @@ const INSERT_TOKEN_SQL = `
 tokens.post("/", async (c) => {
   const auth = await authenticateAndAuthorizeFromContext(
     c,
-    c.env.SIGNING_KEY,
     "relayauth:token:create:*",
     matchScope,
   );
@@ -167,7 +161,7 @@ tokens.post("/refresh", async (c) => {
   }
 
   const storage = getSqlStorage(c.get("storage"));
-  const verification = await verifyLegacyToken(refreshToken, c.env.SIGNING_KEY);
+  const verification = await verifyToken(refreshToken, c.env, { audience: [REFRESH_AUDIENCE] });
   if (!verification.ok) {
     return c.json({ error: verification.error }, 401);
   }
@@ -236,7 +230,6 @@ tokens.post("/refresh", async (c) => {
 tokens.post("/revoke", async (c) => {
   const auth = await authenticateAndAuthorizeFromContext(
     c,
-    c.env.SIGNING_KEY,
     "relayauth:token:manage:*",
     matchScope,
   );
@@ -292,7 +285,6 @@ tokens.post("/revoke", async (c) => {
 tokens.get("/introspect", async (c) => {
   const auth = await authenticateAndAuthorizeFromContext(
     c,
-    c.env.SIGNING_KEY,
     "relayauth:token:read:*",
     matchScope,
   );
@@ -306,7 +298,7 @@ tokens.get("/introspect", async (c) => {
   }
 
   const storage = getSqlStorage(c.get("storage"));
-  const verification = await verifyLegacyToken(token, c.env.SIGNING_KEY);
+  const verification = await verifyToken(token, c.env);
   if (!verification.ok) {
     return c.json(null, 200);
   }
@@ -375,8 +367,8 @@ async function issueTokenPair(
     sid: sessionId,
   };
 
-  const accessToken = await signHs256Jwt(accessClaims, env.SIGNING_KEY, env.SIGNING_KEY_ID);
-  const refreshToken = await signHs256Jwt(refreshClaims, env.SIGNING_KEY, env.SIGNING_KEY_ID);
+  const accessToken = await signToken(accessClaims, env);
+  const refreshToken = await signToken(refreshClaims, env);
 
   await persistIssuedToken(storage, identity.id, accessClaims);
   await persistIssuedToken(storage, identity.id, refreshClaims);
@@ -557,28 +549,25 @@ async function cascadeRevokeSession(
   });
 }
 
-async function verifyLegacyToken(
+async function verifyToken(
   token: string,
-  signingKey: string,
+  env: AppEnv["Bindings"],
+  options: Omit<VerifyOptions, "jwksUrl"> = {},
 ): Promise<
   | { ok: true; claims: RelayAuthTokenClaims }
   | { ok: false; error: string }
 > {
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    return { ok: false, error: "Invalid token" };
-  }
-
-  const [encodedHeader, encodedPayload, signature] = parts;
-  const header = decodeBase64UrlJson<JwtHeader>(encodedHeader);
-  const claims = decodeBase64UrlJson<RelayAuthTokenClaims>(encodedPayload);
-  if (!header || !claims || header.alg !== "HS256") {
-    return { ok: false, error: "Invalid token" };
-  }
-
-  const validSignature = await verifyHs256Signature(`${encodedHeader}.${encodedPayload}`, signature, signingKey);
-  if (!validSignature) {
-    return { ok: false, error: "Invalid token" };
+  let claims: RelayAuthTokenClaims;
+  try {
+    claims = await verifyRs256Token(token, env, {
+      issuer: EXPECTED_ISSUER,
+      ...options,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof TokenExpiredError ? "Token expired" : "Invalid token",
+    };
   }
 
   if (!isValidClaims(claims)) {
@@ -634,48 +623,6 @@ function isValidClaims(value: RelayAuthTokenClaims): boolean {
     && typeof value.iat === "number"
     && typeof value.exp === "number"
     && (value.token_type === "access" || value.token_type === "refresh");
-}
-
-async function signHs256Jwt(
-  claims: RelayAuthTokenClaims,
-  signingKey: string,
-  signingKeyId: string,
-): Promise<string> {
-  const header: JwtHeader = {
-    alg: "HS256",
-    typ: "JWT",
-    kid: signingKeyId,
-  };
-
-  const encodedHeader = encodeBase64UrlJson(header);
-  const encodedPayload = encodeBase64UrlJson(claims);
-  const unsigned = `${encodedHeader}.${encodedPayload}`;
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(signingKey),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(unsigned));
-  return `${unsigned}.${encodeBase64UrlBytes(new Uint8Array(signature))}`;
-}
-
-function encodeBase64UrlJson(value: unknown): string {
-  return encodeBase64UrlBytes(new TextEncoder().encode(JSON.stringify(value)));
-}
-
-function encodeBase64UrlBytes(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  return btoa(binary)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
 }
 
 function normalizeScopes(value: unknown, fallback: string[]): string[] {

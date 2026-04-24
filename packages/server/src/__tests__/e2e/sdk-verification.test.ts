@@ -62,8 +62,6 @@ const WORKSPACE_ID = "ws_sdk_verification_e2e";
 const ADMIN_SCOPE = "relayauth:admin:*";
 const READ_SCOPE = "relayauth:identity:read:*";
 const DEFAULT_AUDIENCE = ["relayauth-sdk", "relay-api"];
-const SIGNING_KEY = "dev-secret";
-
 test("SDK & Verification E2E", async (t) => {
   const harness = await createSdkVerificationHarness();
   t.after(async () => {
@@ -329,17 +327,14 @@ async function createSdkVerificationHarness() {
   const baseUrl = `http://relayauth-sdk-verification.${randomUUID()}.local`;
   const jwksUrl = `${baseUrl}/.well-known/jwks.json`;
   const revocationUrl = `${baseUrl}/v1/tokens/revocation`;
-  const adminToken = generateTestToken(
-    {
-      sub: "agent_sdk_admin",
-      org: ORG_ID,
-      wks: WORKSPACE_ID,
-      scopes: ["relayauth:*:*:*"],
-      sponsorId: "user_sdk_admin",
-      sponsorChain: ["user_sdk_admin", "agent_sdk_admin"],
-    },
-    SIGNING_KEY,
-  );
+  const adminToken = generateTestToken({
+    sub: "agent_sdk_admin",
+    org: ORG_ID,
+    wks: WORKSPACE_ID,
+    scopes: ["relayauth:*:*:*"],
+    sponsorId: "user_sdk_admin",
+    sponsorChain: ["user_sdk_admin", "agent_sdk_admin"],
+  });
   const fetchHarness = createFetchDispatchHarness(baseUrl, dispatch);
 
   async function dispatch(request: Request): Promise<Response> {

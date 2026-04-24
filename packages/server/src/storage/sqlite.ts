@@ -84,8 +84,6 @@ export type SqliteStorage = AuthStorage & {
   /** D1-compatible shim for test helpers — wraps better-sqlite3 in D1's async API */
   DB: D1Shim;
   INTERNAL_SECRET: string;
-  SIGNING_KEY?: string;
-  SIGNING_KEY_ID?: string;
   BASE_URL?: string;
   ALLOWED_ORIGINS?: string;
   close(): Promise<void> | void;
@@ -821,8 +819,6 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
     }),
     DB,
     INTERNAL_SECRET: DEFAULT_INTERNAL_SECRET,
-    SIGNING_KEY: undefined,
-    SIGNING_KEY_ID: undefined,
     BASE_URL: undefined,
     ALLOWED_ORIGINS: undefined,
     close: () => provider.close(),

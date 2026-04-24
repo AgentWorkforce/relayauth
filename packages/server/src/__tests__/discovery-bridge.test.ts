@@ -40,6 +40,9 @@ test("POST /v1/discovery/bridge fetches an external agent card and returns Agent
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = input instanceof URL ? input.toString() : input.toString();
+    if (url.startsWith("data:")) {
+      return originalFetch(input);
+    }
     assert.equal(url, "https://agent.example.com/.well-known/agent-card.json");
 
     return new Response(
@@ -105,6 +108,10 @@ test("POST /v1/discovery/bridge blocks redirects to private hosts before followi
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls += 1;
     const url = input instanceof URL ? input.toString() : input.toString();
+    if (url.startsWith("data:")) {
+      calls -= 1;
+      return originalFetch(input, init);
+    }
 
     if (calls === 1) {
       assert.equal(url, "https://agent.example.com/.well-known/agent-card.json");
@@ -138,11 +145,16 @@ test("POST /v1/discovery/bridge blocks redirects to private hosts before followi
 
 test("POST /v1/discovery/bridge returns 422 for invalid agent cards", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () =>
-    new Response(JSON.stringify({ url: "https://agent.example.com/rpc" }), {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = input instanceof URL ? input.toString() : input.toString();
+    if (url.startsWith("data:")) {
+      return originalFetch(input);
+    }
+    return new Response(JSON.stringify({ url: "https://agent.example.com/rpc" }), {
       status: 200,
       headers: { "content-type": "application/json" },
-    })) as typeof fetch;
+    });
+  }) as typeof fetch;
 
   try {
     const app = createTestApp();
@@ -161,7 +173,11 @@ test("POST /v1/discovery/bridge returns 422 for invalid agent cards", async () =
 
 test("POST /v1/discovery/bridge returns 502 when the upstream agent card cannot be reached", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = input instanceof URL ? input.toString() : input.toString();
+    if (url.startsWith("data:")) {
+      return originalFetch(input);
+    }
     throw new Error("connect ECONNREFUSED");
   }) as typeof fetch;
 

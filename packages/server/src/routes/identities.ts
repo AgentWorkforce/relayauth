@@ -128,7 +128,6 @@ const INSERT_AUDIT_EVENT_SQL = `
 identities.get("/", async (c) => {
   const auth = await authenticateAndAuthorizeFromContext(
     c,
-    c.env.SIGNING_KEY,
     "relayauth:identity:read:*",
     matchScope,
   );
@@ -163,7 +162,6 @@ identities.get("/", async (c) => {
 identities.get("/:id", async (c) => {
   const auth = await authenticateAndAuthorizeFromContext(
     c,
-    c.env.SIGNING_KEY,
     "relayauth:identity:read:*",
     matchScope,
   );
@@ -487,7 +485,7 @@ async function authenticateBearerOrApiKeyAndAuthorize(
 
   const auth = await authenticateBearerOrApiKey(
     c.req.raw,
-    c.env.SIGNING_KEY,
+    c.env,
     c.get("storage"),
   );
   if (!auth.ok) {
