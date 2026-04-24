@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
 import { decodeBase64UrlJson, verifyHs256Signature } from "../lib/jwt.js";
+import { signToken } from "../lib/sign.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { AuthStorage, RevocationStorage } from "../storage/index.js";
 
@@ -375,8 +376,15 @@ async function issueTokenPair(
     sid: sessionId,
   };
 
-  const accessToken = await signHs256Jwt(accessClaims, env.SIGNING_KEY, env.SIGNING_KEY_ID);
-  const refreshToken = await signHs256Jwt(refreshClaims, env.SIGNING_KEY, env.SIGNING_KEY_ID);
+  // Dispatch to the RELAYAUTH_SIGNING_ALG-configured signer (RS256 in
+  // production post-phase-120). The old code called signHs256Jwt directly
+  // with env.SIGNING_KEY, which regressed after cloud#299 removed the
+  // SIGNING_KEY worker binding — crypto.subtle.importKey then threw
+  // DataError "Imported HMAC key length (0) must be non-zero" and
+  // /v1/tokens returned 500. signToken(...) respects the env's signing-alg
+  // config and uses RELAYAUTH_SIGNING_KEY_PEM when RS256.
+  const accessToken = await signToken(accessClaims, env);
+  const refreshToken = await signToken(refreshClaims, env);
 
   await persistIssuedToken(storage, identity.id, accessClaims);
   await persistIssuedToken(storage, identity.id, refreshClaims);
@@ -634,32 +642,6 @@ function isValidClaims(value: RelayAuthTokenClaims): boolean {
     && typeof value.iat === "number"
     && typeof value.exp === "number"
     && (value.token_type === "access" || value.token_type === "refresh");
-}
-
-async function signHs256Jwt(
-  claims: RelayAuthTokenClaims,
-  signingKey: string,
-  signingKeyId: string,
-): Promise<string> {
-  const header: JwtHeader = {
-    alg: "HS256",
-    typ: "JWT",
-    kid: signingKeyId,
-  };
-
-  const encodedHeader = encodeBase64UrlJson(header);
-  const encodedPayload = encodeBase64UrlJson(claims);
-  const unsigned = `${encodedHeader}.${encodedPayload}`;
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(signingKey),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(unsigned));
-  return `${unsigned}.${encodeBase64UrlBytes(new Uint8Array(signature))}`;
 }
 
 function encodeBase64UrlJson(value: unknown): string {
