@@ -1,13 +1,16 @@
 import type {
   AgentTokenPair,
   AgentIdentity,
+  AgentTokenIssueRequest,
   AuditEntry,
   AuditQuery,
   CreateIdentityInput,
   IdentityStatus,
+  PathTokenIssueRequest,
   RelayAuthTokenClaims,
   Role,
   TokenPair,
+  WorkspaceTokenIssueRequest,
   WorkspaceTokenIssueResponse,
 } from "@relayauth/types";
 
@@ -34,19 +37,6 @@ type ListIdentitiesOptions = {
 };
 
 type IssueTokenOptions = {
-  scopes?: string[];
-  audience?: string[];
-  expiresIn?: number;
-};
-
-type IssueWorkspaceTokenOptions = {
-  workspaceId: string;
-  name?: string;
-  scopes?: string[];
-};
-
-type IssueAgentTokenOptions = {
-  agentId: string;
   scopes?: string[];
   audience?: string[];
   expiresIn?: number;
@@ -127,15 +117,30 @@ export class RelayAuthClient {
     });
   }
 
-  async issueWorkspaceToken(options: IssueWorkspaceTokenOptions): Promise<WorkspaceTokenIssueResponse> {
+  async issueWorkspaceToken(options: WorkspaceTokenIssueRequest): Promise<WorkspaceTokenIssueResponse> {
     return this._request<WorkspaceTokenIssueResponse>("/v1/tokens/workspace", {
       method: "POST",
       body: options,
     });
   }
 
-  async issueAgentToken(options: IssueAgentTokenOptions): Promise<AgentTokenPair> {
+  async issueAgentToken(options: AgentTokenIssueRequest): Promise<AgentTokenPair> {
     return this._request<AgentTokenPair>("/v1/tokens/agent", {
+      method: "POST",
+      body: options,
+      headers: this.options.apiKey
+        ? {
+          "x-api-key": this.options.apiKey,
+        }
+        : undefined,
+      errorContext: {
+        identityId: options.agentId,
+      },
+    });
+  }
+
+  async issuePathToken(options: PathTokenIssueRequest): Promise<never> {
+    return this._request<never>("/v1/tokens/path", {
       method: "POST",
       body: options,
       headers: this.options.apiKey
@@ -448,7 +453,7 @@ function createRequestError(
   const identityId = context?.disableIdentityErrorMapping
     ? undefined
     : (context?.identityId ?? extractIdentityId(path));
-  const errorCode = getString(payload, "error");
+  const errorCode = getString(payload, "code") ?? getString(payload, "error");
   const message = getString(payload, "message") ?? `Request failed with status ${status}`;
 
   if (status === 404 && identityId) {

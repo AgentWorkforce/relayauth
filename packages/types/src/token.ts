@@ -45,6 +45,12 @@ export interface TokenPair {
   tokenType: "Bearer";
 }
 
+export interface WorkspaceTokenIssueRequest {
+  workspaceId: string;
+  name?: string;
+  scopes?: string[];
+}
+
 export interface WorkspaceToken {
   id: string;
   kind: "workspace_token";
@@ -61,11 +67,31 @@ export interface WorkspaceTokenIssueResponse {
   key: string;
 }
 
+export interface AgentTokenIssueRequest {
+  agentId: string;
+  scopes?: string[];
+  audience?: string[];
+  expiresIn?: number;
+}
+
 export interface AgentTokenPair extends TokenPair {
   agentId: string;
   workspaceId: string;
   tokenClass: "relay_ag";
   issuedViaWorkspaceTokenId: string;
+}
+
+export interface PathTokenIssueRequest {
+  agentId: string;
+  paths: string[];
+  scopes?: string[];
+  audience?: string[];
+  expiresIn?: number;
+}
+
+export interface PathTokenStubResponse {
+  error: "path_scoped_tokens_not_implemented";
+  code: "not_implemented";
 }
 
 export interface JWKSResponse {

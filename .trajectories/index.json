@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-11T14:11:38.416Z",
+  "lastUpdated": "2026-05-11T18:39:47.267Z",
   "trajectories": {
     "traj_a11zh8l3gbp5": {
       "title": "Work on the relay: combine relayauth + relayfile for agent sandboxing",
@@ -106,9 +106,10 @@
     },
     "traj_1774612574920_f3fdc1c5": {
       "title": "review-pr-8-workflow",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-03-27T11:56:14.920Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.wt-platform-v1/relayauth/.trajectories/active/traj_1774612574920_f3fdc1c5.json"
+      "completedAt": "2026-05-11T18:39:47.253Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relayauth/.trajectories/completed/2026-05/traj_1774612574920_f3fdc1c5.json"
     },
     "traj_1774647106611_54b83aed": {
       "title": "116-sqlite-adapter-parity-workflow",

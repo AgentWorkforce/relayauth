@@ -1,15 +1,24 @@
 export { RelayAuthClient } from "./client.js";
 export type { RelayAuthClientOptions } from "./client.js";
+export { AgentTokenSession, createAgentTokenSession } from "./agent-token-session.js";
+export type { AgentTokenSessionOptions } from "./agent-token-session.js";
 export type {
+  AgentTokenIssueRequest,
+  AgentTokenPair,
   AgentIdentity,
   AuditEntry,
   AuditQuery,
   CreateIdentityInput,
   IdentityStatus,
   IdentityType,
+  PathTokenIssueRequest,
+  PathTokenStubResponse,
   RelayAuthTokenClaims,
   Role,
   TokenPair,
+  WorkspaceToken,
+  WorkspaceTokenIssueRequest,
+  WorkspaceTokenIssueResponse,
 } from "@relayauth/types";
 export { TokenVerifier } from "./verify.js";
 export type { VerifyOptions } from "./verify.js";

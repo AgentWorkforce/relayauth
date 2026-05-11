@@ -543,6 +543,34 @@ test("POST /v1/tokens/agent", async (t) => {
   });
 });
 
+test("POST /v1/tokens/path", async (t) => {
+  await t.test("returns the M1 not-implemented stub response", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*"],
+      },
+    });
+    const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
+      scopes: ["relayauth:token:create:*"],
+    });
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/path", {
+      body: {
+        agentId: "agent_path_subject",
+        paths: ["/linear/issues/**"],
+      },
+      headers: {
+        "x-api-key": workspaceToken.key,
+      },
+    });
+
+    await assertJsonResponse<ErrorBody>(response, 501, (body) => {
+      assert.equal(body.error, "path_scoped_tokens_not_implemented");
+      assert.equal(body.code, "not_implemented");
+    });
+  });
+});
+
 test("POST /v1/tokens/refresh", async (t) => {
   await t.test("refreshes a RS256 token pair without requiring a bearer token", async () => {
     const { app, identity } = await createHarness();
