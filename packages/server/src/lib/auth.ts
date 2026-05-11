@@ -3,7 +3,7 @@ import { parseScope } from "@relayauth/sdk";
 import type { Context } from "hono";
 
 import { hashApiKey } from "./api-keys.js";
-import { decodeBase64UrlJson } from "./jwt.js";
+import { decodeBase64UrlJson, splitJwtSegments } from "./jwt.js";
 import { emitObserverEvent, now as observerNow } from "./events.js";
 import { verifyRs256Token } from "./token-verifier.js";
 import type { AppEnv } from "../env.js";
@@ -159,7 +159,28 @@ export async function authenticateFromContext(
     return { ok: true, claims: apiKeyClaims, via: "api_key" };
   }
 
-  return authenticate(c.req.header("authorization"), c.env);
+  const auth = await authenticate(c.req.header("authorization"), c.env);
+  if (!auth.ok) {
+    return auth;
+  }
+
+  const storage = c.get("storage");
+  if (await isBearerTokenInactive(storage, auth.claims)) {
+    emitTokenInvalid("revoked_token", auth.claims);
+    return { ok: false, error: "Invalid access token", code: "invalid_token", status: 401 };
+  }
+
+  if (await isWorkspaceLineageRevoked(storage, auth.claims)) {
+    emitTokenInvalid("workspace_token_revoked", auth.claims);
+    return {
+      ok: false,
+      error: "Workspace token has been revoked",
+      code: "workspace_token_revoked",
+      status: 401,
+    };
+  }
+
+  return auth;
 }
 
 /**
@@ -208,8 +229,8 @@ export function authorizeClaims(
 }
 
 async function verifyToken(token: string, env: AppEnv["Bindings"]): Promise<RelayAuthTokenClaims | null> {
-  const parts = token.split(".");
-  if (parts.length !== 3) {
+  const parts = splitJwtSegments(token);
+  if (!parts) {
     emitTokenInvalid("malformed_token");
     return null;
   }
@@ -367,7 +388,9 @@ function resolveBearerOrApiKeyArgs(
   };
 }
 
-function resolveApiKeyStorage(storage: ApiKeyStorage | AuthStorage): Pick<ApiKeyStorage, "getByHash" | "touchLastUsed"> {
+function resolveApiKeyStorage(
+  storage: ApiKeyStorage | AuthStorage,
+): Pick<ApiKeyStorage, "get" | "getByHash" | "touchLastUsed"> {
   return "apiKeys" in storage ? storage.apiKeys : storage;
 }
 
@@ -389,15 +412,21 @@ function invalidApiKeyFailure(): AuthenticateFailure {
   };
 }
 
-function createApiKeyClaims(apiKey: Pick<StoredApiKey, "id" | "name" | "orgId" | "prefix" | "scopes">): RelayAuthTokenClaims {
+function createApiKeyClaims(
+  apiKey: Pick<StoredApiKey, "id" | "name" | "orgId" | "prefix" | "scopes" | "kind" | "workspaceId">,
+): RelayAuthTokenClaims {
   const now = Math.floor(Date.now() / 1000);
   const subject = `api_key:${apiKey.id}`;
+  const workspaceId =
+    typeof apiKey.workspaceId === "string" && apiKey.workspaceId.trim().length > 0
+      ? apiKey.workspaceId.trim()
+      : "api_keys";
 
   return {
     sub: subject,
     org: apiKey.orgId,
-    wks: "api_keys",
-    workspace_id: "api_keys",
+    wks: workspaceId,
+    workspace_id: workspaceId,
     agent_name: apiKey.name,
     scopes: [...apiKey.scopes],
     sponsorId: subject,
@@ -411,8 +440,36 @@ function createApiKeyClaims(apiKey: Pick<StoredApiKey, "id" | "name" | "orgId" |
     meta: {
       apiKeyId: apiKey.id,
       apiKeyPrefix: apiKey.prefix,
+      apiKeyKind: apiKey.kind ?? "api_key",
     },
   };
+}
+
+async function isBearerTokenInactive(storage: AuthStorage, claims: RelayAuthTokenClaims): Promise<boolean> {
+  const revocations = storage.revocations as AuthStorage["revocations"] & {
+    isRevoked?: (jti: string) => Promise<boolean>;
+  };
+  return typeof revocations.isRevoked === "function"
+    ? revocations.isRevoked(claims.jti)
+    : false;
+}
+
+async function isWorkspaceLineageRevoked(
+  storage: AuthStorage,
+  claims: RelayAuthTokenClaims,
+): Promise<boolean> {
+  const workspaceTokenId = normalizeCredential(claims.meta?.workspaceTokenId);
+  if (!workspaceTokenId) {
+    return false;
+  }
+
+  const workspaceToken = await resolveApiKeyStorage(storage).get(workspaceTokenId);
+  if (!workspaceToken || normalizeCredential(workspaceToken.revokedAt ?? undefined)) {
+    return true;
+  }
+
+  const expectedWorkspaceId = normalizeCredential(workspaceToken.workspaceId);
+  return Boolean(expectedWorkspaceId && expectedWorkspaceId !== claims.wks);
 }
 
 function constantTimeEquals(left: string, right: string): boolean {

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
+import type {
+  AgentTokenPair,
+  RelayAuthTokenClaims,
+  TokenPair,
+  WorkspaceTokenIssueResponse,
+} from "@relayauth/types";
 import { RelayAuthClient } from "../client.js";
 import { IdentityNotFoundError, TokenExpiredError, TokenRevokedError } from "../errors.js";
 
@@ -13,6 +18,17 @@ type TokenIssueOptions = {
 type TokenClient = RelayAuthClient & {
   issueToken(identityId: string, options?: TokenIssueOptions): Promise<TokenPair>;
   refreshToken(refreshToken: string): Promise<TokenPair>;
+  issueWorkspaceToken(options: {
+    workspaceId: string;
+    name?: string;
+    scopes?: string[];
+  }): Promise<WorkspaceTokenIssueResponse>;
+  issueAgentToken(options: {
+    agentId: string;
+    scopes?: string[];
+    audience?: string[];
+    expiresIn?: number;
+  }): Promise<AgentTokenPair>;
   revokeToken(tokenId: string): Promise<void>;
   introspectToken(token: string): Promise<RelayAuthTokenClaims | null>;
 };
@@ -57,6 +73,30 @@ const claims: RelayAuthTokenClaims = {
     maxCostPerDay: 25,
     remaining: 412,
   },
+};
+
+const workspaceTokenResponse: WorkspaceTokenIssueResponse = {
+  workspaceToken: {
+    id: "ak_workspace_123",
+    kind: "workspace_token",
+    workspaceId: "ws_123",
+    prefix: "relay_ws_abcd",
+    name: "support-runtime",
+    scopes: ["relayauth:token:create:*"],
+    createdAt: "2026-03-25T10:00:00.000Z",
+    revoked: false,
+  },
+  key: "relay_ws_abcdefghijklmnopqrstuvwxyz",
+};
+
+const agentTokenPair: AgentTokenPair = {
+  ...tokenPair,
+  accessToken: "relay_ag_access.token.value",
+  refreshToken: "relay_ag_refresh.token.value",
+  agentId: "agent_123",
+  workspaceId: "ws_123",
+  tokenClass: "relay_ag",
+  issuedViaWorkspaceTokenId: "ak_workspace_123",
 };
 
 function createClient(): TokenClient {
@@ -169,6 +209,55 @@ test("refreshToken posts the refresh token to /v1/tokens/refresh", async (t) => 
   assert.equal(request.headers.get("content-type"), "application/json");
   assert.deepEqual(JSON.parse(request.body), {
     refreshToken: tokenPair.refreshToken,
+  });
+});
+
+test("issueWorkspaceToken posts workspace settings to /v1/tokens/workspace", async (t) => {
+  const client = createClient();
+  const fetchMock = mockFetch(() => jsonResponse(workspaceTokenResponse, 201));
+  t.after(() => fetchMock.restore());
+
+  const result = await client.issueWorkspaceToken({
+    workspaceId: "ws_123",
+    name: "support-runtime",
+    scopes: ["relayauth:token:create:*"],
+  });
+
+  assert.deepEqual(result, workspaceTokenResponse);
+  const request = await inspectCall(fetchMock.calls[0]);
+  assert.equal(request.url.toString(), `${baseUrl}/v1/tokens/workspace`);
+  assert.equal(request.method, "POST");
+  assertBearer(request.headers);
+  assert.deepEqual(JSON.parse(request.body), {
+    workspaceId: "ws_123",
+    name: "support-runtime",
+    scopes: ["relayauth:token:create:*"],
+  });
+});
+
+test("issueAgentToken uses x-api-key and posts the agent exchange request", async (t) => {
+  const client = new RelayAuthClient({ baseUrl, apiKey: workspaceTokenResponse.key }) as TokenClient;
+  const fetchMock = mockFetch(() => jsonResponse(agentTokenPair, 201));
+  t.after(() => fetchMock.restore());
+
+  const result = await client.issueAgentToken({
+    agentId: "agent_123",
+    scopes: ["relayauth:role:read:*"],
+    audience: ["relayauth"],
+    expiresIn: 1800,
+  });
+
+  assert.deepEqual(result, agentTokenPair);
+  const request = await inspectCall(fetchMock.calls[0]);
+  assert.equal(request.url.toString(), `${baseUrl}/v1/tokens/agent`);
+  assert.equal(request.method, "POST");
+  assert.equal(request.headers.get("x-api-key"), workspaceTokenResponse.key);
+  assert.equal(request.headers.get("authorization"), null);
+  assert.deepEqual(JSON.parse(request.body), {
+    agentId: "agent_123",
+    scopes: ["relayauth:role:read:*"],
+    audience: ["relayauth"],
+    expiresIn: 1800,
   });
 });
 

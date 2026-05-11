@@ -45,6 +45,29 @@ export interface TokenPair {
   tokenType: "Bearer";
 }
 
+export interface WorkspaceToken {
+  id: string;
+  kind: "workspace_token";
+  workspaceId: string;
+  prefix: string;
+  name: string;
+  scopes: string[];
+  createdAt: string;
+  revoked: boolean;
+}
+
+export interface WorkspaceTokenIssueResponse {
+  workspaceToken: WorkspaceToken;
+  key: string;
+}
+
+export interface AgentTokenPair extends TokenPair {
+  agentId: string;
+  workspaceId: string;
+  tokenClass: "relay_ag";
+  issuedViaWorkspaceTokenId: string;
+}
+
 export interface JWKSResponse {
   keys: JsonWebKey[];
 }

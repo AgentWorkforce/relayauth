@@ -10,7 +10,7 @@ import {
   listRoles,
   updateRole,
 } from "../engine/roles.js";
-import { authenticateAndAuthorize } from "../lib/auth.js";
+import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
 
 type CreateRoleRequest = {
   name?: string;
@@ -24,9 +24,8 @@ type UpdateRoleRequest = Partial<Pick<Role, "name" | "description" | "scopes">>;
 const roles = new Hono<AppEnv>();
 
 roles.post("/", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:role:manage:*",
     matchScope,
   );
@@ -55,9 +54,8 @@ roles.post("/", async (c) => {
 });
 
 roles.get("/", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:role:read:*",
     matchScope,
   );
@@ -82,9 +80,8 @@ roles.get("/", async (c) => {
 });
 
 roles.get("/:id", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:role:read:*",
     matchScope,
   );
@@ -107,9 +104,8 @@ roles.get("/:id", async (c) => {
 });
 
 roles.patch("/:id", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:role:manage:*",
     matchScope,
   );
@@ -142,9 +138,8 @@ roles.patch("/:id", async (c) => {
 });
 
 roles.delete("/:id", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:role:manage:*",
     matchScope,
   );

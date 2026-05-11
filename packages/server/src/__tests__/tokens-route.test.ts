@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 
-import type { RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
+import type {
+  AgentTokenPair,
+  RelayAuthTokenClaims,
+  TokenPair,
+  WorkspaceTokenIssueResponse,
+} from "@relayauth/types";
 
 import type { StoredIdentity } from "../storage/identity-types.js";
 import {
@@ -48,7 +53,8 @@ function signRs256Jwt(claims: RelayAuthTokenClaims): string {
 }
 
 function decodeJwtJsonSegment<T>(token: string, index: 0 | 1): T {
-  const segments = token.split(".");
+  const normalized = token.startsWith("relay_ag_") ? token.slice("relay_ag_".length) : token;
+  const segments = normalized.split(".");
   assert.equal(segments.length, 3, "expected a compact JWT with exactly three segments");
   return JSON.parse(Buffer.from(segments[index], "base64url").toString("utf8")) as T;
 }
@@ -293,6 +299,31 @@ async function requestRoute(
   return app.request(request, undefined, app.bindings);
 }
 
+async function issueWorkspaceToken(
+  app: ReturnType<typeof createTestApp>,
+  headers: HeadersInit,
+  {
+    workspaceId = "ws_tokens_route",
+    name = "runtime-support",
+    scopes = ["relayauth:token:create:*", "relayauth:role:read:*"],
+  }: {
+    workspaceId?: string;
+    name?: string;
+    scopes?: string[];
+  } = {},
+): Promise<WorkspaceTokenIssueResponse> {
+  const response = await requestRoute(app, "POST", "/v1/tokens/workspace", {
+    body: {
+      workspaceId,
+      name,
+      scopes,
+    },
+    headers,
+  });
+
+  return assertJsonResponse<WorkspaceTokenIssueResponse>(response, 201);
+}
+
 test("POST /v1/tokens", async (t) => {
   await t.test("issues a Phase 0 RS256 token pair with token-format claim shape", async () => {
     const { app, identity, authHeaders } = await createHarness();
@@ -411,6 +442,103 @@ test("POST /v1/tokens", async (t) => {
 
     await assertJsonResponse<ErrorBody>(response, 403, (body) => {
       assert.equal(body.error, "insufficient_scope");
+    });
+  });
+});
+
+test("POST /v1/tokens/workspace", async (t) => {
+  await t.test("issues a long-lived workspace token with a relay_ws_ prefix", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
+      },
+    });
+
+    const body = await issueWorkspaceToken(app, authHeaders);
+    assert.equal(body.workspaceToken.kind, "workspace_token");
+    assert.equal(body.workspaceToken.workspaceId, "ws_tokens_route");
+    assert.match(body.key, /^relay_ws_[A-Za-z0-9_-]+$/);
+    assert.ok(body.key.startsWith(body.workspaceToken.prefix));
+  });
+
+  await t.test("rejects scope escalation beyond the caller grant", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*"],
+      },
+    });
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/workspace", {
+      body: {
+        workspaceId: "ws_tokens_route",
+        name: "too-broad",
+        scopes: ["relayauth:token:create:*"],
+      },
+      headers: authHeaders,
+    });
+
+    await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+      assert.equal(body.error, "insufficient_scope");
+    });
+  });
+});
+
+test("POST /v1/tokens/agent", async (t) => {
+  await t.test("exchanges a workspace token for a prefixed agent token pair", async () => {
+    const { app, identity, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
+      },
+      identity: createStoredIdentity({
+        id: "agent_runtime_roles",
+        orgId: "org_tokens_route",
+        workspaceId: "ws_tokens_route",
+        scopes: ["relayauth:role:read:*"],
+      }),
+    });
+
+    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+    const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+      body: {
+        agentId: identity.id,
+        scopes: ["relayauth:role:read:*"],
+        audience: ["relayauth"],
+        expiresIn: 7200,
+      },
+      headers: {
+        "x-api-key": workspaceToken.key,
+      },
+    });
+
+    const body = await assertJsonResponse<AgentTokenPair>(response, 201);
+    assert.equal(body.agentId, identity.id);
+    assert.equal(body.workspaceId, identity.workspaceId);
+    assert.equal(body.tokenClass, "relay_ag");
+    assert.match(body.accessToken, /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    assert.match(body.refreshToken, /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+
+    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
+    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.refreshToken, 1);
+    assert.equal(accessClaims.meta?.tokenClass, "agent");
+    assert.equal(accessClaims.meta?.workspaceTokenId, workspaceToken.workspaceToken.id);
+    assert.deepEqual(JSON.parse(accessClaims.meta?.accessScopes ?? "[]"), ["relayauth:role:read:*"]);
+    assert.equal(accessClaims.parentTokenId, workspaceToken.workspaceToken.id);
+    assert.equal(refreshClaims.meta?.tokenClass, "agent");
+    assert.equal(refreshClaims.parentTokenId, workspaceToken.workspaceToken.id);
+    assert.ok(accessClaims.exp - accessClaims.iat <= 3600, "agent access TTL should cap at 1h");
+  });
+
+  await t.test("rejects bearer auth when a workspace token is required", async () => {
+    const { app, identity, authHeaders } = await createHarness();
+    const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+      body: {
+        agentId: identity.id,
+      },
+      headers: authHeaders,
+    });
+
+    await assertJsonResponse<ErrorBody>(response, 401, (body) => {
+      assert.equal(body.code, "workspace_token_required");
     });
   });
 });
@@ -686,6 +814,89 @@ test("POST /v1/tokens/refresh", async (t) => {
     });
     await assertJsonResponse<TokenPair>(response, 200);
   });
+
+  await t.test("preserves prefixed agent token shape and narrowed scopes on refresh", async () => {
+    const { app, identity, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
+      },
+      identity: createStoredIdentity({
+        id: "agent_runtime_refresh",
+        orgId: "org_tokens_route",
+        workspaceId: "ws_tokens_route",
+        scopes: ["relayauth:role:read:*"],
+      }),
+    });
+    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+    const issueResponse = await requestRoute(app, "POST", "/v1/tokens/agent", {
+      body: {
+        agentId: identity.id,
+        scopes: ["relayauth:role:read:*"],
+      },
+      headers: {
+        "x-api-key": workspaceToken.key,
+      },
+    });
+    const issued = await assertJsonResponse<AgentTokenPair>(issueResponse, 201);
+
+    const refreshResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: {
+        refreshToken: issued.refreshToken,
+      },
+    });
+    const refreshed = await assertJsonResponse<TokenPair>(refreshResponse, 200);
+
+    assert.match(refreshed.accessToken, /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    assert.match(refreshed.refreshToken, /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    const refreshedAccessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(refreshed.accessToken, 1);
+    assert.equal(refreshedAccessClaims.meta?.tokenClass, "agent");
+    assert.deepEqual(JSON.parse(refreshedAccessClaims.meta?.accessScopes ?? "[]"), ["relayauth:role:read:*"]);
+  });
+
+  await t.test("rejects refreshing an agent token after its workspace token is revoked", async () => {
+    const { app, identity, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
+      },
+      identity: createStoredIdentity({
+        id: "agent_runtime_revoked_refresh",
+        orgId: "org_tokens_route",
+        workspaceId: "ws_tokens_route",
+        scopes: ["relayauth:role:read:*"],
+      }),
+    });
+    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+    const issueResponse = await requestRoute(app, "POST", "/v1/tokens/agent", {
+      body: {
+        agentId: identity.id,
+        scopes: ["relayauth:role:read:*"],
+      },
+      headers: {
+        "x-api-key": workspaceToken.key,
+      },
+    });
+    const issued = await assertJsonResponse<AgentTokenPair>(issueResponse, 201);
+
+    const revokeResponse = await requestRoute(
+      app,
+      "POST",
+      `/v1/api-keys/${workspaceToken.workspaceToken.id}/revoke`,
+      {
+        body: {},
+        headers: authHeaders,
+      },
+    );
+    assert.equal(revokeResponse.status, 200);
+
+    const refreshResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: {
+        refreshToken: issued.refreshToken,
+      },
+    });
+    await assertJsonResponse<ErrorBody>(refreshResponse, 401, (body) => {
+      assert.equal(body.code, "workspace_token_revoked");
+    });
+  });
 });
 
 test("POST /v1/tokens enforces max sponsor-chain depth", async (t) => {
@@ -889,5 +1100,59 @@ test("GET /v1/tokens/introspect", async (t) => {
 
     const body = await assertJsonResponse<RelayAuthTokenClaims | null>(response, 200);
     assert.equal(body, null);
+  });
+});
+
+test("derived agent bearer auth", async (t) => {
+  await t.test("closes derived agent tokens after workspace-token revocation", async () => {
+    const { app, identity, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
+      },
+      identity: createStoredIdentity({
+        id: "agent_runtime_roles_after_revoke",
+        orgId: "org_tokens_route",
+        workspaceId: "ws_tokens_route",
+        scopes: ["relayauth:role:read:*"],
+      }),
+    });
+    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+    const issueResponse = await requestRoute(app, "POST", "/v1/tokens/agent", {
+      body: {
+        agentId: identity.id,
+        scopes: ["relayauth:role:read:*"],
+      },
+      headers: {
+        "x-api-key": workspaceToken.key,
+      },
+    });
+    const issued = await assertJsonResponse<AgentTokenPair>(issueResponse, 201);
+
+    const beforeRevoke = await requestRoute(app, "GET", "/v1/roles", {
+      headers: {
+        Authorization: `Bearer ${issued.accessToken}`,
+      },
+    });
+    assert.equal(beforeRevoke.status, 200);
+
+    const revokeResponse = await requestRoute(
+      app,
+      "POST",
+      `/v1/api-keys/${workspaceToken.workspaceToken.id}/revoke`,
+      {
+        body: {},
+        headers: authHeaders,
+      },
+    );
+    assert.equal(revokeResponse.status, 200);
+
+    const afterRevoke = await requestRoute(app, "GET", "/v1/roles", {
+      headers: {
+        Authorization: `Bearer ${issued.accessToken}`,
+      },
+    });
+    await assertJsonResponse<ErrorBody>(afterRevoke, 401, (body) => {
+      assert.equal(body.code, "workspace_token_revoked");
+    });
   });
 });

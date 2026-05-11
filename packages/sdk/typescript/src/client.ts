@@ -1,4 +1,5 @@
 import type {
+  AgentTokenPair,
   AgentIdentity,
   AuditEntry,
   AuditQuery,
@@ -7,6 +8,7 @@ import type {
   RelayAuthTokenClaims,
   Role,
   TokenPair,
+  WorkspaceTokenIssueResponse,
 } from "@relayauth/types";
 
 import {
@@ -32,6 +34,19 @@ type ListIdentitiesOptions = {
 };
 
 type IssueTokenOptions = {
+  scopes?: string[];
+  audience?: string[];
+  expiresIn?: number;
+};
+
+type IssueWorkspaceTokenOptions = {
+  workspaceId: string;
+  name?: string;
+  scopes?: string[];
+};
+
+type IssueAgentTokenOptions = {
+  agentId: string;
   scopes?: string[];
   audience?: string[];
   expiresIn?: number;
@@ -66,6 +81,8 @@ export class RelayAuthClient {
     createIdentityInput: CreateIdentityInput;
     auditQuery: AuditQuery;
     auditEntry: AuditEntry;
+    workspaceTokenIssueResponse: WorkspaceTokenIssueResponse;
+    agentTokenPair: AgentTokenPair;
   };
 
   readonly options: RelayAuthClientOptions;
@@ -106,6 +123,28 @@ export class RelayAuthClient {
       method: "POST",
       body: {
         refreshToken,
+      },
+    });
+  }
+
+  async issueWorkspaceToken(options: IssueWorkspaceTokenOptions): Promise<WorkspaceTokenIssueResponse> {
+    return this._request<WorkspaceTokenIssueResponse>("/v1/tokens/workspace", {
+      method: "POST",
+      body: options,
+    });
+  }
+
+  async issueAgentToken(options: IssueAgentTokenOptions): Promise<AgentTokenPair> {
+    return this._request<AgentTokenPair>("/v1/tokens/agent", {
+      method: "POST",
+      body: options,
+      headers: this.options.apiKey
+        ? {
+          "x-api-key": this.options.apiKey,
+        }
+        : undefined,
+      errorContext: {
+        identityId: options.agentId,
       },
     });
   }

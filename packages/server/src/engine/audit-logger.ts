@@ -4,7 +4,7 @@ import type { MiddlewareHandler } from "hono";
 import type { AppEnv } from "../env.js";
 import type { AuthStorage, AuditStorage } from "../storage/index.js";
 import { resolveAuditStorage, resolveContextStorage } from "../storage/index.js";
-import { decodeBase64UrlJson } from "../lib/jwt.js";
+import { decodeBase64UrlJson, splitJwtSegments } from "../lib/jwt.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 
 export type ExtendedAuditAction =
@@ -243,8 +243,8 @@ async function validateAuthorizationHeader(
     return { ok: false, reason: "invalid_authorization_header" };
   }
 
-  const parts = token.split(".");
-  if (parts.length !== 3) {
+  const parts = splitJwtSegments(token);
+  if (!parts) {
     return { ok: false, reason: "invalid_token_shape" };
   }
 
