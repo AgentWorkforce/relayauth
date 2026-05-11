@@ -15,6 +15,7 @@ import {
   RelayAuthError,
   TokenExpiredError,
   TokenRevokedError,
+  WorkspaceTokenRevokedError,
 } from "../errors.js";
 
 type TokenIssueOptions = {
@@ -419,6 +420,50 @@ test("AgentTokenSession re-issues through the workspace token when refresh is re
   assert.equal((await inspectCall(fetchMock.calls[2])).url.pathname, "/v1/tokens/agent");
 });
 
+test("AgentTokenSession surfaces workspace-token revocation without silently re-issuing", async (t) => {
+  const client = new RelayAuthClient({ baseUrl, apiKey: workspaceTokenResponse.key });
+  const fetchMock = mockFetch((input) => {
+    const url = toUrl(input);
+    if (url.pathname === "/v1/tokens/agent") {
+      return jsonResponse({
+        ...agentTokenPair,
+        accessTokenExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+        refreshTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      }, 201);
+    }
+
+    if (url.pathname === "/v1/tokens/refresh") {
+      return jsonResponse({
+        error: "workspace_token_revoked",
+      }, 401);
+    }
+
+    return jsonResponse({ error: "unexpected_request" }, 500);
+  });
+  t.after(() => fetchMock.restore());
+
+  const session = new AgentTokenSession({
+    client,
+    agentId: "agent_123",
+  });
+
+  await session.getTokenPair();
+
+  await assert.rejects(
+    session.forceRefresh(),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkspaceTokenRevokedError);
+      assert.equal(error.code, "workspace_token_revoked");
+      assert.equal(error.statusCode, 401);
+      return true;
+    },
+  );
+
+  assert.equal(fetchMock.calls.length, 2);
+  assert.equal((await inspectCall(fetchMock.calls[0])).url.pathname, "/v1/tokens/agent");
+  assert.equal((await inspectCall(fetchMock.calls[1])).url.pathname, "/v1/tokens/refresh");
+});
+
 test("revokeToken posts tokenId to /v1/tokens/revoke and returns void", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
@@ -517,6 +562,29 @@ test("revokeToken maps token_revoked responses to TokenRevokedError", async (t) 
       assert.ok(error instanceof TokenRevokedError);
       assert.equal(error.message, "Token has been revoked");
       assert.equal(error.code, "token_revoked");
+      assert.equal(error.statusCode, 401);
+      return true;
+    },
+  );
+});
+
+test("refreshToken maps workspace_token_revoked responses to WorkspaceTokenRevokedError", async (t) => {
+  const client = createClient();
+  const fetchMock = mockFetch(() =>
+    jsonResponse(
+      {
+        error: "workspace_token_revoked",
+      },
+      401,
+    ));
+  t.after(() => fetchMock.restore());
+
+  await assert.rejects(
+    client.refreshToken("agent_refresh_token"),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkspaceTokenRevokedError);
+      assert.equal(error.message, "Workspace token has been revoked");
+      assert.equal(error.code, "workspace_token_revoked");
       assert.equal(error.statusCode, 401);
       return true;
     },

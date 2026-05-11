@@ -490,6 +490,10 @@ tokens.get("/introspect", async (c) => {
     return c.json(null, 200);
   }
 
+  if (await isWorkspaceTokenRevoked(storage, verification.claims)) {
+    return c.json(null, 200);
+  }
+
   const storedToken = await findStoredTokenById(storage, verification.claims.jti);
   if (!storedToken || storedToken.status !== "active") {
     return c.json(null, 200);
@@ -984,9 +988,11 @@ async function isWorkspaceTokenRevoked(
   }
 
   const workspaceToken = await storage.apiKeys.get(workspaceTokenId);
+  const expectedWorkspaceId = normalizeOptionalString(workspaceToken?.workspaceId);
   return !workspaceToken
     || workspaceToken.kind !== "workspace_token"
-    || Boolean(normalizeOptionalString(workspaceToken.revokedAt ?? undefined));
+    || Boolean(normalizeOptionalString(workspaceToken.revokedAt ?? undefined))
+    || Boolean(expectedWorkspaceId && expectedWorkspaceId !== claims.wks);
 }
 
 function isAgentClaims(claims: RelayAuthTokenClaims): boolean {

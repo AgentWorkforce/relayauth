@@ -22,6 +22,7 @@ import {
   RelayAuthError,
   TokenExpiredError,
   TokenRevokedError,
+  WorkspaceTokenRevokedError,
 } from "./errors.js";
 
 export interface RelayAuthClientOptions {
@@ -474,6 +475,10 @@ function createRequestError(
   }
 
   if (status === 401) {
+    if (errorCode === "workspace_token_revoked") {
+      return new WorkspaceTokenRevokedError();
+    }
+
     if (errorCode === "token_revoked") {
       return new TokenRevokedError();
     }

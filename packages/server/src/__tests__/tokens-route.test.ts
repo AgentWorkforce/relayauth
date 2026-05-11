@@ -450,7 +450,12 @@ test("POST /v1/tokens/workspace", async (t) => {
   await t.test("issues a long-lived workspace token with a relay_ws_ prefix", async () => {
     const { app, authHeaders } = await createHarness({
       authClaims: {
-        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
+        scopes: [
+          "relayauth:api-key:manage:*",
+          "relayauth:token:create:*",
+          "relayauth:token:read:*",
+          "relayauth:role:read:*",
+        ],
       },
     });
 
@@ -487,7 +492,12 @@ test("POST /v1/tokens/agent", async (t) => {
   await t.test("exchanges a workspace token for a prefixed agent token pair", async () => {
     const { app, identity, authHeaders } = await createHarness({
       authClaims: {
-        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
+        scopes: [
+          "relayauth:api-key:manage:*",
+          "relayauth:token:create:*",
+          "relayauth:token:read:*",
+          "relayauth:role:read:*",
+        ],
       },
       identity: createStoredIdentity({
         id: "agent_runtime_roles",
@@ -1121,6 +1131,59 @@ test("GET /v1/tokens/introspect", async (t) => {
       app,
       "GET",
       `/v1/tokens/introspect?token=${encodeURIComponent(pair.accessToken)}`,
+      {
+        headers: authHeaders,
+      },
+    );
+
+    const body = await assertJsonResponse<RelayAuthTokenClaims | null>(response, 200);
+    assert.equal(body, null);
+  });
+
+  await t.test("returns null for an agent token after its workspace token is revoked", async () => {
+    const { app, identity, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: [
+          "relayauth:api-key:manage:*",
+          "relayauth:token:create:*",
+          "relayauth:token:read:*",
+          "relayauth:role:read:*",
+        ],
+      },
+      identity: createStoredIdentity({
+        id: "agent_runtime_introspect_after_revoke",
+        orgId: "org_tokens_route",
+        workspaceId: "ws_tokens_route",
+        scopes: ["relayauth:role:read:*"],
+      }),
+    });
+    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+    const issueResponse = await requestRoute(app, "POST", "/v1/tokens/agent", {
+      body: {
+        agentId: identity.id,
+        scopes: ["relayauth:role:read:*"],
+      },
+      headers: {
+        "x-api-key": workspaceToken.key,
+      },
+    });
+    const issued = await assertJsonResponse<AgentTokenPair>(issueResponse, 201);
+
+    const revokeResponse = await requestRoute(
+      app,
+      "POST",
+      `/v1/api-keys/${workspaceToken.workspaceToken.id}/revoke`,
+      {
+        body: {},
+        headers: authHeaders,
+      },
+    );
+    assert.equal(revokeResponse.status, 200);
+
+    const response = await requestRoute(
+      app,
+      "GET",
+      `/v1/tokens/introspect?token=${encodeURIComponent(issued.accessToken)}`,
       {
         headers: authHeaders,
       },

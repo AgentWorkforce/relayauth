@@ -55,6 +55,7 @@ export {
   RelayAuthError,
   TokenExpiredError,
   TokenRevokedError,
+  WorkspaceTokenRevokedError,
   InsufficientScopeError,
   InvalidScopeError,
   IdentityNotFoundError,
