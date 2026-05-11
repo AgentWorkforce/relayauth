@@ -1,9 +1,11 @@
 import type {
+  AccessTokenResult,
   AgentIdentity,
   AuditEntry,
   AuditQuery,
   CreateIdentityInput,
   IdentityStatus,
+  RelayAuthTokenClass,
   RelayAuthTokenClaims,
   Role,
   TokenPair,
@@ -35,6 +37,13 @@ type IssueTokenOptions = {
   scopes?: string[];
   audience?: string[];
   expiresIn?: number;
+  tokenClass?: RelayAuthTokenClass;
+};
+
+type IssueAgentTokenOptions = {
+  scopes?: string[];
+  audience?: string[];
+  expiresIn?: number;
 };
 
 type CreateRoleInput = {
@@ -60,6 +69,7 @@ type RequestOptions = Omit<RequestInit, "body" | "headers"> & {
 export class RelayAuthClient {
   declare private readonly __types?: {
     tokenPair: TokenPair;
+    accessTokenResult: AccessTokenResult;
     tokenClaims: RelayAuthTokenClaims;
     identity: AgentIdentity;
     role: Role;
@@ -98,6 +108,33 @@ export class RelayAuthClient {
       errorContext: {
         identityId,
       },
+    });
+  }
+
+  async issueWorkspaceToken(identityId: string, options?: Omit<IssueTokenOptions, "tokenClass">): Promise<TokenPair> {
+    return this.issueToken(identityId, {
+      ...options,
+      tokenClass: "workspace",
+    });
+  }
+
+  async issueAgentToken(identityId: string, options?: IssueAgentTokenOptions): Promise<AccessTokenResult> {
+    return this._request<AccessTokenResult>("/v1/tokens/agent", {
+      method: "POST",
+      body: {
+        identityId,
+        ...options,
+      },
+      errorContext: {
+        identityId,
+      },
+    });
+  }
+
+  async issuePathToken(body: Record<string, unknown> = {}): Promise<AccessTokenResult> {
+    return this._request<AccessTokenResult>("/v1/tokens/path", {
+      method: "POST",
+      body,
     });
   }
 

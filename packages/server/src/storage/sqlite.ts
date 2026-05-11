@@ -698,6 +698,8 @@ type MemoryTokenRecord = {
   tokenId?: string;
   jti?: string;
   identityId: string;
+  parentTokenId?: string;
+  tokenClass?: string;
   status: string;
   createdAt: string;
 };
@@ -2089,6 +2091,16 @@ function ensureTokensSchema(db: SqliteDatabase): void {
   if (!tokenColumns.has("expires_at")) {
     db.exec("ALTER TABLE tokens ADD COLUMN expires_at INTEGER");
   }
+
+  if (!tokenColumns.has("parent_token_id")) {
+    db.exec("ALTER TABLE tokens ADD COLUMN parent_token_id TEXT");
+  }
+
+  if (!tokenColumns.has("token_class")) {
+    db.exec("ALTER TABLE tokens ADD COLUMN token_class TEXT NOT NULL DEFAULT 'default'");
+  }
+
+  db.exec("CREATE INDEX IF NOT EXISTS idx_tokens_parent_token ON tokens (parent_token_id, status)");
 }
 
 function pruneExpiredRevocations(backend: BackendContext): void {

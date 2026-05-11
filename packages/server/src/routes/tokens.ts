@@ -1,15 +1,31 @@
-import type { RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
+import type {
+  AccessTokenResult,
+  RelayAuthTokenClaims,
+  RelayAuthTokenClass,
+  TokenPair,
+} from "@relayauth/types";
 import { matchScope, TokenExpiredError, type VerifyOptions } from "@relayauth/sdk";
 import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
-import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
+import {
+  authenticateAndAuthorizeFromContext,
+  authenticateFromContext,
+} from "../lib/auth.js";
 import { signToken } from "../lib/sign.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { AuthStorage, RevocationStorage } from "../storage/index.js";
 
 type IssueTokenRequest = {
+  identityId?: string;
+  scopes?: unknown;
+  audience?: unknown;
+  expiresIn?: unknown;
+  tokenClass?: unknown;
+};
+
+type IssueAgentTokenRequest = {
   identityId?: string;
   scopes?: unknown;
   audience?: unknown;
@@ -34,6 +50,8 @@ type TokenRow = {
   status?: string | null;
   session_id?: string | null;
   expires_at?: number | string | null;
+  parent_token_id?: string | null;
+  token_class?: string | null;
 };
 
 type SqlPrepared = {
@@ -62,24 +80,35 @@ const CLOCK_SKEW_SECONDS = 60;
 const MAX_SPONSOR_CHAIN_DEPTH = 10;
 const EXPECTED_ISSUER = "https://relayauth.dev";
 const REFRESH_AUDIENCE = "relayauth";
+const DEFAULT_TOKEN_CLASS: RelayAuthTokenClass = "default";
+const WORKSPACE_TOKEN_CLASS: RelayAuthTokenClass = "workspace";
+const AGENT_TOKEN_CLASS: RelayAuthTokenClass = "agent";
+const PATH_TOKEN_CLASS: RelayAuthTokenClass = "path";
+const TOKEN_CLASS_META_KEY = "relayauthTokenClass";
 
 const SELECT_TOKEN_BY_ID_SQL = `
-  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
+  SELECT id, token_id, jti, identity_id, status, session_id, expires_at, parent_token_id, token_class
   FROM tokens
   WHERE id = ? OR token_id = ? OR jti = ?
   LIMIT 1
 `;
 
 const SELECT_TOKENS_BY_IDENTITY_SQL = `
-  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
+  SELECT id, token_id, jti, identity_id, status, session_id, expires_at, parent_token_id, token_class
   FROM tokens
   WHERE identity_id = ? AND status = 'active'
 `;
 
 const SELECT_TOKENS_BY_SESSION_SQL = `
-  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
+  SELECT id, token_id, jti, identity_id, status, session_id, expires_at, parent_token_id, token_class
   FROM tokens
   WHERE session_id = ? AND status = 'active'
+`;
+
+const SELECT_TOKENS_BY_PARENT_SQL = `
+  SELECT id, token_id, jti, identity_id, status, session_id, expires_at, parent_token_id, token_class
+  FROM tokens
+  WHERE parent_token_id = ? AND status = 'active'
 `;
 
 const INSERT_TOKEN_SQL = `
@@ -91,10 +120,12 @@ const INSERT_TOKEN_SQL = `
     session_id,
     issued_at,
     expires_at,
+    parent_token_id,
+    token_class,
     status,
     created_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
 `;
 
 tokens.post("/", async (c) => {
@@ -138,15 +169,120 @@ tokens.post("/", async (c) => {
   }
   const accessAudience = normalizeAudience(body.audience, accessScopes);
   const accessExpiresIn = normalizeExpiresIn(body.expiresIn);
+  const tokenClass = normalizeTokenClass(body.tokenClass);
+  if (tokenClass !== DEFAULT_TOKEN_CLASS && tokenClass !== WORKSPACE_TOKEN_CLASS) {
+    return c.json({ error: "invalid_token_class", code: "invalid_token_class" }, 400);
+  }
 
   const tokenPair = await issueTokenPair(storage, c.env, identity, {
     accessScopes,
     accessAudience,
     accessExpiresIn,
+    tokenClass,
     action: "token.issued",
   });
 
   return c.json(tokenPair, 201);
+});
+
+tokens.post("/agent", async (c) => {
+  const auth = await authenticateFromContext(c);
+  if (!auth.ok) {
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
+  }
+
+  if (auth.via === "api_key") {
+    return c.json({ error: "workspace_token_required", code: "workspace_token_required" }, 401);
+  }
+
+  const storage = getSqlStorage(c.get("storage"));
+  if (await isTokenRevoked(storage, auth.claims.jti)) {
+    return c.json({ error: "token_revoked", code: "token_revoked" }, 401);
+  }
+
+  const parentStoredToken = await findStoredTokenById(storage, auth.claims.jti);
+  if (!parentStoredToken || parentStoredToken.status !== "active") {
+    return c.json({ error: "token_revoked", code: "token_revoked" }, 401);
+  }
+
+  if (getTokenClassFromClaims(auth.claims) !== WORKSPACE_TOKEN_CLASS) {
+    return c.json({ error: "workspace_token_required", code: "workspace_token_required" }, 403);
+  }
+
+  const body = await parseJsonObjectBody<IssueAgentTokenRequest>(c.req.raw);
+  if (!body) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const identityId = normalizeOptionalString(body.identityId);
+  if (!identityId) {
+    return c.json({ error: "identityId is required" }, 400);
+  }
+
+  const identity = await storage.identities.get(identityId);
+  if (!identity || identity.orgId !== auth.claims.org || identity.workspaceId !== auth.claims.wks) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
+  if (identity.status !== "active") {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
+  if (identity.sponsorChain.length > MAX_SPONSOR_CHAIN_DEPTH) {
+    return c.json(
+      {
+        error: "invalid_request",
+        error_description: "delegation chain exceeds maximum depth",
+      },
+      400,
+    );
+  }
+
+  const requestedScopes = normalizeScopes(body.scopes, auth.claims.scopes);
+  if (!scopesWithinGrant(requestedScopes, auth.claims.scopes)) {
+    return c.json({ error: "insufficient_scope" }, 403);
+  }
+  if (!scopesWithinGrant(requestedScopes, identity.scopes)) {
+    return c.json({ error: "insufficient_scope" }, 403);
+  }
+
+  const requestedAudience = normalizeAudience(body.audience, requestedScopes);
+  if (!audienceWithinGrant(requestedAudience, auth.claims.aud)) {
+    return c.json({ error: "insufficient_scope" }, 403);
+  }
+
+  const requestedExpiresIn = normalizeExpiresIn(body.expiresIn);
+  const parentRemainingTtl = Math.max(0, auth.claims.exp - Math.floor(Date.now() / 1000));
+  const accessExpiresIn = Math.min(requestedExpiresIn, parentRemainingTtl);
+  if (accessExpiresIn <= 0) {
+    return c.json({ error: "token_expired", code: "token_expired" }, 401);
+  }
+
+  const tokenResult = await issueAccessToken(storage, c.env, identity, {
+    accessScopes: requestedScopes,
+    accessAudience: requestedAudience,
+    accessExpiresIn,
+    tokenClass: AGENT_TOKEN_CLASS,
+    parentTokenId: auth.claims.jti,
+  });
+
+  return c.json(tokenResult, 201);
+});
+
+tokens.post("/path", async (c) => {
+  const auth = await authenticateFromContext(c);
+  if (!auth.ok) {
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
+  }
+
+  return c.json(
+    {
+      error: "not_implemented",
+      code: "path_tokens_not_available",
+      requestedBy: auth.claims.sub,
+    },
+    501,
+  );
 });
 
 tokens.post("/refresh", async (c) => {
@@ -210,6 +346,8 @@ tokens.post("/refresh", async (c) => {
     accessAudience: normalizeAudience(undefined, identity.scopes),
     accessExpiresIn: DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
     sessionId: presentedSid,
+    tokenClass: getTokenClassFromClaims(verification.claims),
+    parentTokenId: verification.claims.parentTokenId,
     action: "token.refreshed",
   });
 
@@ -267,10 +405,24 @@ tokens.post("/revoke", async (c) => {
   }
 
   const revokedAt = new Date().toISOString();
-  const revocableIds = targetTokens
+  const revocableRows = await expandTokenLineage(storage, targetTokens);
+  const revocableIds = revocableRows
     .map((row) => getTokenIdentifier(row))
     .filter((value): value is string => Boolean(value));
-  await storage.revocations.revokeIdentityTokens(identity.id, revocableIds, revokedAt);
+  const revocableIdsByIdentity = new Map<string, string[]>();
+  for (const row of revocableRows) {
+    const tokenIdentifier = getTokenIdentifier(row);
+    const rowIdentityId = normalizeOptionalString(row.identity_id);
+    if (!tokenIdentifier || !rowIdentityId) {
+      continue;
+    }
+    const entries = revocableIdsByIdentity.get(rowIdentityId) ?? [];
+    entries.push(tokenIdentifier);
+    revocableIdsByIdentity.set(rowIdentityId, entries);
+  }
+  for (const [rowIdentityId, tokenIds] of revocableIdsByIdentity.entries()) {
+    await storage.revocations.revokeIdentityTokens(rowIdentityId, tokenIds, revokedAt);
+  }
 
   await writeTokenAudit(storage, {
     action: "token.revoked",
@@ -330,11 +482,16 @@ async function issueTokenPair(
     accessAudience: string[];
     accessExpiresIn: number;
     sessionId?: string;
+    tokenClass?: RelayAuthTokenClass;
+    parentTokenId?: string;
     action: "token.issued" | "token.refreshed";
   },
 ): Promise<TokenPair> {
   const issuedAtSeconds = Math.floor(Date.now() / 1000);
   const sessionId = options.sessionId ?? createSessionId();
+  const tokenClass = options.tokenClass ?? DEFAULT_TOKEN_CLASS;
+  const accessMeta = createTokenMeta(tokenClass);
+  const refreshMeta = createTokenMeta(tokenClass);
   const accessClaims: RelayAuthTokenClaims = {
     sub: identity.id,
     org: identity.orgId,
@@ -349,6 +506,8 @@ async function issueTokenPair(
     iat: issuedAtSeconds,
     jti: createTokenId(),
     sid: sessionId,
+    ...(Object.keys(accessMeta).length > 0 ? { meta: accessMeta } : {}),
+    ...(options.parentTokenId ? { parentTokenId: options.parentTokenId } : {}),
   };
 
   const refreshClaims: RelayAuthTokenClaims = {
@@ -365,6 +524,8 @@ async function issueTokenPair(
     iat: issuedAtSeconds,
     jti: createTokenId(),
     sid: sessionId,
+    ...(Object.keys(refreshMeta).length > 0 ? { meta: refreshMeta } : {}),
+    ...(options.parentTokenId ? { parentTokenId: options.parentTokenId } : {}),
   };
 
   const accessToken = await signToken(accessClaims, env);
@@ -387,6 +548,51 @@ async function issueTokenPair(
   };
 }
 
+async function issueAccessToken(
+  storage: SqlBackedStorage,
+  env: AppEnv["Bindings"],
+  identity: StoredIdentity,
+  options: {
+    accessScopes: string[];
+    accessAudience: string[];
+    accessExpiresIn: number;
+    tokenClass: RelayAuthTokenClass;
+    parentTokenId: string;
+  },
+): Promise<AccessTokenResult> {
+  const issuedAtSeconds = Math.floor(Date.now() / 1000);
+  const accessClaims: RelayAuthTokenClaims = {
+    sub: identity.id,
+    org: identity.orgId,
+    wks: identity.workspaceId,
+    scopes: options.accessScopes,
+    sponsorId: identity.sponsorId,
+    sponsorChain: [...identity.sponsorChain],
+    token_type: "access",
+    iss: EXPECTED_ISSUER,
+    aud: options.accessAudience,
+    exp: issuedAtSeconds + options.accessExpiresIn,
+    iat: issuedAtSeconds,
+    jti: createTokenId(),
+    meta: createTokenMeta(options.tokenClass),
+    parentTokenId: options.parentTokenId,
+  };
+
+  const accessToken = await signToken(accessClaims, env);
+  await persistIssuedToken(storage, identity.id, accessClaims);
+  await writeTokenAudit(storage, {
+    action: "token.issued",
+    identity,
+    tokenId: accessClaims.jti,
+  });
+
+  return {
+    accessToken,
+    accessTokenExpiresAt: new Date(accessClaims.exp * 1000).toISOString(),
+    tokenType: "Bearer",
+  };
+}
+
 async function persistIssuedToken(
   storage: SqlBackedStorage,
   identityId: string,
@@ -402,6 +608,8 @@ async function persistIssuedToken(
       claims.sid ?? null,
       claims.iat,
       claims.exp,
+      claims.parentTokenId ?? null,
+      getTokenClassFromClaims(claims),
       createdAt,
     )
     .run();
@@ -467,6 +675,48 @@ async function findStoredTokenById(storage: SqlBackedStorage, tokenId: string): 
   return storage.DB.prepare(SELECT_TOKEN_BY_ID_SQL)
     .bind(normalizedTokenId, normalizedTokenId, normalizedTokenId)
     .first<TokenRow>();
+}
+
+async function findChildTokensByParentId(storage: SqlBackedStorage, parentTokenId: string): Promise<TokenRow[]> {
+  const normalizedParentTokenId = normalizeOptionalString(parentTokenId);
+  if (!normalizedParentTokenId) {
+    return [];
+  }
+
+  const result = await storage.DB.prepare(SELECT_TOKENS_BY_PARENT_SQL)
+    .bind(normalizedParentTokenId)
+    .all<TokenRow>();
+  return result.results;
+}
+
+async function expandTokenLineage(storage: SqlBackedStorage, seedRows: TokenRow[]): Promise<TokenRow[]> {
+  const expanded = new Map<string, TokenRow>();
+  const queue = seedRows
+    .map((row) => getTokenIdentifier(row))
+    .filter((value): value is string => Boolean(value));
+
+  while (queue.length > 0) {
+    const tokenId = queue.shift();
+    if (!tokenId || expanded.has(tokenId)) {
+      continue;
+    }
+
+    const row = await findStoredTokenById(storage, tokenId);
+    if (!row) {
+      continue;
+    }
+    expanded.set(tokenId, row);
+
+    const children = await findChildTokensByParentId(storage, tokenId);
+    for (const child of children) {
+      const childId = getTokenIdentifier(child);
+      if (childId && !expanded.has(childId)) {
+        queue.push(childId);
+      }
+    }
+  }
+
+  return [...expanded.values()];
 }
 
 async function isTokenRevoked(storage: SqlBackedStorage, jti: string): Promise<boolean> {
@@ -664,6 +914,41 @@ function scopesWithinGrant(requestedScopes: string[], grantedScopes: string[]): 
       return false;
     }
   });
+}
+
+function audienceWithinGrant(requestedAudience: string[], grantedAudience: string[]): boolean {
+  const granted = new Set(grantedAudience.map((entry) => entry.trim()).filter(Boolean));
+  return requestedAudience.every((entry) => granted.has(entry));
+}
+
+function normalizeTokenClass(value: unknown): RelayAuthTokenClass {
+  if (typeof value === "string") {
+    if (
+      value === WORKSPACE_TOKEN_CLASS
+      || value === AGENT_TOKEN_CLASS
+      || value === PATH_TOKEN_CLASS
+      || value === DEFAULT_TOKEN_CLASS
+    ) {
+      return value;
+    }
+  }
+
+  return DEFAULT_TOKEN_CLASS;
+}
+
+function getTokenClassFromClaims(claims: RelayAuthTokenClaims): RelayAuthTokenClass {
+  const metaValue = claims.meta?.[TOKEN_CLASS_META_KEY];
+  return normalizeTokenClass(metaValue);
+}
+
+function createTokenMeta(tokenClass: RelayAuthTokenClass): Record<string, string> {
+  if (tokenClass === DEFAULT_TOKEN_CLASS) {
+    return {};
+  }
+
+  return {
+    [TOKEN_CLASS_META_KEY]: tokenClass,
+  };
 }
 
 function normalizeExpiresIn(value: unknown): number {

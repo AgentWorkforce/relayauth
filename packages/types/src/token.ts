@@ -4,6 +4,8 @@ export interface TokenBudget {
   remaining?: number;
 }
 
+export type RelayAuthTokenClass = "default" | "workspace" | "agent" | "path";
+
 export interface RelayAuthWorkspaceScope {
   product_id: string;
   scopes: string[];
@@ -42,6 +44,12 @@ export interface TokenPair {
   refreshToken: string;
   accessTokenExpiresAt: string;
   refreshTokenExpiresAt: string;
+  tokenType: "Bearer";
+}
+
+export interface AccessTokenResult {
+  accessToken: string;
+  accessTokenExpiresAt: string;
   tokenType: "Bearer";
 }
 

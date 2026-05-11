@@ -355,6 +355,18 @@
             "focal:verification",
             "confidence:0.88"
           ]
+        },
+        {
+          "ts": 1778501337454,
+          "type": "decision",
+          "content": "Used token lineage via parent_token_id + token_class instead of a separate token family table: Used token lineage via parent_token_id + token_class instead of a separate token family table",
+          "raw": {
+            "question": "Used token lineage via parent_token_id + token_class instead of a separate token family table",
+            "chosen": "Used token lineage via parent_token_id + token_class instead of a separate token family table",
+            "alternatives": [],
+            "reasoning": "It keeps the M1 exchange/revocation surface small, preserves the existing generic issuer, and gives gateway/CLI a stable parent-child revocation hook."
+          },
+          "significance": "high"
         }
       ]
     }

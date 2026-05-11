@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
+import type { AccessTokenResult, RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
 import { RelayAuthClient } from "../client.js";
 import { IdentityNotFoundError, TokenExpiredError, TokenRevokedError } from "../errors.js";
 
@@ -8,10 +8,17 @@ type TokenIssueOptions = {
   scopes?: string[];
   audience?: string[];
   expiresIn?: number;
+  tokenClass?: "default" | "workspace" | "agent" | "path";
 };
 
 type TokenClient = RelayAuthClient & {
   issueToken(identityId: string, options?: TokenIssueOptions): Promise<TokenPair>;
+  issueWorkspaceToken(identityId: string, options?: Omit<TokenIssueOptions, "tokenClass">): Promise<TokenPair>;
+  issueAgentToken(
+    identityId: string,
+    options?: Omit<TokenIssueOptions, "tokenClass">,
+  ): Promise<AccessTokenResult>;
+  issuePathToken(body?: Record<string, unknown>): Promise<AccessTokenResult>;
   refreshToken(refreshToken: string): Promise<TokenPair>;
   revokeToken(tokenId: string): Promise<void>;
   introspectToken(token: string): Promise<RelayAuthTokenClaims | null>;
@@ -30,6 +37,12 @@ const tokenPair: TokenPair = {
   refreshToken: "refresh_token_123",
   accessTokenExpiresAt: "2026-03-25T11:00:00.000Z",
   refreshTokenExpiresAt: "2026-04-01T10:00:00.000Z",
+  tokenType: "Bearer",
+};
+
+const accessTokenResult: AccessTokenResult = {
+  accessToken: "agent_access_token_123",
+  accessTokenExpiresAt: "2026-03-25T11:00:00.000Z",
   tokenType: "Bearer",
 };
 
@@ -149,6 +162,76 @@ test("issueToken posts identityId and options to /v1/tokens", async (t) => {
     scopes: ["relayauth:identity:read", "relayauth:token:refresh"],
     audience: ["relay-api", "worker-runtime"],
     expiresIn: 3600,
+  });
+});
+
+test("issueWorkspaceToken posts tokenClass=workspace to /v1/tokens", async (t) => {
+  const client = createClient();
+  const fetchMock = mockFetch(() => jsonResponse(tokenPair, 201));
+  t.after(() => fetchMock.restore());
+
+  const result = await client.issueWorkspaceToken("agent_123", {
+    scopes: ["relaycast:channel:read:*"],
+    audience: ["relaycast"],
+    expiresIn: 86_400,
+  });
+
+  assert.deepEqual(result, tokenPair);
+  assert.equal(fetchMock.calls.length, 1);
+
+  const request = await inspectCall(fetchMock.calls[0]);
+  assert.equal(request.url.toString(), `${baseUrl}/v1/tokens`);
+  assert.equal(request.method, "POST");
+  assertBearer(request.headers);
+  assert.deepEqual(JSON.parse(request.body), {
+    identityId: "agent_123",
+    scopes: ["relaycast:channel:read:*"],
+    audience: ["relaycast"],
+    expiresIn: 86_400,
+    tokenClass: "workspace",
+  });
+});
+
+test("issueAgentToken posts identityId and options to /v1/tokens/agent", async (t) => {
+  const client = createClient();
+  const fetchMock = mockFetch(() => jsonResponse(accessTokenResult, 201));
+  t.after(() => fetchMock.restore());
+
+  const result = await client.issueAgentToken("agent_worker", {
+    scopes: ["relaycast:channel:read:*"],
+    audience: ["relaycast"],
+    expiresIn: 3600,
+  });
+
+  assert.deepEqual(result, accessTokenResult);
+  assert.equal(fetchMock.calls.length, 1);
+
+  const request = await inspectCall(fetchMock.calls[0]);
+  assert.equal(request.url.toString(), `${baseUrl}/v1/tokens/agent`);
+  assert.equal(request.method, "POST");
+  assertBearer(request.headers);
+  assert.deepEqual(JSON.parse(request.body), {
+    identityId: "agent_worker",
+    scopes: ["relaycast:channel:read:*"],
+    audience: ["relaycast"],
+    expiresIn: 3600,
+  });
+});
+
+test("issuePathToken posts to /v1/tokens/path", async (t) => {
+  const client = createClient();
+  const fetchMock = mockFetch(() => jsonResponse({ error: "not_implemented" }, 501));
+  t.after(() => fetchMock.restore());
+
+  await assert.rejects(client.issuePathToken({ path: "/foo/**" }));
+
+  assert.equal(fetchMock.calls.length, 1);
+  const request = await inspectCall(fetchMock.calls[0]);
+  assert.equal(request.url.toString(), `${baseUrl}/v1/tokens/path`);
+  assert.equal(request.method, "POST");
+  assertBearer(request.headers);
+  assert.deepEqual(JSON.parse(request.body), {
+    path: "/foo/**",
   });
 });
 

@@ -300,6 +300,10 @@ export async function seedActiveTokens(
   target: SqlTarget,
   identityId: string,
   tokenIds: string[],
+  options: {
+    parentTokenId?: string;
+    tokenClass?: string;
+  } = {},
 ): Promise<void> {
   const timestamp = new Date().toISOString();
 
@@ -307,13 +311,24 @@ export async function seedActiveTokens(
     await runSql(
       target,
       `
-        INSERT INTO tokens (id, token_id, jti, identity_id, status, created_at)
-        VALUES (?, ?, ?, ?, 'active', ?)
+        INSERT INTO tokens (
+          id,
+          token_id,
+          jti,
+          identity_id,
+          parent_token_id,
+          token_class,
+          status,
+          created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
       `,
       tokenId,
       tokenId,
       tokenId,
       identityId,
+      options.parentTokenId ?? null,
+      options.tokenClass ?? "default",
       timestamp,
     );
   }
