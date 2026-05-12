@@ -4,7 +4,7 @@ import type { Context, MiddlewareHandler } from "hono";
 
 import type { AppEnv } from "../env.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
-import { decodeBase64UrlJson } from "../lib/jwt.js";
+import { decodeBase64UrlJson, splitJwtSegments } from "../lib/jwt.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 
 export type ScopeMiddlewareOptions = {
@@ -181,8 +181,8 @@ async function verifyBearerToken(
   token: string,
   env: AppEnv["Bindings"],
 ): Promise<RelayAuthTokenClaims> {
-  const parts = token.split(".");
-  if (parts.length !== 3) {
+  const parts = splitJwtSegments(token);
+  if (!parts) {
     emitTokenInvalid("malformed_token");
     throw new RelayAuthError("Invalid access token", "invalid_token", 401);
   }

@@ -21,6 +21,12 @@ export class TokenRevokedError extends RelayAuthError {
   }
 }
 
+export class WorkspaceTokenRevokedError extends RelayAuthError {
+  constructor() {
+    super("Workspace token has been revoked", "workspace_token_revoked", 401);
+  }
+}
+
 export class InsufficientScopeError extends RelayAuthError {
   constructor(required: string, actual: string[]) {
     super(

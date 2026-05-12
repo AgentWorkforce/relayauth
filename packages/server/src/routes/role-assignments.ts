@@ -1,5 +1,5 @@
 import type { RelayAuthTokenClaims, Role } from "@relayauth/types";
-import { matchScope, parseScope } from "@relayauth/sdk";
+import { matchScope } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import {
@@ -8,8 +8,7 @@ import {
   removeRole,
 } from "../engine/role-assignments.js";
 import { getRole } from "../engine/roles.js";
-import { emitObserverEvent, now as observerNow } from "../lib/events.js";
-import { verifyRs256Token } from "../lib/token-verifier.js";
+import { authenticateFromContext, authorizeClaims } from "../lib/auth.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { AuthStorage } from "../storage/index.js";
 
@@ -22,7 +21,6 @@ const roleAssignments = new Hono<AppEnv>();
 roleAssignments.post("/:id/roles", async (c) => {
   const auth = await authenticateAndAuthorize(
     c,
-    c.env,
     ["relayauth:identity:manage:*", "relayauth:role:manage:*"],
   );
   if (!auth.ok) {
@@ -78,7 +76,6 @@ roleAssignments.post("/:id/roles", async (c) => {
 roleAssignments.delete("/:id/roles/:roleId", async (c) => {
   const auth = await authenticateAndAuthorize(
     c,
-    c.env,
     ["relayauth:identity:manage:*", "relayauth:role:manage:*"],
   );
   if (!auth.ok) {
@@ -130,7 +127,6 @@ roleAssignments.delete("/:id/roles/:roleId", async (c) => {
 roleAssignments.get("/:id/roles", async (c) => {
   const auth = await authenticateAndAuthorize(
     c,
-    c.env,
     ["relayauth:identity:read:*", "relayauth:role:read:*"],
   );
   if (!auth.ok) {
@@ -160,224 +156,24 @@ export default roleAssignments;
 
 async function authenticateAndAuthorize(
   c: Context<AppEnv>,
-  env: AppEnv["Bindings"],
   requiredScopes: string[],
 ): Promise<
   | { ok: true; claims: RelayAuthTokenClaims }
-  | { ok: false; error: string; status: 401 | 403 }
+  | { ok: false; error: string; code?: string; status: 401 | 403 }
 > {
-  const auth = await authenticate(c, env);
+  const auth = await authenticateFromContext(c);
   if (!auth.ok) {
     return auth;
   }
 
-  const allowed = requiredScopes.every((scope) => matchScope(scope, auth.claims.scopes));
-  emitScopeChecks(auth.claims, requiredScopes, allowed);
-
-  if (!allowed) {
-    return { ok: false, error: "insufficient_scope", status: 403 };
+  for (const scope of requiredScopes) {
+    const allowed = authorizeClaims(auth.claims, scope, matchScope);
+    if (!allowed.ok) {
+      return allowed;
+    }
   }
 
   return auth;
-}
-
-async function authenticate(
-  c: Context<AppEnv>,
-  env: AppEnv["Bindings"],
-): Promise<
-  | { ok: true; claims: RelayAuthTokenClaims }
-  | { ok: false; error: string; status: 401 }
-> {
-  // Prefer claims injected by `apiKeyAuth()` middleware on successful x-api-key
-  // authentication. See ../middleware/api-key-auth.ts for why we use the
-  // context instead of rewriting the Authorization header.
-  const apiKeyClaims = c.get("apiKeyClaims");
-  if (apiKeyClaims) {
-    return { ok: true, claims: apiKeyClaims };
-  }
-
-  const authorization = c.req.header("authorization");
-  if (!authorization) {
-    emitTokenInvalid("missing_authorization");
-    return { ok: false, error: "Missing Authorization header", status: 401 };
-  }
-
-  const [scheme, token] = authorization.split(/\s+/, 2);
-  if (scheme !== "Bearer" || !token) {
-    emitTokenInvalid("invalid_authorization");
-    return { ok: false, error: "Invalid Authorization header", status: 401 };
-  }
-
-  const claims = await verifyToken(token, env);
-  if (!claims) {
-    return { ok: false, error: "Invalid access token", status: 401 };
-  }
-
-  return { ok: true, claims };
-}
-
-async function verifyToken(token: string, env: AppEnv["Bindings"]): Promise<RelayAuthTokenClaims | null> {
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    emitTokenInvalid("malformed_token");
-    return null;
-  }
-
-  const [, encodedPayload] = parts;
-  const payload = decodeBase64UrlJson<RelayAuthTokenClaims>(encodedPayload);
-
-  try {
-    const claims = await verifyRs256Token(token, env);
-    emitTokenVerified(claims, Math.floor(Date.now() / 1000));
-    return claims;
-  } catch {
-    emitTokenInvalid("invalid_token", payload);
-    return null;
-  }
-}
-
-function decodeBase64UrlJson<T>(value: string): T | null {
-  try {
-    return JSON.parse(decodeBase64Url(value)) as T;
-  } catch {
-    return null;
-  }
-}
-
-function decodeBase64Url(value: string): string {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-  return atob(padded);
-}
-
-function emitTokenVerified(claims: RelayAuthTokenClaims, nowSeconds: number): void {
-  emitObserverEvent({
-    type: "token.verified",
-    timestamp: observerNow(),
-    payload: {
-      sub: claims.sub,
-      org: claims.org,
-      scopes: Array.isArray(claims.scopes) ? [...claims.scopes] : [],
-      expiresIn: Math.max(0, claims.exp - nowSeconds),
-    },
-  });
-}
-
-function emitTokenInvalid(reason: string, claims?: Partial<RelayAuthTokenClaims> | null): void {
-  const sub = typeof claims?.sub === "string" ? claims.sub : undefined;
-  const org = typeof claims?.org === "string" ? claims.org : undefined;
-
-  emitObserverEvent({
-    type: "token.invalid",
-    timestamp: observerNow(),
-    payload: {
-      reason,
-      ...(sub !== undefined ? { sub } : {}),
-      ...(org !== undefined ? { org } : {}),
-    },
-  });
-}
-
-function emitScopeChecks(
-  claims: RelayAuthTokenClaims,
-  requestedScopes: string[],
-  aggregateAllowed: boolean,
-): void {
-  for (const requestedScope of requestedScopes) {
-    const allowed = aggregateAllowed ? true : scopeAllowed(requestedScope, claims.scopes);
-    const matchedScope = allowed ? findMatchedScope(requestedScope, claims.scopes) : undefined;
-    emitScopeCheck(claims, requestedScope, allowed ? "allowed" : "denied", matchedScope);
-
-    if (!allowed) {
-      emitScopeDenied(claims, requestedScope, "insufficient_scope", matchedScope);
-    }
-  }
-}
-
-function emitScopeCheck(
-  claims: RelayAuthTokenClaims,
-  requestedScope: string,
-  result: "allowed" | "denied",
-  matchedScope?: string,
-): void {
-  emitObserverEvent({
-    type: "scope.check",
-    timestamp: observerNow(),
-    payload: {
-      agent: claims.sub,
-      requestedScope,
-      grantedScopes: Array.isArray(claims.scopes) ? [...claims.scopes] : [],
-      result,
-      ...(matchedScope !== undefined ? { matchedScope } : {}),
-      evaluation: parseScopeEvaluation(requestedScope),
-    },
-  });
-}
-
-function emitScopeDenied(
-  claims: RelayAuthTokenClaims,
-  requestedScope: string,
-  reason: string,
-  matchedScope?: string,
-): void {
-  emitObserverEvent({
-    type: "scope.denied",
-    timestamp: observerNow(),
-    payload: {
-      agent: claims.sub,
-      requestedScope,
-      grantedScopes: Array.isArray(claims.scopes) ? [...claims.scopes] : [],
-      result: "denied",
-      ...(matchedScope !== undefined ? { matchedScope } : {}),
-      evaluation: parseScopeEvaluation(requestedScope),
-      reason,
-    },
-  });
-}
-
-function scopeAllowed(requestedScope: string, grantedScopes: string[]): boolean {
-  try {
-    return matchScope(requestedScope, grantedScopes);
-  } catch {
-    return false;
-  }
-}
-
-function findMatchedScope(requestedScope: string, grantedScopes: string[]): string | undefined {
-  if (grantedScopes.includes("*")) {
-    return "*";
-  }
-
-  for (const grantedScope of grantedScopes) {
-    try {
-      if (matchScope(requestedScope, [grantedScope])) {
-        return grantedScope;
-      }
-    } catch {
-      return undefined;
-    }
-  }
-
-  return undefined;
-}
-
-function parseScopeEvaluation(scope: string): { plane: string; resource: string; action: string; path: string } {
-  try {
-    const parsed = parseScope(scope);
-    return {
-      plane: parsed.plane,
-      resource: parsed.resource,
-      action: parsed.action,
-      path: parsed.path,
-    };
-  } catch {
-    return {
-      plane: "",
-      resource: "",
-      action: "",
-      path: scope,
-    };
-  }
 }
 
 async function parseJsonObjectBody<T extends object>(request: Request): Promise<T | null> {

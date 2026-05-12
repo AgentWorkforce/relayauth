@@ -8,8 +8,9 @@
       "id": "50262a8c395907900959d734"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-03-27T21:31:46.611Z",
+  "completedAt": "2026-05-11T14:11:37.690Z",
   "agents": [
     {
       "name": "orchestrator",
@@ -177,6 +178,7 @@
       "title": "Execution: fix-test-helpers",
       "agentName": "helpers-worker",
       "startedAt": "2026-03-27T21:32:08.243Z",
+      "endedAt": "2026-05-11T14:11:37.690Z",
       "events": [
         {
           "ts": 1774647128243,
@@ -355,10 +357,39 @@
             "focal:verification",
             "confidence:0.88"
           ]
+        },
+        {
+          "ts": 1778506357254,
+          "type": "decision",
+          "content": "Used package-export tests for relaycron/relayauth because source-tree tests hit workspace export and native-binding issues: Used package-export tests for relaycron/relayauth because source-tree tests hit workspace export and native-binding issues",
+          "raw": {
+            "question": "Used package-export tests for relaycron/relayauth because source-tree tests hit workspace export and native-binding issues",
+            "chosen": "Used package-export tests for relaycron/relayauth because source-tree tests hit workspace export and native-binding issues",
+            "alternatives": [],
+            "reasoning": "Keeps coverage on the shipped surface without touching production code"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1778508465073,
+          "type": "decision",
+          "content": "Modeled workspace tokens as API-key-backed relay_ws_* credentials and agent tokens as relay_ag_-prefixed JWT pairs with parent workspace lineage: Modeled workspace tokens as API-key-backed relay_ws_* credentials and agent tokens as relay_ag_-prefixed JWT pairs with parent workspace lineage",
+          "raw": {
+            "question": "Modeled workspace tokens as API-key-backed relay_ws_* credentials and agent tokens as relay_ag_-prefixed JWT pairs with parent workspace lineage",
+            "chosen": "Modeled workspace tokens as API-key-backed relay_ws_* credentials and agent tokens as relay_ag_-prefixed JWT pairs with parent workspace lineage",
+            "alternatives": [],
+            "reasoning": "This reuses existing revocation/auth storage while allowing gateway exchange plus transparent refresh via existing token-pair semantics"
+          },
+          "significance": "high"
         }
       ]
     }
   ],
+  "retrospective": {
+    "summary": "Added workspace-token issuance, agent-token exchange/rotation, and workspace-lineage revocation enforcement for proactive runtime M1",
+    "approach": "Standard approach",
+    "confidence": 0.79
+  },
   "commits": [],
   "filesChanged": [],
   "tags": []

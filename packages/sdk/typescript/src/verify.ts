@@ -6,6 +6,7 @@ import { ScopeChecker } from "./scopes.js";
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_JWKS_TIMEOUT_MS = 5000;
 const DEFAULT_REVOCATION_TIMEOUT_MS = 5000;
+const RELAY_AGENT_TOKEN_PREFIX = "relay_ag_";
 
 export interface VerifyOptions {
   jwksUrl?: string;
@@ -56,7 +57,8 @@ export class TokenVerifier {
   }
 
   async verify(token: string): Promise<RelayAuthTokenClaims> {
-    const { encodedHeader, encodedPayload, header, payload, signature } = this.#parseToken(token);
+    const normalizedToken = unwrapRelayToken(token);
+    const { encodedHeader, encodedPayload, header, payload, signature } = this.#parseToken(normalizedToken);
 
     if (header.typ !== "JWT" || !isSupportedAlgorithm(header.alg)) {
       throw invalidTokenError();
@@ -159,7 +161,7 @@ export class TokenVerifier {
   }
 
   _decodeHeader(token: string): JwtHeader {
-    const parts = token.split(".");
+    const parts = unwrapRelayToken(token).split(".");
     if (parts.length !== 3) {
       throw invalidTokenError();
     }
@@ -174,12 +176,13 @@ export class TokenVerifier {
 
   async _verifySignature(token: string, key: CryptoKey): Promise<boolean> {
     try {
-      const parts = token.split(".");
+      const normalizedToken = unwrapRelayToken(token);
+      const parts = normalizedToken.split(".");
       if (parts.length !== 3) {
         return false;
       }
 
-      const header = this._decodeHeader(token);
+      const header = this._decodeHeader(normalizedToken);
       const algorithm = resolveVerificationAlgorithm(header.alg);
       if (!algorithm) {
         return false;
@@ -231,7 +234,7 @@ export class TokenVerifier {
   }
 
   #parseToken(token: string): ParsedToken {
-    const parts = token.split(".");
+    const parts = unwrapRelayToken(token).split(".");
     if (parts.length !== 3) {
       throw invalidTokenError();
     }
@@ -290,6 +293,12 @@ export class TokenVerifier {
       throw new TokenRevokedError();
     }
   }
+}
+
+function unwrapRelayToken(token: string): string {
+  return token.startsWith(RELAY_AGENT_TOKEN_PREFIX)
+    ? token.slice(RELAY_AGENT_TOKEN_PREFIX.length)
+    : token;
 }
 
 function invalidTokenError(): RelayAuthError {

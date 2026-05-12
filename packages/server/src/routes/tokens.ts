@@ -1,12 +1,16 @@
+import crypto from "node:crypto";
 import type { RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
 import { matchScope, TokenExpiredError, type VerifyOptions } from "@relayauth/sdk";
 import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
+import { extractPrefix, generateApiKey, WORKSPACE_TOKEN_PREFIX } from "../lib/api-keys.js";
 import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
+import { wrapAgentToken } from "../lib/jwt.js";
 import { signToken } from "../lib/sign.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
+import type { StoredApiKey } from "../storage/api-key-types.js";
 import type { AuthStorage, RevocationStorage } from "../storage/index.js";
 
 type IssueTokenRequest = {
@@ -20,10 +24,44 @@ type RefreshTokenRequest = {
   refreshToken?: string;
 };
 
+type WorkspaceTokenRequest = {
+  workspaceId?: unknown;
+  name?: unknown;
+  scopes?: unknown;
+};
+
+type AgentTokenRequest = {
+  agentId?: unknown;
+  scopes?: unknown;
+  audience?: unknown;
+  expiresIn?: unknown;
+};
+
 type RevokeTokenRequest = {
   tokenId?: string;
   identityId?: string;
   sessionId?: string;
+};
+
+type WorkspaceTokenResponse = {
+  workspaceToken: {
+    id: string;
+    kind: "workspace_token";
+    workspaceId: string;
+    prefix: string;
+    name: string;
+    scopes: string[];
+    createdAt: string;
+    revoked: boolean;
+  };
+  key: string;
+};
+
+type AgentTokenResponse = TokenPair & {
+  agentId: string;
+  workspaceId: string;
+  tokenClass: "relay_ag";
+  issuedViaWorkspaceTokenId: string;
 };
 
 type TokenRow = {
@@ -62,6 +100,7 @@ const CLOCK_SKEW_SECONDS = 60;
 const MAX_SPONSOR_CHAIN_DEPTH = 10;
 const EXPECTED_ISSUER = "https://relayauth.dev";
 const REFRESH_AUDIENCE = "relayauth";
+const MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS = 3600;
 
 const SELECT_TOKEN_BY_ID_SQL = `
   SELECT id, token_id, jti, identity_id, status, session_id, expires_at
@@ -149,6 +188,132 @@ tokens.post("/", async (c) => {
   return c.json(tokenPair, 201);
 });
 
+tokens.post("/workspace", async (c) => {
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
+    "relayauth:api-key:manage:*",
+    matchScope,
+  );
+  if (!auth.ok) {
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
+  }
+
+  const body = await parseJsonObjectBody<WorkspaceTokenRequest>(c.req.raw);
+  if (!body) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const workspaceId = normalizeOptionalString(body.workspaceId);
+  if (!workspaceId) {
+    return c.json({ error: "workspaceId is required" }, 400);
+  }
+
+  const scopes = normalizeScopes(body.scopes, auth.claims.scopes);
+  if (!scopesWithinGrant(scopes, auth.claims.scopes)) {
+    return c.json({ error: "insufficient_scope" }, 403);
+  }
+
+  const storage = getSqlStorage(c.get("storage"));
+  const key = generateApiKey(WORKSPACE_TOKEN_PREFIX);
+  const createdAt = new Date().toISOString();
+  const name = normalizeOptionalString(body.name) ?? `workspace:${workspaceId}`;
+  const apiKey = await storage.apiKeys.create({
+    orgId: auth.claims.org,
+    name,
+    prefix: extractPrefix(key),
+    keyHash: crypto.createHash("sha256").update(key).digest("hex"),
+    scopes,
+    kind: "workspace_token",
+    workspaceId,
+    createdAt,
+    updatedAt: createdAt,
+  });
+
+  return c.json<WorkspaceTokenResponse>({
+    workspaceToken: serializeWorkspaceToken(apiKey),
+    key,
+  }, 201);
+});
+
+tokens.post("/agent", async (c) => {
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
+    "relayauth:token:create:*",
+    matchScope,
+  );
+  if (!auth.ok) {
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
+  }
+
+  const storage = getSqlStorage(c.get("storage"));
+  const workspaceToken = await resolveWorkspaceToken(storage, auth.claims);
+  if (!workspaceToken) {
+    return c.json({ error: "workspace_token_required", code: "workspace_token_required" }, 401);
+  }
+
+  const body = await parseJsonObjectBody<AgentTokenRequest>(c.req.raw);
+  if (!body) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const agentId = normalizeOptionalString(body.agentId);
+  if (!agentId) {
+    return c.json({ error: "agentId is required" }, 400);
+  }
+
+  const identity = await storage.identities.get(agentId);
+  if (!identity || identity.orgId !== workspaceToken.orgId || identity.workspaceId !== workspaceToken.workspaceId) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
+  if (identity.sponsorChain.length > MAX_SPONSOR_CHAIN_DEPTH) {
+    return c.json(
+      {
+        error: "invalid_request",
+        error_description: "delegation chain exceeds maximum depth",
+      },
+      400,
+    );
+  }
+
+  const accessScopes = normalizeScopes(body.scopes, identity.scopes);
+  if (!scopesWithinGrant(accessScopes, identity.scopes) || !scopesWithinGrant(accessScopes, workspaceToken.scopes)) {
+    return c.json({ error: "insufficient_scope" }, 403);
+  }
+
+  const accessAudience = normalizeAudience(body.audience, accessScopes);
+  const accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn);
+  const tokenPair = await issueTokenPair(storage, c.env, identity, {
+    accessScopes,
+    accessAudience,
+    accessExpiresIn,
+    action: "token.issued",
+    parentTokenId: workspaceToken.id,
+    meta: {
+      tokenClass: "agent",
+      workspaceTokenId: workspaceToken.id,
+      accessScopes: JSON.stringify(accessScopes),
+      accessAudience: JSON.stringify(accessAudience),
+    },
+    wrapAccessToken: true,
+    wrapRefreshToken: true,
+    tokenIdPrefix: "relay_ag_",
+  });
+
+  return c.json<AgentTokenResponse>({
+    ...tokenPair,
+    agentId: identity.id,
+    workspaceId: identity.workspaceId,
+    tokenClass: "relay_ag",
+    issuedViaWorkspaceTokenId: workspaceToken.id,
+  }, 201);
+});
+
+tokens.post("/path", async (c) => c.json({
+  error: "path_scoped_tokens_not_implemented",
+  code: "not_implemented",
+}, 501));
+
 tokens.post("/refresh", async (c) => {
   const body = await parseJsonObjectBody<RefreshTokenRequest>(c.req.raw);
   if (!body) {
@@ -195,6 +360,10 @@ tokens.post("/refresh", async (c) => {
     return c.json({ error: "identity_not_found" }, 404);
   }
 
+  if (await isWorkspaceTokenRevoked(storage, verification.claims)) {
+    return c.json({ error: "Workspace token has been revoked", code: "workspace_token_revoked" }, 401);
+  }
+
   if (identity.sponsorChain.length > MAX_SPONSOR_CHAIN_DEPTH) {
     return c.json(
       {
@@ -206,11 +375,25 @@ tokens.post("/refresh", async (c) => {
   }
 
   const tokenPair = await issueTokenPair(storage, c.env, identity, {
-    accessScopes: normalizeScopes(undefined, identity.scopes),
-    accessAudience: normalizeAudience(undefined, identity.scopes),
-    accessExpiresIn: DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+    accessScopes: isAgentClaims(verification.claims)
+      ? parseMetaStringArray(verification.claims.meta?.accessScopes, identity.scopes)
+      : normalizeScopes(undefined, identity.scopes),
+    accessAudience: isAgentClaims(verification.claims)
+      ? parseMetaStringArray(
+        verification.claims.meta?.accessAudience,
+        normalizeAudience(undefined, identity.scopes),
+      )
+      : normalizeAudience(undefined, identity.scopes),
+    accessExpiresIn: isAgentClaims(verification.claims)
+      ? MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS
+      : DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
     sessionId: presentedSid,
     action: "token.refreshed",
+    parentTokenId: normalizeOptionalString(verification.claims.parentTokenId),
+    meta: verification.claims.meta,
+    wrapAccessToken: isAgentClaims(verification.claims),
+    wrapRefreshToken: isAgentClaims(verification.claims),
+    tokenIdPrefix: isAgentClaims(verification.claims) ? "relay_ag_" : undefined,
   });
 
   // Single-use enforcement: revoke the previous refresh JTI after we have
@@ -307,6 +490,10 @@ tokens.get("/introspect", async (c) => {
     return c.json(null, 200);
   }
 
+  if (await isWorkspaceTokenRevoked(storage, verification.claims)) {
+    return c.json(null, 200);
+  }
+
   const storedToken = await findStoredTokenById(storage, verification.claims.jti);
   if (!storedToken || storedToken.status !== "active") {
     return c.json(null, 200);
@@ -331,6 +518,11 @@ async function issueTokenPair(
     accessExpiresIn: number;
     sessionId?: string;
     action: "token.issued" | "token.refreshed";
+    parentTokenId?: string;
+    meta?: Record<string, string>;
+    wrapAccessToken?: boolean;
+    wrapRefreshToken?: boolean;
+    tokenIdPrefix?: string;
   },
 ): Promise<TokenPair> {
   const issuedAtSeconds = Math.floor(Date.now() / 1000);
@@ -347,8 +539,10 @@ async function issueTokenPair(
     aud: options.accessAudience,
     exp: issuedAtSeconds + options.accessExpiresIn,
     iat: issuedAtSeconds,
-    jti: createTokenId(),
+    jti: createTokenId(options.tokenIdPrefix),
     sid: sessionId,
+    ...(options.parentTokenId ? { parentTokenId: options.parentTokenId } : {}),
+    ...(options.meta ? { meta: options.meta } : {}),
   };
 
   const refreshClaims: RelayAuthTokenClaims = {
@@ -363,12 +557,16 @@ async function issueTokenPair(
     aud: [REFRESH_AUDIENCE],
     exp: issuedAtSeconds + DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     iat: issuedAtSeconds,
-    jti: createTokenId(),
+    jti: createTokenId(options.tokenIdPrefix),
     sid: sessionId,
+    ...(options.parentTokenId ? { parentTokenId: options.parentTokenId } : {}),
+    ...(options.meta ? { meta: options.meta } : {}),
   };
 
-  const accessToken = await signToken(accessClaims, env);
-  const refreshToken = await signToken(refreshClaims, env);
+  const signedAccessToken = await signToken(accessClaims, env);
+  const signedRefreshToken = await signToken(refreshClaims, env);
+  const accessToken = options.wrapAccessToken ? wrapAgentToken(signedAccessToken) : signedAccessToken;
+  const refreshToken = options.wrapRefreshToken ? wrapAgentToken(signedRefreshToken) : signedRefreshToken;
 
   await persistIssuedToken(storage, identity.id, accessClaims);
   await persistIssuedToken(storage, identity.id, refreshClaims);
@@ -681,6 +879,30 @@ function normalizeExpiresIn(value: unknown): number {
   return DEFAULT_ACCESS_TOKEN_TTL_SECONDS;
 }
 
+function normalizeAgentExpiresIn(value: unknown): number {
+  return Math.min(normalizeExpiresIn(value), MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS);
+}
+
+function parseMetaStringArray(value: string | undefined, fallback: string[]): string[] {
+  if (!value) {
+    return [...fallback];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [...fallback];
+    }
+
+    const normalized = parsed
+      .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+      .filter(Boolean);
+    return normalized.length > 0 ? normalized : [...fallback];
+  } catch {
+    return [...fallback];
+  }
+}
+
 async function parseJsonObjectBody<T extends object>(request: Request): Promise<T | null> {
   const raw = await request.clone().text().catch(() => "");
   if (!raw.trim()) {
@@ -718,10 +940,61 @@ function getTokenIdentifier(row: TokenRow): string | undefined {
     ?? normalizeOptionalString(row.token_id);
 }
 
-function createTokenId(): string {
-  return `tok_${crypto.randomUUID().replace(/-/g, "")}`;
+function createTokenId(prefix = "tok_"): string {
+  return `${prefix}${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
 function createSessionId(): string {
   return `sess_${crypto.randomUUID().replace(/-/g, "")}`;
+}
+
+function serializeWorkspaceToken(apiKey: StoredApiKey): WorkspaceTokenResponse["workspaceToken"] {
+  return {
+    id: apiKey.id,
+    kind: "workspace_token",
+    workspaceId: apiKey.workspaceId ?? "unknown",
+    prefix: apiKey.prefix,
+    name: apiKey.name,
+    scopes: [...apiKey.scopes],
+    createdAt: apiKey.createdAt,
+    revoked: Boolean(apiKey.revokedAt),
+  };
+}
+
+async function resolveWorkspaceToken(
+  storage: AuthStorage,
+  claims: RelayAuthTokenClaims,
+): Promise<StoredApiKey | null> {
+  const apiKeyId = normalizeOptionalString(claims.meta?.apiKeyId);
+  if (!apiKeyId) {
+    return null;
+  }
+
+  const apiKey = await storage.apiKeys.get(apiKeyId);
+  if (!apiKey || apiKey.kind !== "workspace_token" || normalizeOptionalString(apiKey.revokedAt ?? undefined)) {
+    return null;
+  }
+
+  return apiKey;
+}
+
+async function isWorkspaceTokenRevoked(
+  storage: AuthStorage,
+  claims: RelayAuthTokenClaims,
+): Promise<boolean> {
+  const workspaceTokenId = normalizeOptionalString(claims.meta?.workspaceTokenId);
+  if (!workspaceTokenId) {
+    return false;
+  }
+
+  const workspaceToken = await storage.apiKeys.get(workspaceTokenId);
+  const expectedWorkspaceId = normalizeOptionalString(workspaceToken?.workspaceId);
+  return !workspaceToken
+    || workspaceToken.kind !== "workspace_token"
+    || Boolean(normalizeOptionalString(workspaceToken.revokedAt ?? undefined))
+    || Boolean(expectedWorkspaceId && expectedWorkspaceId !== claims.wks);
+}
+
+function isAgentClaims(claims: RelayAuthTokenClaims): boolean {
+  return claims.meta?.tokenClass === "agent";
 }

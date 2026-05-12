@@ -10,7 +10,7 @@ import {
   listPolicies,
   updatePolicy,
 } from "../engine/policies.js";
-import { authenticateAndAuthorize } from "../lib/auth.js";
+import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
 
 type CreatePolicyRequest = {
   name?: string;
@@ -28,9 +28,8 @@ type UpdatePolicyRequest = Partial<
 const policies = new Hono<AppEnv>();
 
 policies.post("/", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:policy:manage:*",
     matchScope,
   );
@@ -61,9 +60,8 @@ policies.post("/", async (c) => {
 });
 
 policies.get("/", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:policy:read:*",
     matchScope,
   );
@@ -88,9 +86,8 @@ policies.get("/", async (c) => {
 });
 
 policies.get("/:id", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:policy:read:*",
     matchScope,
   );
@@ -113,9 +110,8 @@ policies.get("/:id", async (c) => {
 });
 
 policies.patch("/:id", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:policy:manage:*",
     matchScope,
   );
@@ -148,9 +144,8 @@ policies.patch("/:id", async (c) => {
 });
 
 policies.delete("/:id", async (c) => {
-  const auth = await authenticateAndAuthorize(
-    c.req.header("authorization"),
-    c.env,
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
     "relayauth:policy:manage:*",
     matchScope,
   );

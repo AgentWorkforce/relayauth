@@ -8,8 +8,9 @@
       "id": "da6851a4e4b7b8331f6cd5c6"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-03-27T11:56:14.920Z",
+  "completedAt": "2026-05-11T18:39:47.253Z",
   "agents": [
     {
       "name": "orchestrator",
@@ -434,6 +435,7 @@
       "title": "Execution: merge-findings",
       "agentName": "synthesizer",
       "startedAt": "2026-03-27T12:03:30.530Z",
+      "endedAt": "2026-05-11T18:39:47.253Z",
       "events": [
         {
           "ts": 1774613010530,
@@ -454,31 +456,15 @@
             "reasoning": "The relayauth server already enforces 1h agent access TTLs, refresh rotation, and workspace-token lineage revocation; M1 mainly needs a stable public contract and transparent client-side renewal for the gateway."
           },
           "significance": "high"
-        },
-        {
-          "ts": 1778524787254,
-          "type": "reflection",
-          "content": "M1 agent-token server semantics were already present; this pass hardened the public contract with exported request types, a rotating SDK session helper, explicit path-token stub coverage, and synced package build artifacts.",
-          "raw": {
-            "focalPoints": [
-              "agent-tokens",
-              "sdk-contracts",
-              "path-stub"
-            ],
-            "adjustments": "Kept the existing /workspace -> /agent -> /refresh lineage instead of adding a second rotation protocol.",
-            "confidence": 0.9
-          },
-          "significance": "high",
-          "tags": [
-            "focal:agent-tokens",
-            "focal:sdk-contracts",
-            "focal:path-stub",
-            "confidence:0.9"
-          ]
         }
       ]
     }
   ],
+  "retrospective": {
+    "summary": "Added public M1 proactive-runtime token contract support: exported workspace/agent/path request types, AgentTokenSession auto-rotation, path-token stub coverage, and synced package artifacts.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
   "commits": [],
   "filesChanged": [],
   "tags": []

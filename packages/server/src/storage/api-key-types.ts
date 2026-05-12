@@ -1,3 +1,5 @@
+export type ApiKeyKind = "api_key" | "workspace_token";
+
 export type StoredApiKey = {
   id: string;
   orgId: string;
@@ -5,6 +7,8 @@ export type StoredApiKey = {
   prefix: string;
   keyHash: string;
   scopes: string[];
+  kind?: ApiKeyKind;
+  workspaceId?: string;
   createdAt: string;
   updatedAt: string;
   lastUsedAt?: string;
@@ -17,6 +21,8 @@ export type CreateApiKeyInput = {
   prefix: string;
   keyHash: string;
   scopes: string[];
+  kind?: ApiKeyKind;
+  workspaceId?: string;
   createdAt?: string;
   updatedAt?: string;
 };

@@ -2,6 +2,7 @@ import type { RelayAuthTokenClaims } from "@relayauth/types";
 import { TokenVerifier, type VerifyOptions } from "@relayauth/sdk";
 import type { AppConfig } from "../env.js";
 import { rsaPublicJwkFromPem } from "./jwk.js";
+import { unwrapRelayToken } from "./jwt.js";
 import { keyIdFromPublicJwk } from "./sign-rs256.js";
 
 type VerifierEnv = Pick<AppConfig, "BASE_URL" | "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC">;
@@ -17,7 +18,7 @@ export async function verifyRs256Token(
     jwksUrl: await resolveJwksUrl(env),
   });
 
-  return verifier.verify(token);
+  return verifier.verify(unwrapRelayToken(token));
 }
 
 async function resolveJwksUrl(env: VerifierEnv): Promise<string> {

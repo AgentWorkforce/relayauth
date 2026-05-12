@@ -324,12 +324,14 @@ const INSERT_API_KEY_SQL = `
     prefix,
     key_hash,
     scopes_json,
+    kind,
+    workspace_id,
     created_at,
     updated_at,
     last_used_at,
     revoked_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const SELECT_API_KEY_SQL = `
@@ -340,6 +342,8 @@ const SELECT_API_KEY_SQL = `
     prefix,
     key_hash,
     scopes_json,
+    kind,
+    workspace_id,
     created_at,
     updated_at,
     last_used_at,
@@ -357,6 +361,8 @@ const SELECT_API_KEY_BY_HASH_SQL = `
     prefix,
     key_hash,
     scopes_json,
+    kind,
+    workspace_id,
     created_at,
     updated_at,
     last_used_at,
@@ -374,6 +380,8 @@ const LIST_API_KEYS_SQL = `
     prefix,
     key_hash,
     scopes_json,
+    kind,
+    workspace_id,
     created_at,
     updated_at,
     last_used_at,
@@ -631,6 +639,8 @@ type ApiKeyRow = {
   prefix?: string;
   key_hash?: string;
   scopes_json?: string | null;
+  kind?: string | null;
+  workspace_id?: string | null;
   created_at?: string;
   updated_at?: string;
   last_used_at?: string | null;
@@ -2560,6 +2570,8 @@ function comparePolicyDesc(left: Policy, right: Policy): number {
 }
 
 function normalizeStoredApiKey(apiKey: StoredApiKey): StoredApiKey {
+  const kind = normalizeApiKeyKind(apiKey.kind) ?? "api_key";
+  const workspaceId = normalizeOptionalString(apiKey.workspaceId);
   return {
     id: requireString(apiKey.id, "api key id is required"),
     orgId: requireString(apiKey.orgId, "orgId is required"),
@@ -2567,6 +2579,8 @@ function normalizeStoredApiKey(apiKey: StoredApiKey): StoredApiKey {
     prefix: requireString(apiKey.prefix, "prefix is required"),
     keyHash: requireString(apiKey.keyHash, "keyHash is required"),
     scopes: normalizeStringArray(apiKey.scopes),
+    kind,
+    ...(workspaceId ? { workspaceId } : {}),
     createdAt: normalizeTimestamp(apiKey.createdAt),
     updatedAt: normalizeTimestamp(apiKey.updatedAt),
     ...(normalizeOptionalString(apiKey.lastUsedAt) ? { lastUsedAt: apiKey.lastUsedAt } : {}),
@@ -2594,8 +2608,10 @@ function hydrateApiKey(row: ApiKeyRow | undefined): StoredApiKey | null {
     prefix,
     keyHash,
     scopes: normalizeStringArray(parseJson<unknown[]>(row?.scopes_json ?? "[]", [])),
+    kind: normalizeApiKeyKind(row?.kind) ?? "api_key",
     createdAt,
     updatedAt,
+    ...(normalizeOptionalString(row?.workspace_id) ? { workspaceId: row?.workspace_id ?? undefined } : {}),
     ...(normalizeOptionalString(row?.last_used_at) ? { lastUsedAt: row?.last_used_at ?? undefined } : {}),
     ...(row?.revoked_at === null ? { revokedAt: null } : {}),
     ...(normalizeOptionalString(row?.revoked_at) ? { revokedAt: row?.revoked_at ?? undefined } : {}),
@@ -2610,11 +2626,17 @@ function toApiKeyParams(apiKey: StoredApiKey): unknown[] {
     apiKey.prefix,
     apiKey.keyHash,
     JSON.stringify(apiKey.scopes),
+    apiKey.kind ?? "api_key",
+    apiKey.workspaceId ?? null,
     apiKey.createdAt,
     apiKey.updatedAt,
     apiKey.lastUsedAt ?? null,
     apiKey.revokedAt ?? null,
   ];
+}
+
+function normalizeApiKeyKind(value: unknown): "api_key" | "workspace_token" | undefined {
+  return value === "workspace_token" ? "workspace_token" : value === "api_key" ? "api_key" : undefined;
 }
 
 function compareApiKeyDesc(left: StoredApiKey, right: StoredApiKey): number {

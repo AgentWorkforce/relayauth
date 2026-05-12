@@ -28,6 +28,57 @@ No separate ACL config. The filesystem paths *are* the permissions.
 npm install @relayauth/sdk
 ```
 
+## Proactive Runtime Token Contract
+
+M1 for the proactive runtime uses a three-step token flow:
+
+```ts
+type WorkspaceTokenIssueRequest = {
+  workspaceId: string;
+  name?: string;
+  scopes?: string[];
+};
+
+type AgentTokenIssueRequest = {
+  agentId: string;
+  scopes?: string[];
+  audience?: string[];
+  expiresIn?: number; // capped to 3600s server-side
+};
+
+type PathTokenIssueRequest = {
+  agentId: string;
+  paths: string[];
+  scopes?: string[];
+  audience?: string[];
+  expiresIn?: number;
+};
+```
+
+- `POST /v1/tokens/workspace` returns a long-lived `relay_ws_*` workspace token.
+- `POST /v1/tokens/agent` accepts that workspace token via `x-api-key` and returns a short-lived `relay_ag_*` token pair for one `agentId`.
+- `POST /v1/tokens/refresh` rotates the current pair and preserves the agent-token lineage. Revoking the parent workspace token invalidates all derived agent tokens.
+- `POST /v1/tokens/path` is reserved for M5 path-scoped tokens. In M1 it deliberately returns `501 { error: "path_scoped_tokens_not_implemented", code: "not_implemented" }`.
+
+The TypeScript SDK includes an `AgentTokenSession` helper for transparent agent-token rotation:
+
+```ts
+import { AgentTokenSession, RelayAuthClient } from "@relayauth/sdk";
+
+const client = new RelayAuthClient({
+  baseUrl: "https://relayauth.example.com",
+  apiKey: process.env.RELAY_API_KEY,
+});
+
+const session = new AgentTokenSession({
+  client,
+  agentId: "agent_support_runtime",
+  scopes: ["relayauth:role:read:*"],
+});
+
+const accessToken = await session.getAccessToken();
+```
+
 ### Verify a token
 
 ```ts
