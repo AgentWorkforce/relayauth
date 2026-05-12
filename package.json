@@ -4,7 +4,7 @@
   "packageManager": "npm@10.9.4",
   "scripts": {
     "build": "turbo build",
-    "test": "turbo test",
+    "test": "turbo test && node --import tsx --test tests/agent-token.test.ts",
     "typecheck": "turbo typecheck",
     "dev": "turbo dev",
     "dev:server": "tsx packages/server/src/server.ts",
