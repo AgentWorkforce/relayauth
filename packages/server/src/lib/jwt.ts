@@ -1,4 +1,7 @@
 export const RELAY_AGENT_TOKEN_PREFIX = "relay_ag_";
+export const RELAY_PATH_TOKEN_PREFIX = "relay_pa_";
+const RELAY_TOKEN_PREFIXES = [RELAY_AGENT_TOKEN_PREFIX, RELAY_PATH_TOKEN_PREFIX] as const;
+export type RelayTokenPrefix = typeof RELAY_TOKEN_PREFIXES[number];
 
 export function decodeBase64Url(value: string): string {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
@@ -27,10 +30,18 @@ export function wrapAgentToken(token: string): string {
   return `${RELAY_AGENT_TOKEN_PREFIX}${token}`;
 }
 
+export function wrapRelayToken(token: string, prefix: RelayTokenPrefix): string {
+  return `${prefix}${token}`;
+}
+
 export function unwrapRelayToken(token: string): string {
-  return token.startsWith(RELAY_AGENT_TOKEN_PREFIX)
-    ? token.slice(RELAY_AGENT_TOKEN_PREFIX.length)
-    : token;
+  for (const prefix of RELAY_TOKEN_PREFIXES) {
+    if (token.startsWith(prefix)) {
+      return token.slice(prefix.length);
+    }
+  }
+
+  return token;
 }
 
 export function splitJwtSegments(token: string): [string, string, string] | null {

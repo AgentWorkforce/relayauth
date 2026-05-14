@@ -82,16 +82,23 @@ export interface AgentTokenPair extends TokenPair {
 }
 
 export interface PathTokenIssueRequest {
-  agentId: string;
+  agentId?: string;
+  agentName?: string;
+  workspaceId?: string;
   paths: string[];
   scopes?: string[];
   audience?: string[];
   expiresIn?: number;
+  ttlSeconds?: number;
 }
 
-export interface PathTokenStubResponse {
-  error: "path_scoped_tokens_not_implemented";
-  code: "not_implemented";
+export interface PathTokenPair extends TokenPair {
+  agentId: string;
+  agentName: string;
+  workspaceId: string;
+  tokenClass: "relay_pa";
+  paths: string[];
+  issuedViaWorkspaceTokenId: string;
 }
 
 export interface JWKSResponse {
