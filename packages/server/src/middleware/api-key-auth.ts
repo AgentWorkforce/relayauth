@@ -50,7 +50,7 @@ function extractBearerWorkspaceToken(authorization: string | undefined): string 
   }
 
   const [scheme, token] = authorization.split(/\s+/, 2);
-  if (scheme !== "Bearer" || !token.startsWith(WORKSPACE_TOKEN_PREFIX)) {
+  if (scheme !== "Bearer" || !token || !token.startsWith(WORKSPACE_TOKEN_PREFIX)) {
     return undefined;
   }
 
