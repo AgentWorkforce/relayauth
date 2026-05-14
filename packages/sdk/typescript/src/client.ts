@@ -6,6 +6,7 @@ import type {
   AuditQuery,
   CreateIdentityInput,
   IdentityStatus,
+  PathTokenPair,
   PathTokenIssueRequest,
   RelayAuthTokenClaims,
   Role,
@@ -74,6 +75,7 @@ export class RelayAuthClient {
     auditEntry: AuditEntry;
     workspaceTokenIssueResponse: WorkspaceTokenIssueResponse;
     agentTokenPair: AgentTokenPair;
+    pathTokenPair: PathTokenPair;
   };
 
   readonly options: RelayAuthClientOptions;
@@ -140,8 +142,8 @@ export class RelayAuthClient {
     });
   }
 
-  async issuePathToken(options: PathTokenIssueRequest): Promise<never> {
-    return this._request<never>("/v1/tokens/path", {
+  async issuePathToken(options: PathTokenIssueRequest): Promise<PathTokenPair> {
+    return this._request<PathTokenPair>("/v1/tokens/path", {
       method: "POST",
       body: options,
       headers: this.options.apiKey

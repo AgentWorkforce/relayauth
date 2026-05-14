@@ -6,7 +6,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../env.js";
 import { extractPrefix, generateApiKey, WORKSPACE_TOKEN_PREFIX } from "../lib/api-keys.js";
 import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
-import { wrapAgentToken } from "../lib/jwt.js";
+import { RELAY_AGENT_TOKEN_PREFIX, RELAY_PATH_TOKEN_PREFIX, wrapRelayToken } from "../lib/jwt.js";
 import { signToken } from "../lib/sign.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
@@ -37,6 +37,17 @@ type AgentTokenRequest = {
   expiresIn?: unknown;
 };
 
+type PathTokenRequest = {
+  agentId?: unknown;
+  agentName?: unknown;
+  workspaceId?: unknown;
+  paths?: unknown;
+  scopes?: unknown;
+  audience?: unknown;
+  expiresIn?: unknown;
+  ttlSeconds?: unknown;
+};
+
 type RevokeTokenRequest = {
   tokenId?: string;
   identityId?: string;
@@ -61,6 +72,15 @@ type AgentTokenResponse = TokenPair & {
   agentId: string;
   workspaceId: string;
   tokenClass: "relay_ag";
+  issuedViaWorkspaceTokenId: string;
+};
+
+type PathTokenResponse = TokenPair & {
+  agentId: string;
+  agentName: string;
+  workspaceId: string;
+  tokenClass: "relay_pa";
+  paths: string[];
   issuedViaWorkspaceTokenId: string;
 };
 
@@ -309,10 +329,89 @@ tokens.post("/agent", async (c) => {
   }, 201);
 });
 
-tokens.post("/path", async (c) => c.json({
-  error: "path_scoped_tokens_not_implemented",
-  code: "not_implemented",
-}, 501));
+tokens.post("/path", async (c) => {
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
+    "relayauth:token:create:*",
+    matchScope,
+  );
+  if (!auth.ok) {
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
+  }
+
+  const storage = getSqlStorage(c.get("storage"));
+  const workspaceToken = await resolveWorkspaceToken(storage, auth.claims);
+  if (!workspaceToken) {
+    return c.json({ error: "workspace_token_required", code: "workspace_token_required" }, 401);
+  }
+
+  const body = await parseJsonObjectBody<PathTokenRequest>(c.req.raw);
+  if (!body) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const requestedWorkspaceId = normalizeOptionalString(body.workspaceId);
+  if (requestedWorkspaceId && requestedWorkspaceId !== workspaceToken.workspaceId) {
+    return c.json({ error: "workspace_not_found", code: "workspace_not_found" }, 404);
+  }
+
+  const paths = normalizePathTokenPaths(body.paths);
+  if (!paths.ok) {
+    return c.json({ error: paths.error, code: paths.code }, paths.status);
+  }
+
+  const accessScopes = normalizePathTokenScopes(body.scopes, paths.paths);
+  if (!accessScopes.ok) {
+    return c.json({ error: accessScopes.error, code: accessScopes.code }, accessScopes.status);
+  }
+
+  if (!scopesWithinGrant(accessScopes.scopes, workspaceToken.scopes)) {
+    return c.json({ error: "insufficient_scope", code: "insufficient_scope" }, 403);
+  }
+
+  const accessAudience = normalizeAudience(body.audience, accessScopes.scopes);
+  const accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn ?? body.ttlSeconds);
+  const agentName = normalizeOptionalString(body.agentName) ?? normalizeOptionalString(body.agentId) ?? "cloud-orchestrator";
+  const agentId = normalizeAgentIdentifier(normalizeOptionalString(body.agentId) ?? agentName);
+  const identity = createPathTokenIdentity({
+    agentId,
+    agentName,
+    orgId: workspaceToken.orgId,
+    workspaceId: workspaceToken.workspaceId ?? auth.claims.wks,
+    sponsorId: auth.claims.sponsorId,
+    sponsorChain: auth.claims.sponsorChain,
+    scopes: workspaceToken.scopes,
+  });
+
+  const tokenPair = await issueTokenPair(storage, c.env, identity, {
+    accessScopes: accessScopes.scopes,
+    accessAudience,
+    accessExpiresIn,
+    action: "token.issued",
+    parentTokenId: workspaceToken.id,
+    meta: {
+      tokenClass: "path",
+      workspaceTokenId: workspaceToken.id,
+      agentName,
+      paths: JSON.stringify(paths.paths),
+      accessScopes: JSON.stringify(accessScopes.scopes),
+      accessAudience: JSON.stringify(accessAudience),
+    },
+    wrapAccessToken: true,
+    wrapRefreshToken: true,
+    tokenIdPrefix: RELAY_PATH_TOKEN_PREFIX,
+  });
+
+  return c.json<PathTokenResponse>({
+    ...tokenPair,
+    agentId,
+    agentName,
+    workspaceId: identity.workspaceId,
+    tokenClass: "relay_pa",
+    paths: paths.paths,
+    issuedViaWorkspaceTokenId: workspaceToken.id,
+  }, 201);
+});
 
 tokens.post("/refresh", async (c) => {
   const body = await parseJsonObjectBody<RefreshTokenRequest>(c.req.raw);
@@ -355,7 +454,7 @@ tokens.post("/refresh", async (c) => {
     return c.json({ error: "Refresh token not found" }, 401);
   }
 
-  const identity = await storage.identities.get(verification.claims.sub);
+  const identity = await resolveRefreshIdentity(storage, verification.claims);
   if (!identity || identity.status !== "active") {
     return c.json({ error: "identity_not_found" }, 404);
   }
@@ -375,25 +474,25 @@ tokens.post("/refresh", async (c) => {
   }
 
   const tokenPair = await issueTokenPair(storage, c.env, identity, {
-    accessScopes: isAgentClaims(verification.claims)
+    accessScopes: isDerivedClaims(verification.claims)
       ? parseMetaStringArray(verification.claims.meta?.accessScopes, identity.scopes)
       : normalizeScopes(undefined, identity.scopes),
-    accessAudience: isAgentClaims(verification.claims)
+    accessAudience: isDerivedClaims(verification.claims)
       ? parseMetaStringArray(
         verification.claims.meta?.accessAudience,
         normalizeAudience(undefined, identity.scopes),
       )
       : normalizeAudience(undefined, identity.scopes),
-    accessExpiresIn: isAgentClaims(verification.claims)
+    accessExpiresIn: isDerivedClaims(verification.claims)
       ? MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS
       : DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
     sessionId: presentedSid,
     action: "token.refreshed",
     parentTokenId: normalizeOptionalString(verification.claims.parentTokenId),
     meta: verification.claims.meta,
-    wrapAccessToken: isAgentClaims(verification.claims),
-    wrapRefreshToken: isAgentClaims(verification.claims),
-    tokenIdPrefix: isAgentClaims(verification.claims) ? "relay_ag_" : undefined,
+    wrapAccessToken: isDerivedClaims(verification.claims),
+    wrapRefreshToken: isDerivedClaims(verification.claims),
+    tokenIdPrefix: tokenPrefixForClaims(verification.claims),
   });
 
   // Single-use enforcement: revoke the previous refresh JTI after we have
@@ -565,8 +664,12 @@ async function issueTokenPair(
 
   const signedAccessToken = await signToken(accessClaims, env);
   const signedRefreshToken = await signToken(refreshClaims, env);
-  const accessToken = options.wrapAccessToken ? wrapAgentToken(signedAccessToken) : signedAccessToken;
-  const refreshToken = options.wrapRefreshToken ? wrapAgentToken(signedRefreshToken) : signedRefreshToken;
+  const accessToken = options.wrapAccessToken
+    ? wrapRelayToken(signedAccessToken, relayTokenPrefix(options.tokenIdPrefix))
+    : signedAccessToken;
+  const refreshToken = options.wrapRefreshToken
+    ? wrapRelayToken(signedRefreshToken, relayTokenPrefix(options.tokenIdPrefix))
+    : signedRefreshToken;
 
   await persistIssuedToken(storage, identity.id, accessClaims);
   await persistIssuedToken(storage, identity.id, refreshClaims);
@@ -961,6 +1064,187 @@ function serializeWorkspaceToken(apiKey: StoredApiKey): WorkspaceTokenResponse["
   };
 }
 
+function normalizeAgentIdentifier(value: string): string {
+  const normalized = value.trim();
+  if (/^agent_[A-Za-z0-9_-]+$/.test(normalized)) {
+    return normalized;
+  }
+
+  const slug = normalized
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 96);
+  return `agent_${slug || "path_token"}`;
+}
+
+function createPathTokenIdentity(options: {
+  agentId: string;
+  agentName: string;
+  orgId: string;
+  workspaceId: string;
+  sponsorId: string;
+  sponsorChain: string[];
+  scopes: string[];
+}): StoredIdentity {
+  const now = new Date().toISOString();
+  const sponsorChain = options.sponsorChain.length > 0
+    ? [...options.sponsorChain, options.agentId]
+    : [options.sponsorId, options.agentId];
+
+  return {
+    id: options.agentId,
+    name: options.agentName,
+    type: "agent",
+    orgId: options.orgId,
+    workspaceId: options.workspaceId,
+    sponsorId: options.sponsorId,
+    sponsorChain,
+    status: "active",
+    scopes: [...options.scopes],
+    roles: [],
+    metadata: {},
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+async function resolveRefreshIdentity(
+  storage: AuthStorage,
+  claims: RelayAuthTokenClaims,
+): Promise<StoredIdentity | null> {
+  const identity = await storage.identities.get(claims.sub);
+  if (identity || !isPathClaims(claims)) {
+    return identity;
+  }
+
+  return createPathTokenIdentity({
+    agentId: claims.sub,
+    agentName: claims.meta?.agentName ?? claims.sub,
+    orgId: claims.org,
+    workspaceId: claims.wks,
+    sponsorId: claims.sponsorId,
+    sponsorChain: claims.sponsorChain.slice(0, -1),
+    scopes: parseMetaStringArray(claims.meta?.accessScopes, claims.scopes),
+  });
+}
+
+function normalizePathTokenPaths(value: unknown):
+  | { ok: true; paths: string[] }
+  | { ok: false; error: string; code: string; status: 400 } {
+  if (!Array.isArray(value)) {
+    return { ok: false, error: "paths is required", code: "invalid_paths", status: 400 };
+  }
+
+  const paths: string[] = [];
+  for (const entry of value) {
+    const normalized = normalizePathTokenPath(entry);
+    if (!normalized) {
+      return { ok: false, error: "paths must contain valid relayfile paths", code: "invalid_paths", status: 400 };
+    }
+    paths.push(normalized);
+  }
+
+  const unique = [...new Set(paths)];
+  if (unique.length === 0) {
+    return { ok: false, error: "paths is required", code: "invalid_paths", status: 400 };
+  }
+
+  return { ok: true, paths: unique };
+}
+
+function normalizePathTokenPath(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "*" || trimmed === "/" || trimmed === "/*" || trimmed === "/**") {
+    return null;
+  }
+
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  let normalized = withLeadingSlash.replace(/\/{2,}/g, "/");
+  if (normalized.includes("..") || normalized.includes("\\")) {
+    return null;
+  }
+
+  if (normalized.endsWith("/**")) {
+    normalized = `${normalized.slice(0, -3)}/*`;
+  } else if (normalized.endsWith("/")) {
+    normalized = `${normalized.slice(0, -1)}/*`;
+  }
+
+  const starIndex = normalized.indexOf("*");
+  if (starIndex !== -1 && (starIndex !== normalized.length - 1 || !normalized.endsWith("/*"))) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function normalizePathTokenScopes(
+  value: unknown,
+  paths: string[],
+): { ok: true; scopes: string[] } | { ok: false; error: string; code: string; status: 400 } {
+  const rawScopes = Array.isArray(value)
+    ? value
+    : paths.flatMap((path) => [`relayfile:fs:read:${path}`, `relayfile:fs:write:${path}`]);
+  const scopes: string[] = [];
+
+  for (const entry of rawScopes) {
+    const scope = normalizePathTokenScope(entry);
+    if (!scope || !scopeWithinPaths(scope, paths)) {
+      return { ok: false, error: "scopes must be relayfile path scopes within the requested paths", code: "invalid_scope", status: 400 };
+    }
+    scopes.push(scope);
+  }
+
+  const unique = [...new Set(scopes)];
+  if (unique.length === 0) {
+    return { ok: false, error: "scopes is required", code: "invalid_scope", status: 400 };
+  }
+
+  return { ok: true, scopes: unique };
+}
+
+function normalizePathTokenScope(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const match = /^relayfile:fs:(read|write):(.+)$/.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+
+  const path = normalizePathTokenPath(match[2]);
+  return path ? `relayfile:fs:${match[1]}:${path}` : null;
+}
+
+function scopeWithinPaths(scope: string, paths: string[]): boolean {
+  return paths.some((path) => {
+    const readGrant = `relayfile:fs:read:${path}`;
+    const writeGrant = `relayfile:fs:write:${path}`;
+    try {
+      return matchScope(scope, [readGrant, writeGrant]);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function relayTokenPrefix(prefix: string | undefined): typeof RELAY_AGENT_TOKEN_PREFIX | typeof RELAY_PATH_TOKEN_PREFIX {
+  return prefix === RELAY_PATH_TOKEN_PREFIX ? RELAY_PATH_TOKEN_PREFIX : RELAY_AGENT_TOKEN_PREFIX;
+}
+
+function tokenPrefixForClaims(claims: RelayAuthTokenClaims): string | undefined {
+  if (isPathClaims(claims)) {
+    return RELAY_PATH_TOKEN_PREFIX;
+  }
+
+  return isAgentClaims(claims) ? RELAY_AGENT_TOKEN_PREFIX : undefined;
+}
+
 async function resolveWorkspaceToken(
   storage: AuthStorage,
   claims: RelayAuthTokenClaims,
@@ -997,4 +1281,12 @@ async function isWorkspaceTokenRevoked(
 
 function isAgentClaims(claims: RelayAuthTokenClaims): boolean {
   return claims.meta?.tokenClass === "agent";
+}
+
+function isPathClaims(claims: RelayAuthTokenClaims): boolean {
+  return claims.meta?.tokenClass === "path";
+}
+
+function isDerivedClaims(claims: RelayAuthTokenClaims): boolean {
+  return isAgentClaims(claims) || isPathClaims(claims);
 }

@@ -57,7 +57,7 @@ type PathTokenIssueRequest = {
 
 - `POST /v1/tokens/workspace` returns a long-lived `relay_ws_*` workspace token.
 - `POST /v1/tokens/agent` accepts that workspace token via `x-api-key` and returns a short-lived `relay_ag_*` token pair for one `agentId`.
-- `POST /v1/tokens/path` accepts that same workspace token via `x-api-key` and returns a short-lived `relay_pa_*` token pair whose `relayfile:fs:*` scopes are intersected with the requested `paths`.
+- `POST /v1/tokens/path` accepts that same workspace token via `x-api-key` or `Authorization: Bearer relay_ws_*` and returns a short-lived `relay_pa_*` token pair whose `relayfile:fs:*` scopes are intersected with the requested `paths`.
 - `POST /v1/tokens/refresh` rotates the current pair and preserves the agent-token lineage. Revoking the parent workspace token invalidates all derived agent tokens.
 
 `paths` uses the same filesystem constraint model as `relayfile:fs:*` scopes: exact paths or trailing-prefix globs such as `/linear/issues/*`. For compatibility, `/linear/issues/**` is normalized to `/linear/issues/*` during issuance.

@@ -4,6 +4,7 @@ import test from "node:test";
 
 import type {
   AgentTokenPair,
+  PathTokenPair,
   RelayAuthTokenClaims,
   TokenPair,
   WorkspaceTokenIssueResponse,
@@ -53,7 +54,11 @@ function signRs256Jwt(claims: RelayAuthTokenClaims): string {
 }
 
 function decodeJwtJsonSegment<T>(token: string, index: 0 | 1): T {
-  const normalized = token.startsWith("relay_ag_") ? token.slice("relay_ag_".length) : token;
+  const normalized = token.startsWith("relay_ag_")
+    ? token.slice("relay_ag_".length)
+    : token.startsWith("relay_pa_")
+      ? token.slice("relay_pa_".length)
+      : token;
   const segments = normalized.split(".");
   assert.equal(segments.length, 3, "expected a compact JWT with exactly three segments");
   return JSON.parse(Buffer.from(segments[index], "base64url").toString("utf8")) as T;
@@ -554,14 +559,75 @@ test("POST /v1/tokens/agent", async (t) => {
 });
 
 test("POST /v1/tokens/path", async (t) => {
-  await t.test("returns the M1 not-implemented stub response", async () => {
+  await t.test("mints a relay_pa token pair from a workspace token", async () => {
     const { app, authHeaders } = await createHarness({
       authClaims: {
-        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*"],
+        scopes: [
+          "relayauth:api-key:manage:*",
+          "relayauth:token:create:*",
+          "relayfile:fs:read:*",
+          "relayfile:fs:write:*",
+        ],
       },
     });
     const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
-      scopes: ["relayauth:token:create:*"],
+      scopes: ["relayauth:token:create:*", "relayfile:fs:read:*", "relayfile:fs:write:*"],
+    });
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/path", {
+      body: {
+        workspaceId: "ws_tokens_route",
+        agentName: "cloud-orchestrator",
+        paths: ["/linear/issues/**"],
+        ttlSeconds: 7200,
+      },
+      headers: {
+        Authorization: `Bearer ${workspaceToken.key}`,
+      },
+    });
+
+    const body = await assertJsonResponse<PathTokenPair>(response, 201);
+    assert.equal(body.agentId, "agent_cloud-orchestrator");
+    assert.equal(body.agentName, "cloud-orchestrator");
+    assert.equal(body.workspaceId, "ws_tokens_route");
+    assert.equal(body.tokenClass, "relay_pa");
+    assert.deepEqual(body.paths, ["/linear/issues/*"]);
+    assert.match(body.accessToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    assert.match(body.refreshToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+
+    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
+    assert.equal(accessClaims.sub, "agent_cloud-orchestrator");
+    assert.equal(accessClaims.meta?.tokenClass, "path");
+    assert.equal(accessClaims.meta?.workspaceTokenId, workspaceToken.workspaceToken.id);
+    assert.equal(accessClaims.meta?.agentName, "cloud-orchestrator");
+    assert.deepEqual(JSON.parse(accessClaims.meta?.paths ?? "[]"), ["/linear/issues/*"]);
+    assert.deepEqual(accessClaims.scopes, [
+      "relayfile:fs:read:/linear/issues/*",
+      "relayfile:fs:write:/linear/issues/*",
+    ]);
+    assert.deepEqual(accessClaims.aud, ["relayfile"]);
+    assert.ok(accessClaims.exp - accessClaims.iat <= 3600, "path access TTL should cap at 1h");
+
+    const refreshResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: {
+        refreshToken: body.refreshToken,
+      },
+    });
+    const refreshed = await assertJsonResponse<TokenPair>(refreshResponse, 200);
+    assert.match(refreshed.accessToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    const refreshedClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(refreshed.accessToken, 1);
+    assert.equal(refreshedClaims.meta?.tokenClass, "path");
+    assert.deepEqual(refreshedClaims.scopes, accessClaims.scopes);
+  });
+
+  await t.test("rejects path scopes outside the workspace token grant", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayfile:fs:read:*"],
+      },
+    });
+    const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
+      scopes: ["relayauth:token:create:*", "relayfile:fs:read:*"],
     });
 
     const response = await requestRoute(app, "POST", "/v1/tokens/path", {
@@ -574,9 +640,8 @@ test("POST /v1/tokens/path", async (t) => {
       },
     });
 
-    await assertJsonResponse<ErrorBody>(response, 501, (body) => {
-      assert.equal(body.error, "path_scoped_tokens_not_implemented");
-      assert.equal(body.code, "not_implemented");
+    await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+      assert.equal(body.code, "insufficient_scope");
     });
   });
 });

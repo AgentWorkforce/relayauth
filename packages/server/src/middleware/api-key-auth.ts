@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import type { AppEnv } from "../env.js";
+import { WORKSPACE_TOKEN_PREFIX } from "../lib/api-keys.js";
 import { authenticateBearerOrApiKey } from "../lib/auth.js";
 
 /**
@@ -18,13 +19,14 @@ import { authenticateBearerOrApiKey } from "../lib/auth.js";
  */
 export function apiKeyAuth(): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    const apiKey = c.req.header("x-api-key");
+    const authorization = c.req.header("authorization");
+    const apiKey = c.req.header("x-api-key") ?? extractBearerWorkspaceToken(authorization);
     if (!apiKey) {
       return next();
     }
 
     const auth = await authenticateBearerOrApiKey(
-      c.req.header("authorization"),
+      authorization,
       apiKey,
       c.env,
       c.get("storage"),
@@ -40,4 +42,17 @@ export function apiKeyAuth(): MiddlewareHandler<AppEnv> {
 
     await next();
   };
+}
+
+function extractBearerWorkspaceToken(authorization: string | undefined): string | undefined {
+  if (!authorization) {
+    return undefined;
+  }
+
+  const [scheme, token] = authorization.split(/\s+/, 2);
+  if (scheme !== "Bearer" || !token || !token.startsWith(WORKSPACE_TOKEN_PREFIX)) {
+    return undefined;
+  }
+
+  return token;
 }

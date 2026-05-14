@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type {
   AgentTokenPair,
   AgentTokenIssueRequest,
+  PathTokenPair,
   PathTokenIssueRequest,
   RelayAuthTokenClaims,
   TokenPair,
@@ -39,12 +40,15 @@ type TokenClient = RelayAuthClient & {
     expiresIn?: number;
   }): Promise<AgentTokenPair>;
   issuePathToken(options: {
-    agentId: string;
+    agentId?: string;
+    agentName?: string;
+    workspaceId?: string;
     paths: string[];
     scopes?: string[];
     audience?: string[];
     expiresIn?: number;
-  }): Promise<never>;
+    ttlSeconds?: number;
+  }): Promise<PathTokenPair>;
   revokeToken(tokenId: string): Promise<void>;
   introspectToken(token: string): Promise<RelayAuthTokenClaims | null>;
 };
@@ -112,6 +116,18 @@ const agentTokenPair: AgentTokenPair = {
   agentId: "agent_123",
   workspaceId: "ws_123",
   tokenClass: "relay_ag",
+  issuedViaWorkspaceTokenId: "ak_workspace_123",
+};
+
+const pathTokenPair: PathTokenPair = {
+  ...tokenPair,
+  accessToken: "relay_pa_access.token.value",
+  refreshToken: "relay_pa_refresh.token.value",
+  agentId: "agent_123",
+  agentName: "cloud-orchestrator",
+  workspaceId: "ws_123",
+  tokenClass: "relay_pa",
+  paths: ["/linear/issues/*"],
   issuedViaWorkspaceTokenId: "ak_workspace_123",
 };
 
@@ -293,35 +309,22 @@ test("issueAgentToken uses x-api-key and posts the agent exchange request", asyn
   });
 });
 
-test("issuePathToken sends the future path-scoped request shape and surfaces the M1 501 stub", async (t) => {
+test("issuePathToken posts the path-scoped request shape", async (t) => {
   const client = new RelayAuthClient({ baseUrl, apiKey: workspaceTokenResponse.key }) as TokenClient;
   const requestBody: PathTokenIssueRequest = {
-    agentId: "agent_123",
+    workspaceId: "ws_123",
+    agentName: "cloud-orchestrator",
     paths: ["/linear/issues/**", "/github/repos/acme/api/**"],
     scopes: ["relayfile:fs:read:/linear/issues/**"],
     audience: ["relayfile"],
-    expiresIn: 1800,
+    ttlSeconds: 1800,
   };
-  const fetchMock = mockFetch(() =>
-    jsonResponse(
-      {
-        error: "path_scoped_tokens_not_implemented",
-        code: "not_implemented",
-      },
-      501,
-    ));
+  const fetchMock = mockFetch(() => jsonResponse(pathTokenPair, 201));
   t.after(() => fetchMock.restore());
 
-  await assert.rejects(
-    client.issuePathToken(requestBody),
-    (error: unknown) => {
-      assert.ok(error instanceof RelayAuthError);
-      assert.equal(error.code, "not_implemented");
-      assert.equal(error.statusCode, 501);
-      return true;
-    },
-  );
+  const result = await client.issuePathToken(requestBody);
 
+  assert.deepEqual(result, pathTokenPair);
   const request = await inspectCall(fetchMock.calls[0]);
   assert.equal(request.url.toString(), `${baseUrl}/v1/tokens/path`);
   assert.equal(request.method, "POST");

@@ -189,6 +189,34 @@ test("POST /v1/tokens with x-api-key succeeds against a Workers-style locked-hea
   assert.equal(typeof tokens.refreshToken, "string");
 });
 
+test("Authorization: Bearer without token does not crash apiKeyAuth-mounted routes", async () => {
+  const app = createTestApp();
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/tokens/path",
+      {
+        paths: ["/linear/issues/**"],
+      },
+      {
+        Authorization: "Bearer",
+      },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  assert.notEqual(
+    response.status,
+    500,
+    "apiKeyAuth must not throw when Authorization is Bearer without a token",
+  );
+  await assertJsonResponse<{ code?: string }>(response, 401, (body) => {
+    assert.equal(body.code, "invalid_authorization");
+  });
+});
+
 test("bearer-wins precedence: a valid bearer takes over even when x-api-key is also present", async () => {
   const app = createTestApp();
   const created = await mintApiKey(app, ["relayauth:identity:read:*"]);
