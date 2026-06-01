@@ -7,6 +7,7 @@ import type {
   PathTokenPair,
   RelayAuthTokenClaims,
   TokenPair,
+  WorkspacePathTokenPair,
   WorkspaceTokenIssueResponse,
 } from "@relayauth/types";
 
@@ -19,6 +20,7 @@ import {
   listRevokedTokenIds,
   seedActiveTokens,
   seedStoredIdentity,
+  seedWorkspaceContext,
   TEST_RS256_PRIVATE_KEY_PEM,
 } from "./test-helpers.js";
 
@@ -32,6 +34,14 @@ type ErrorBody = {
   error?: string;
   code?: string;
   message?: string;
+};
+
+type ApiKeyCreateResponse = {
+  key: string;
+  apiKey: {
+    id: string;
+    scopes: string[];
+  };
 };
 
 function base64UrlEncode(value: string | Buffer): string {
@@ -327,6 +337,22 @@ async function issueWorkspaceToken(
   });
 
   return assertJsonResponse<WorkspaceTokenIssueResponse>(response, 201);
+}
+
+async function issueApiKey(
+  app: ReturnType<typeof createTestApp>,
+  headers: HeadersInit,
+  scopes: string[],
+): Promise<ApiKeyCreateResponse> {
+  const response = await requestRoute(app, "POST", "/v1/api-keys", {
+    body: {
+      name: "workspace-path-direct-mint",
+      scopes,
+    },
+    headers,
+  });
+
+  return assertJsonResponse<ApiKeyCreateResponse>(response, 201);
 }
 
 test("POST /v1/tokens", async (t) => {
@@ -642,6 +668,179 @@ test("POST /v1/tokens/path", async (t) => {
 
     await assertJsonResponse<ErrorBody>(response, 403, (body) => {
       assert.equal(body.code, "insufficient_scope");
+    });
+  });
+});
+
+test("POST /v1/tokens/workspace-path", async (t) => {
+  async function seedWorkspace(
+    app: ReturnType<typeof createTestApp>,
+    workspaceId = "ws_tokens_route",
+    orgId = "org_tokens_route",
+  ): Promise<void> {
+    await seedWorkspaceContext(app, {
+      id: workspaceId,
+      workspaceId,
+      orgId,
+      scopes: [],
+      roles: [],
+    });
+  }
+
+  await t.test("mints a short-lived relay_pa directly from an org api key", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: [
+          "relayauth:api-key:manage:*",
+          "relayfile:fs:read:*",
+          "relayfile:fs:write:*",
+        ],
+      },
+    });
+    await seedWorkspace(app);
+    const orgApiKey = await issueApiKey(app, authHeaders, [
+      "relayauth:api-key:manage:*",
+      "relayfile:fs:read:*",
+      "relayfile:fs:write:*",
+    ]);
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
+      body: {
+        workspaceId: "ws_tokens_route",
+        agentName: "cloud-team-member",
+        paths: ["/github/repos/AgentWorkforce/cloud/issues/123/**"],
+        scopes: ["relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/**"],
+        ttlSeconds: 120,
+      },
+      headers: {
+        "x-api-key": orgApiKey.key,
+      },
+    });
+
+    const body = await assertJsonResponse<WorkspacePathTokenPair>(response, 201);
+    assert.equal(body.agentId, "agent_cloud-team-member");
+    assert.equal(body.agentName, "cloud-team-member");
+    assert.equal(body.workspaceId, "ws_tokens_route");
+    assert.equal(body.tokenClass, "relay_pa");
+    assert.deepEqual(body.paths, ["/github/repos/AgentWorkforce/cloud/issues/123/*"]);
+    assert.match(body.accessToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    assert.match(body.refreshToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    assert.equal("issuedViaWorkspaceTokenId" in body, false);
+    assert.equal("workspaceToken" in body, false);
+    assert.equal("key" in body, false);
+
+    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
+    assert.equal(accessClaims.sub, "agent_cloud-team-member");
+    assert.equal(accessClaims.wks, "ws_tokens_route");
+    assert.equal(accessClaims.meta?.tokenClass, "path");
+    assert.equal(accessClaims.meta?.workspaceTokenId, undefined);
+    assert.equal(accessClaims.parentTokenId, undefined);
+    assert.deepEqual(JSON.parse(accessClaims.meta?.paths ?? "[]"), ["/github/repos/AgentWorkforce/cloud/issues/123/*"]);
+    assert.deepEqual(accessClaims.scopes, [
+      "relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/*",
+    ]);
+    assert.deepEqual(accessClaims.aud, ["relayfile"]);
+    assert.ok(accessClaims.exp - accessClaims.iat <= 120, "direct path access TTL should honor short ttlSeconds");
+  });
+
+  await t.test("caps direct path token TTL at the agent-token maximum", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: [
+          "relayauth:api-key:manage:*",
+          "relayfile:fs:read:*",
+          "relayfile:fs:write:*",
+        ],
+      },
+    });
+    await seedWorkspace(app);
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
+      body: {
+        workspaceId: "ws_tokens_route",
+        paths: ["/github/repos/AgentWorkforce/cloud/issues/123/*"],
+        ttlSeconds: 7200,
+      },
+      headers: authHeaders,
+    });
+
+    const body = await assertJsonResponse<WorkspacePathTokenPair>(response, 201);
+    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
+    assert.ok(accessClaims.exp - accessClaims.iat <= 3600, "direct path access TTL should cap at 1h");
+  });
+
+  await t.test("rejects a workspace outside the caller org", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayfile:fs:write:*"],
+      },
+    });
+    await seedWorkspace(app, "ws_other_org", "org_other");
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
+      body: {
+        workspaceId: "ws_other_org",
+        paths: ["/github/repos/AgentWorkforce/cloud/issues/123/*"],
+        scopes: ["relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/*"],
+      },
+      headers: authHeaders,
+    });
+
+    await assertJsonResponse<ErrorBody>(response, 404, (body) => {
+      assert.equal(body.code, "workspace_not_found");
+    });
+  });
+
+  await t.test("rejects requested scopes outside the org api-key grant", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayfile:fs:read:*"],
+      },
+    });
+    await seedWorkspace(app);
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
+      body: {
+        workspaceId: "ws_tokens_route",
+        paths: ["/github/repos/AgentWorkforce/cloud/issues/123/*"],
+        scopes: ["relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/*"],
+      },
+      headers: authHeaders,
+    });
+
+    await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+      assert.equal(body.code, "insufficient_scope");
+    });
+  });
+
+  await t.test("rejects degenerate or traversal paths", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayfile:fs:write:*"],
+      },
+    });
+    await seedWorkspace(app);
+
+    const degenerate = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
+      body: {
+        workspaceId: "ws_tokens_route",
+        paths: ["/"],
+      },
+      headers: authHeaders,
+    });
+    await assertJsonResponse<ErrorBody>(degenerate, 400, (body) => {
+      assert.equal(body.code, "invalid_paths");
+    });
+
+    const traversal = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
+      body: {
+        workspaceId: "ws_tokens_route",
+        paths: ["/github/repos/AgentWorkforce/cloud/issues/../secrets/*"],
+      },
+      headers: authHeaders,
+    });
+    await assertJsonResponse<ErrorBody>(traversal, 400, (body) => {
+      assert.equal(body.code, "invalid_paths");
     });
   });
 });

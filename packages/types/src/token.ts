@@ -101,6 +101,14 @@ export interface PathTokenPair extends TokenPair {
   issuedViaWorkspaceTokenId: string;
 }
 
+export type WorkspacePathTokenIssueRequest =
+  Omit<PathTokenIssueRequest, "workspaceId"> & {
+    workspaceId: string;
+  };
+
+export type WorkspacePathTokenPair =
+  Omit<PathTokenPair, "issuedViaWorkspaceTokenId">;
+
 export interface JWKSResponse {
   keys: JsonWebKey[];
 }

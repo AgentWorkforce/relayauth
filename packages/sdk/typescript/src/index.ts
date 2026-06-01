@@ -16,6 +16,8 @@ export type {
   RelayAuthTokenClaims,
   Role,
   TokenPair,
+  WorkspacePathTokenIssueRequest,
+  WorkspacePathTokenPair,
   WorkspaceToken,
   WorkspaceTokenIssueRequest,
   WorkspaceTokenIssueResponse,
