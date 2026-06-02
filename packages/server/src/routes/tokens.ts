@@ -84,6 +84,14 @@ type PathTokenResponse = TokenPair & {
   issuedViaWorkspaceTokenId: string;
 };
 
+type WorkspacePathTokenResponse = TokenPair & {
+  agentId: string;
+  agentName: string;
+  workspaceId: string;
+  tokenClass: "relay_pa";
+  paths: string[];
+};
+
 type TokenRow = {
   id?: string | null;
   token_id?: string | null;
@@ -410,6 +418,87 @@ tokens.post("/path", async (c) => {
     tokenClass: "relay_pa",
     paths: paths.paths,
     issuedViaWorkspaceTokenId: workspaceToken.id,
+  }, 201);
+});
+
+tokens.post("/workspace-path", async (c) => {
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
+    "relayauth:api-key:manage:*",
+    matchScope,
+  );
+  if (!auth.ok) {
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
+  }
+
+  const body = await parseJsonObjectBody<PathTokenRequest>(c.req.raw);
+  if (!body) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const workspaceId = normalizeOptionalString(body.workspaceId);
+  if (!workspaceId) {
+    return c.json({ error: "workspaceId is required", code: "workspaceId_required" }, 400);
+  }
+
+  const storage = getSqlStorage(c.get("storage"));
+  const workspace = await storage.contexts.getWorkspace(workspaceId);
+  if (!workspace || workspace.orgId !== auth.claims.org) {
+    return c.json({ error: "workspace_not_found", code: "workspace_not_found" }, 404);
+  }
+
+  const paths = normalizePathTokenPaths(body.paths);
+  if (!paths.ok) {
+    return c.json({ error: paths.error, code: paths.code }, paths.status);
+  }
+
+  const accessScopes = normalizePathTokenScopes(body.scopes, paths.paths);
+  if (!accessScopes.ok) {
+    return c.json({ error: accessScopes.error, code: accessScopes.code }, accessScopes.status);
+  }
+
+  if (!scopesWithinGrant(accessScopes.scopes, auth.claims.scopes)) {
+    return c.json({ error: "insufficient_scope", code: "insufficient_scope" }, 403);
+  }
+
+  const accessAudience = normalizeAudience(body.audience, accessScopes.scopes);
+  const accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn ?? body.ttlSeconds);
+  const agentName = normalizeOptionalString(body.agentName) ?? normalizeOptionalString(body.agentId) ?? "cloud-orchestrator";
+  const agentId = normalizeAgentIdentifier(normalizeOptionalString(body.agentId) ?? agentName);
+  const identity = createPathTokenIdentity({
+    agentId,
+    agentName,
+    orgId: auth.claims.org,
+    workspaceId: workspace.workspaceId,
+    sponsorId: auth.claims.sponsorId,
+    sponsorChain: auth.claims.sponsorChain,
+    scopes: auth.claims.scopes,
+  });
+
+  const tokenPair = await issueTokenPair(storage, c.env, identity, {
+    accessScopes: accessScopes.scopes,
+    accessAudience,
+    accessExpiresIn,
+    action: "token.issued",
+    meta: {
+      tokenClass: "path",
+      agentName,
+      paths: JSON.stringify(paths.paths),
+      accessScopes: JSON.stringify(accessScopes.scopes),
+      accessAudience: JSON.stringify(accessAudience),
+    },
+    wrapAccessToken: true,
+    wrapRefreshToken: true,
+    tokenIdPrefix: RELAY_PATH_TOKEN_PREFIX,
+  });
+
+  return c.json<WorkspacePathTokenResponse>({
+    ...tokenPair,
+    agentId,
+    agentName,
+    workspaceId: identity.workspaceId,
+    tokenClass: "relay_pa",
+    paths: paths.paths,
   }, 201);
 });
 

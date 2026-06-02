@@ -11,6 +11,8 @@ import type {
   RelayAuthTokenClaims,
   Role,
   TokenPair,
+  WorkspacePathTokenIssueRequest,
+  WorkspacePathTokenPair,
   WorkspaceTokenIssueRequest,
   WorkspaceTokenIssueResponse,
 } from "@relayauth/types";
@@ -144,6 +146,21 @@ export class RelayAuthClient {
 
   async issuePathToken(options: PathTokenIssueRequest): Promise<PathTokenPair> {
     return this._request<PathTokenPair>("/v1/tokens/path", {
+      method: "POST",
+      body: options,
+      headers: this.options.apiKey
+        ? {
+          "x-api-key": this.options.apiKey,
+        }
+        : undefined,
+      errorContext: {
+        identityId: options.agentId,
+      },
+    });
+  }
+
+  async issueWorkspacePathToken(options: WorkspacePathTokenIssueRequest): Promise<WorkspacePathTokenPair> {
+    return this._request<WorkspacePathTokenPair>("/v1/tokens/workspace-path", {
       method: "POST",
       body: options,
       headers: this.options.apiKey

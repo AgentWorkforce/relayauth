@@ -7,6 +7,8 @@ import type {
   PathTokenIssueRequest,
   RelayAuthTokenClaims,
   TokenPair,
+  WorkspacePathTokenIssueRequest,
+  WorkspacePathTokenPair,
   WorkspaceTokenIssueResponse,
 } from "@relayauth/types";
 import { RelayAuthClient } from "../client.js";
@@ -49,6 +51,16 @@ type TokenClient = RelayAuthClient & {
     expiresIn?: number;
     ttlSeconds?: number;
   }): Promise<PathTokenPair>;
+  issueWorkspacePathToken(options: {
+    agentId?: string;
+    agentName?: string;
+    workspaceId: string;
+    paths: string[];
+    scopes?: string[];
+    audience?: string[];
+    expiresIn?: number;
+    ttlSeconds?: number;
+  }): Promise<WorkspacePathTokenPair>;
   revokeToken(tokenId: string): Promise<void>;
   introspectToken(token: string): Promise<RelayAuthTokenClaims | null>;
 };
@@ -129,6 +141,17 @@ const pathTokenPair: PathTokenPair = {
   tokenClass: "relay_pa",
   paths: ["/linear/issues/*"],
   issuedViaWorkspaceTokenId: "ak_workspace_123",
+};
+
+const workspacePathTokenPair: WorkspacePathTokenPair = {
+  ...tokenPair,
+  accessToken: "relay_pa_direct.access.token",
+  refreshToken: "relay_pa_direct.refresh.token",
+  agentId: "agent_123",
+  agentName: "cloud-orchestrator",
+  workspaceId: "ws_123",
+  tokenClass: "relay_pa",
+  paths: ["/github/repos/acme/api/issues/123/*"],
 };
 
 const rotatedAgentTokenPair: TokenPair = {
@@ -329,6 +352,30 @@ test("issuePathToken posts the path-scoped request shape", async (t) => {
   assert.equal(request.url.toString(), `${baseUrl}/v1/tokens/path`);
   assert.equal(request.method, "POST");
   assert.equal(request.headers.get("x-api-key"), workspaceTokenResponse.key);
+  assert.equal(request.headers.get("authorization"), null);
+  assert.deepEqual(JSON.parse(request.body), requestBody);
+});
+
+test("issueWorkspacePathToken posts the direct workspace path request shape", async (t) => {
+  const client = new RelayAuthClient({ baseUrl, apiKey: token }) as TokenClient;
+  const requestBody: WorkspacePathTokenIssueRequest = {
+    workspaceId: "ws_123",
+    agentName: "cloud-orchestrator",
+    paths: ["/github/repos/acme/api/issues/123/**"],
+    scopes: ["relayfile:fs:write:/github/repos/acme/api/issues/123/**"],
+    audience: ["relayfile"],
+    ttlSeconds: 120,
+  };
+  const fetchMock = mockFetch(() => jsonResponse(workspacePathTokenPair, 201));
+  t.after(() => fetchMock.restore());
+
+  const result = await client.issueWorkspacePathToken(requestBody);
+
+  assert.deepEqual(result, workspacePathTokenPair);
+  const request = await inspectCall(fetchMock.calls[0]);
+  assert.equal(request.url.toString(), `${baseUrl}/v1/tokens/workspace-path`);
+  assert.equal(request.method, "POST");
+  assert.equal(request.headers.get("x-api-key"), token);
   assert.equal(request.headers.get("authorization"), null);
   assert.deepEqual(JSON.parse(request.body), requestBody);
 });
