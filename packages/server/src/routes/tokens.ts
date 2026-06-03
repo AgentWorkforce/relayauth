@@ -442,10 +442,11 @@ tokens.post("/workspace-path", async (c) => {
   }
 
   const storage = getSqlStorage(c.get("storage"));
-  const workspace = await storage.contexts.getWorkspace(workspaceId);
-  if (!workspace || workspace.orgId !== auth.claims.org) {
-    return c.json({ error: "workspace_not_found", code: "workspace_not_found" }, 404);
-  }
+  // Direct workspace-path minting is intentionally equivalent to:
+  //   POST /v1/tokens/workspace (org API key + caller-supplied workspaceId)
+  // followed by /v1/tokens/path.
+  // The org API key grant is the authorization boundary here; the workspace
+  // row is not an auth source and must not be required on this hot path.
 
   const paths = normalizePathTokenPaths(body.paths);
   if (!paths.ok) {
@@ -469,7 +470,7 @@ tokens.post("/workspace-path", async (c) => {
     agentId,
     agentName,
     orgId: auth.claims.org,
-    workspaceId: workspace.workspaceId,
+    workspaceId,
     sponsorId: auth.claims.sponsorId,
     sponsorChain: auth.claims.sponsorChain,
     scopes: auth.claims.scopes,
