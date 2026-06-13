@@ -90,7 +90,7 @@ export interface PathTokenIssueRequest {
   audience?: string[];
   expiresIn?: number;
   ttlSeconds?: number;
-  delegationNotAfter?: string;
+  delegationNotAfter?: string | number;
 }
 
 export interface PathTokenPair extends TokenPair {

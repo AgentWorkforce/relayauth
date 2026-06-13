@@ -2,15 +2,15 @@
 
 > **Status:** ✅ Completed
 > **Task:** da6851a4e4b7b8331f6cd5c6
-> **Confidence:** 92%
-> **Started:** March 27, 2026 at 12:56 PM
-> **Completed:** May 11, 2026 at 08:39 PM
+> **Confidence:** 86%
+> **Started:** March 27, 2026 at 11:56 AM
+> **Completed:** June 13, 2026 at 07:19 PM
 
 ---
 
 ## Summary
 
-Added public M1 proactive-runtime token contract support: exported workspace/agent/path request types, AgentTokenSession auto-rotation, path-token stub coverage, and synced package artifacts.
+Reviewed PR #49, fixed delegation horizon review comments, and validated CI-scoped build/typecheck/test plus standalone root test
 
 **Approach:** Standard approach
 
@@ -21,6 +21,10 @@ Added public M1 proactive-runtime token contract support: exported workspace/age
 ### Use the existing workspace->agent->refresh server flow and add SDK-level rotating agent sessions instead of inventing a second agent-token endpoint
 - **Chose:** Use the existing workspace->agent->refresh server flow and add SDK-level rotating agent sessions instead of inventing a second agent-token endpoint
 - **Reasoning:** The relayauth server already enforces 1h agent access TTLs, refresh rotation, and workspace-token lineage revocation; M1 mainly needs a stable public contract and transparent client-side renewal for the gateway.
+
+### Applied scoped fixes for delegation horizon review comments
+- **Chose:** Applied scoped fixes for delegation horizon review comments
+- **Reasoning:** Current checkout confirmed numeric epoch support was accepted by the server but not typed, zero parsing was inconsistent, and near-expired horizons could produce invalid refreshed tokens.
 
 ---
 
@@ -67,3 +71,5 @@ Added public M1 proactive-runtime token contract support: exported workspace/age
 *Agent: synthesizer*
 
 - Use the existing workspace->agent->refresh server flow and add SDK-level rotating agent sessions instead of inventing a second agent-token endpoint: Use the existing workspace->agent->refresh server flow and add SDK-level rotating agent sessions instead of inventing a second agent-token endpoint
+- M1 agent-token server semantics were already present; this pass hardened the public contract with exported request types, a rotating SDK session helper, explicit path-token stub coverage, and synced package build artifacts.
+- Applied scoped fixes for delegation horizon review comments: Applied scoped fixes for delegation horizon review comments

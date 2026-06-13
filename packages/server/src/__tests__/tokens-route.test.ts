@@ -687,6 +687,35 @@ test("POST /v1/tokens/path", async (t) => {
       assert.equal(body.code, "insufficient_scope");
     });
   });
+
+  await t.test("rejects invalid and near-immediate delegation horizons", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayfile:fs:read:*"],
+      },
+    });
+    const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
+      scopes: ["relayauth:token:create:*", "relayfile:fs:read:*"],
+    });
+
+    for (const delegationNotAfter of ["0", Math.floor(Date.now() / 1000) + 1]) {
+      const response = await requestRoute(app, "POST", "/v1/tokens/path", {
+        body: {
+          agentId: "agent_path_subject",
+          paths: ["/linear/issues/**"],
+          scopes: ["relayfile:fs:read:/linear/issues/**"],
+          delegationNotAfter,
+        },
+        headers: {
+          "x-api-key": workspaceToken.key,
+        },
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+        assert.equal(body.code, "invalid_delegation_not_after");
+      });
+    }
+  });
 });
 
 test("POST /v1/tokens/workspace-path", async (t) => {
@@ -1197,6 +1226,46 @@ test("POST /v1/tokens/refresh", async (t) => {
       },
     });
     await seedActiveTokens(app, "agent_path_horizon", [jti]);
+    const beforeCount = await countStoredTokens(app);
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: { refreshToken },
+    });
+
+    await assertJsonResponse<ErrorBody>(response, 401, (body) => {
+      assert.equal(body.code, "delegation_expired");
+    });
+    assert.equal(await countStoredTokens(app), beforeCount);
+  });
+
+  await t.test("rejects path token refresh with too little delegation time remaining", async () => {
+    const { app } = await createHarness();
+    const now = Math.floor(Date.now() / 1000);
+    const jti = `relay_pa_${crypto.randomUUID().replace(/-/g, "")}`;
+    const refreshToken = signRs256Jwt({
+      sub: "agent_path_near_horizon",
+      org: "org_tokens_route",
+      wks: "ws_tokens_route",
+      scopes: ["relayauth:token:refresh"],
+      sponsorId: "user_tokens_owner",
+      sponsorChain: ["user_tokens_owner", "agent_path_near_horizon"],
+      token_type: "refresh",
+      iss: "https://relayauth.dev",
+      aud: ["relayauth"],
+      exp: now + 3600,
+      iat: now - 60,
+      jti,
+      sid: `sess_${crypto.randomUUID().replace(/-/g, "")}`,
+      meta: {
+        tokenClass: "path",
+        agentName: "path-near-horizon",
+        paths: JSON.stringify(["/linear/issues/*"]),
+        accessScopes: JSON.stringify(["relayfile:fs:read:/linear/issues/*"]),
+        accessAudience: JSON.stringify(["relayfile"]),
+        delegationNotAfter: new Date((now + 1) * 1000).toISOString(),
+      },
+    });
+    await seedActiveTokens(app, "agent_path_near_horizon", [jti]);
     const beforeCount = await countStoredTokens(app);
 
     const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {

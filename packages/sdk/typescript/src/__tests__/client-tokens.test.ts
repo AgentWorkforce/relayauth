@@ -325,7 +325,7 @@ test("issuePathToken posts the path-scoped request shape", async (t) => {
     scopes: ["relayfile:fs:read:/linear/issues/**"],
     audience: ["relayfile"],
     ttlSeconds: 1800,
-    delegationNotAfter: "2026-03-26T10:00:00.000Z",
+    delegationNotAfter: 1774519200,
   };
   const fetchMock = mockFetch(() => jsonResponse(pathTokenPair, 201));
   t.after(() => fetchMock.restore());

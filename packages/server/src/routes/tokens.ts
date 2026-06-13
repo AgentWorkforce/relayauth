@@ -133,6 +133,7 @@ const EXPECTED_ISSUER = "https://relayauth.dev";
 const REFRESH_AUDIENCE = "relayauth";
 const MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS = 3600;
 const DELEGATION_NOT_AFTER_META_KEY = "delegationNotAfter";
+const MIN_DELEGATION_REMAINING_SECONDS = 5;
 
 const SELECT_TOKEN_BY_ID_SQL = `
   SELECT id, token_id, jti, identity_id, status, session_id, expires_at
@@ -1117,10 +1118,10 @@ function normalizeDelegationNotAfter(value: unknown):
   }
 
   const now = Math.floor(Date.now() / 1000);
-  if (epochSeconds <= now) {
+  if (epochSeconds <= now + MIN_DELEGATION_REMAINING_SECONDS) {
     return {
       ok: false,
-      error: "delegationNotAfter must be in the future",
+      error: "delegationNotAfter must be at least 5 seconds in the future",
       code: "invalid_delegation_not_after",
       status: 400,
     };
@@ -1152,7 +1153,7 @@ function refreshDelegationHorizon(claims: RelayAuthTokenClaims):
   }
 
   const now = Math.floor(Date.now() / 1000);
-  if (now >= epochSeconds) {
+  if (epochSeconds <= now + MIN_DELEGATION_REMAINING_SECONDS) {
     return {
       ok: false,
       error: "Delegated token refresh horizon has expired",
@@ -1184,7 +1185,8 @@ function parseEpochSeconds(value: unknown): number | null {
     if (!Number.isFinite(parsed)) {
       return null;
     }
-    return parsed > 9_999_999_999 ? Math.floor(parsed / 1000) : parsed;
+    const normalized = parsed > 9_999_999_999 ? Math.floor(parsed / 1000) : parsed;
+    return normalized > 0 ? normalized : null;
   }
 
   const millis = Date.parse(trimmed);
@@ -1192,7 +1194,8 @@ function parseEpochSeconds(value: unknown): number | null {
     return null;
   }
 
-  return Math.floor(millis / 1000);
+  const normalized = Math.floor(millis / 1000);
+  return normalized > 0 ? normalized : null;
 }
 
 function capExpiry(expiresAt: number, notAfter: number | undefined): number {
