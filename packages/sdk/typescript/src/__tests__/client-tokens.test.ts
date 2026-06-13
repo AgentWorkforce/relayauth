@@ -41,26 +41,8 @@ type TokenClient = RelayAuthClient & {
     audience?: string[];
     expiresIn?: number;
   }): Promise<AgentTokenPair>;
-  issuePathToken(options: {
-    agentId?: string;
-    agentName?: string;
-    workspaceId?: string;
-    paths: string[];
-    scopes?: string[];
-    audience?: string[];
-    expiresIn?: number;
-    ttlSeconds?: number;
-  }): Promise<PathTokenPair>;
-  issueWorkspacePathToken(options: {
-    agentId?: string;
-    agentName?: string;
-    workspaceId: string;
-    paths: string[];
-    scopes?: string[];
-    audience?: string[];
-    expiresIn?: number;
-    ttlSeconds?: number;
-  }): Promise<WorkspacePathTokenPair>;
+  issuePathToken(options: PathTokenIssueRequest): Promise<PathTokenPair>;
+  issueWorkspacePathToken(options: WorkspacePathTokenIssueRequest): Promise<WorkspacePathTokenPair>;
   revokeToken(tokenId: string): Promise<void>;
   introspectToken(token: string): Promise<RelayAuthTokenClaims | null>;
 };
@@ -141,6 +123,7 @@ const pathTokenPair: PathTokenPair = {
   tokenClass: "relay_pa",
   paths: ["/linear/issues/*"],
   issuedViaWorkspaceTokenId: "ak_workspace_123",
+  delegationNotAfter: "2026-03-26T10:00:00.000Z",
 };
 
 const workspacePathTokenPair: WorkspacePathTokenPair = {
@@ -152,6 +135,7 @@ const workspacePathTokenPair: WorkspacePathTokenPair = {
   workspaceId: "ws_123",
   tokenClass: "relay_pa",
   paths: ["/github/repos/acme/api/issues/123/*"],
+  delegationNotAfter: "2026-03-26T10:00:00.000Z",
 };
 
 const rotatedAgentTokenPair: TokenPair = {
@@ -341,6 +325,7 @@ test("issuePathToken posts the path-scoped request shape", async (t) => {
     scopes: ["relayfile:fs:read:/linear/issues/**"],
     audience: ["relayfile"],
     ttlSeconds: 1800,
+    delegationNotAfter: "2026-03-26T10:00:00.000Z",
   };
   const fetchMock = mockFetch(() => jsonResponse(pathTokenPair, 201));
   t.after(() => fetchMock.restore());
@@ -365,6 +350,7 @@ test("issueWorkspacePathToken posts the direct workspace path request shape", as
     scopes: ["relayfile:fs:write:/github/repos/acme/api/issues/123/**"],
     audience: ["relayfile"],
     ttlSeconds: 120,
+    delegationNotAfter: "2026-03-26T10:00:00.000Z",
   };
   const fetchMock = mockFetch(() => jsonResponse(workspacePathTokenPair, 201));
   t.after(() => fetchMock.restore());
