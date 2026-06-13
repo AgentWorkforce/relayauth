@@ -90,6 +90,7 @@ export interface PathTokenIssueRequest {
   audience?: string[];
   expiresIn?: number;
   ttlSeconds?: number;
+  delegationNotAfter?: string;
 }
 
 export interface PathTokenPair extends TokenPair {
@@ -98,6 +99,7 @@ export interface PathTokenPair extends TokenPair {
   workspaceId: string;
   tokenClass: "relay_pa";
   paths: string[];
+  delegationNotAfter?: string;
   issuedViaWorkspaceTokenId: string;
 }
 

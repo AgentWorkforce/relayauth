@@ -46,6 +46,7 @@ type PathTokenRequest = {
   audience?: unknown;
   expiresIn?: unknown;
   ttlSeconds?: unknown;
+  delegationNotAfter?: unknown;
 };
 
 type RevokeTokenRequest = {
@@ -81,6 +82,7 @@ type PathTokenResponse = TokenPair & {
   workspaceId: string;
   tokenClass: "relay_pa";
   paths: string[];
+  delegationNotAfter?: string;
   issuedViaWorkspaceTokenId: string;
 };
 
@@ -90,6 +92,7 @@ type WorkspacePathTokenResponse = TokenPair & {
   workspaceId: string;
   tokenClass: "relay_pa";
   paths: string[];
+  delegationNotAfter?: string;
 };
 
 type TokenRow = {
@@ -129,6 +132,7 @@ const MAX_SPONSOR_CHAIN_DEPTH = 10;
 const EXPECTED_ISSUER = "https://relayauth.dev";
 const REFRESH_AUDIENCE = "relayauth";
 const MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS = 3600;
+const DELEGATION_NOT_AFTER_META_KEY = "delegationNotAfter";
 
 const SELECT_TOKEN_BY_ID_SQL = `
   SELECT id, token_id, jti, identity_id, status, session_id, expires_at
@@ -379,6 +383,10 @@ tokens.post("/path", async (c) => {
 
   const accessAudience = normalizeAudience(body.audience, accessScopes.scopes);
   const accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn ?? body.ttlSeconds);
+  const delegationNotAfter = normalizeDelegationNotAfter(body.delegationNotAfter);
+  if (!delegationNotAfter.ok) {
+    return c.json({ error: delegationNotAfter.error, code: delegationNotAfter.code }, delegationNotAfter.status);
+  }
   const agentName = normalizeOptionalString(body.agentName) ?? normalizeOptionalString(body.agentId) ?? "cloud-orchestrator";
   const agentId = normalizeAgentIdentifier(normalizeOptionalString(body.agentId) ?? agentName);
   const identity = createPathTokenIdentity({
@@ -404,7 +412,9 @@ tokens.post("/path", async (c) => {
       paths: JSON.stringify(paths.paths),
       accessScopes: JSON.stringify(accessScopes.scopes),
       accessAudience: JSON.stringify(accessAudience),
+      ...(delegationNotAfter.iso ? { [DELEGATION_NOT_AFTER_META_KEY]: delegationNotAfter.iso } : {}),
     },
+    expiresNotAfter: delegationNotAfter.epochSeconds,
     wrapAccessToken: true,
     wrapRefreshToken: true,
     tokenIdPrefix: RELAY_PATH_TOKEN_PREFIX,
@@ -417,6 +427,7 @@ tokens.post("/path", async (c) => {
     workspaceId: identity.workspaceId,
     tokenClass: "relay_pa",
     paths: paths.paths,
+    ...(delegationNotAfter.iso ? { delegationNotAfter: delegationNotAfter.iso } : {}),
     issuedViaWorkspaceTokenId: workspaceToken.id,
   }, 201);
 });
@@ -464,6 +475,10 @@ tokens.post("/workspace-path", async (c) => {
 
   const accessAudience = normalizeAudience(body.audience, accessScopes.scopes);
   const accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn ?? body.ttlSeconds);
+  const delegationNotAfter = normalizeDelegationNotAfter(body.delegationNotAfter);
+  if (!delegationNotAfter.ok) {
+    return c.json({ error: delegationNotAfter.error, code: delegationNotAfter.code }, delegationNotAfter.status);
+  }
   const agentName = normalizeOptionalString(body.agentName) ?? normalizeOptionalString(body.agentId) ?? "cloud-orchestrator";
   const agentId = normalizeAgentIdentifier(normalizeOptionalString(body.agentId) ?? agentName);
   const identity = createPathTokenIdentity({
@@ -487,7 +502,9 @@ tokens.post("/workspace-path", async (c) => {
       paths: JSON.stringify(paths.paths),
       accessScopes: JSON.stringify(accessScopes.scopes),
       accessAudience: JSON.stringify(accessAudience),
+      ...(delegationNotAfter.iso ? { [DELEGATION_NOT_AFTER_META_KEY]: delegationNotAfter.iso } : {}),
     },
+    expiresNotAfter: delegationNotAfter.epochSeconds,
     wrapAccessToken: true,
     wrapRefreshToken: true,
     tokenIdPrefix: RELAY_PATH_TOKEN_PREFIX,
@@ -500,6 +517,7 @@ tokens.post("/workspace-path", async (c) => {
     workspaceId: identity.workspaceId,
     tokenClass: "relay_pa",
     paths: paths.paths,
+    ...(delegationNotAfter.iso ? { delegationNotAfter: delegationNotAfter.iso } : {}),
   }, 201);
 });
 
@@ -553,6 +571,11 @@ tokens.post("/refresh", async (c) => {
     return c.json({ error: "Workspace token has been revoked", code: "workspace_token_revoked" }, 401);
   }
 
+  const delegationHorizon = refreshDelegationHorizon(verification.claims);
+  if (!delegationHorizon.ok) {
+    return c.json({ error: delegationHorizon.error, code: delegationHorizon.code }, delegationHorizon.status);
+  }
+
   if (identity.sponsorChain.length > MAX_SPONSOR_CHAIN_DEPTH) {
     return c.json(
       {
@@ -580,6 +603,7 @@ tokens.post("/refresh", async (c) => {
     action: "token.refreshed",
     parentTokenId: normalizeOptionalString(verification.claims.parentTokenId),
     meta: verification.claims.meta,
+    expiresNotAfter: delegationHorizon.epochSeconds,
     wrapAccessToken: isDerivedClaims(verification.claims),
     wrapRefreshToken: isDerivedClaims(verification.claims),
     tokenIdPrefix: tokenPrefixForClaims(verification.claims),
@@ -709,6 +733,7 @@ async function issueTokenPair(
     action: "token.issued" | "token.refreshed";
     parentTokenId?: string;
     meta?: Record<string, string>;
+    expiresNotAfter?: number;
     wrapAccessToken?: boolean;
     wrapRefreshToken?: boolean;
     tokenIdPrefix?: string;
@@ -716,6 +741,8 @@ async function issueTokenPair(
 ): Promise<TokenPair> {
   const issuedAtSeconds = Math.floor(Date.now() / 1000);
   const sessionId = options.sessionId ?? createSessionId();
+  const accessExpiresAt = capExpiry(issuedAtSeconds + options.accessExpiresIn, options.expiresNotAfter);
+  const refreshExpiresAt = capExpiry(issuedAtSeconds + DEFAULT_REFRESH_TOKEN_TTL_SECONDS, options.expiresNotAfter);
   const accessClaims: RelayAuthTokenClaims = {
     sub: identity.id,
     org: identity.orgId,
@@ -726,7 +753,7 @@ async function issueTokenPair(
     token_type: "access",
     iss: EXPECTED_ISSUER,
     aud: options.accessAudience,
-    exp: issuedAtSeconds + options.accessExpiresIn,
+    exp: accessExpiresAt,
     iat: issuedAtSeconds,
     jti: createTokenId(options.tokenIdPrefix),
     sid: sessionId,
@@ -744,7 +771,7 @@ async function issueTokenPair(
     token_type: "refresh",
     iss: EXPECTED_ISSUER,
     aud: [REFRESH_AUDIENCE],
-    exp: issuedAtSeconds + DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
+    exp: refreshExpiresAt,
     iat: issuedAtSeconds,
     jti: createTokenId(options.tokenIdPrefix),
     sid: sessionId,
@@ -1070,6 +1097,106 @@ function normalizeExpiresIn(value: unknown): number {
   }
 
   return DEFAULT_ACCESS_TOKEN_TTL_SECONDS;
+}
+
+function normalizeDelegationNotAfter(value: unknown):
+  | { ok: true; iso?: string; epochSeconds?: number }
+  | { ok: false; error: string; code: string; status: 400 } {
+  if (value === undefined || value === null) {
+    return { ok: true };
+  }
+
+  const epochSeconds = parseEpochSeconds(value);
+  if (epochSeconds === null) {
+    return {
+      ok: false,
+      error: "delegationNotAfter must be an ISO timestamp or epoch seconds",
+      code: "invalid_delegation_not_after",
+      status: 400,
+    };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (epochSeconds <= now) {
+    return {
+      ok: false,
+      error: "delegationNotAfter must be in the future",
+      code: "invalid_delegation_not_after",
+      status: 400,
+    };
+  }
+
+  return {
+    ok: true,
+    iso: new Date(epochSeconds * 1000).toISOString(),
+    epochSeconds,
+  };
+}
+
+function refreshDelegationHorizon(claims: RelayAuthTokenClaims):
+  | { ok: true; epochSeconds?: number }
+  | { ok: false; error: string; code: string; status: 401 } {
+  const raw = claims.meta?.[DELEGATION_NOT_AFTER_META_KEY];
+  if (!raw) {
+    return { ok: true };
+  }
+
+  const epochSeconds = parseEpochSeconds(raw);
+  if (epochSeconds === null) {
+    return {
+      ok: false,
+      error: "Invalid delegated refresh horizon",
+      code: "invalid_delegation_not_after",
+      status: 401,
+    };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (now >= epochSeconds) {
+    return {
+      ok: false,
+      error: "Delegated token refresh horizon has expired",
+      code: "delegation_expired",
+      status: 401,
+    };
+  }
+
+  return { ok: true, epochSeconds };
+}
+
+function parseEpochSeconds(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const normalized = value > 9_999_999_999 ? Math.floor(value / 1000) : Math.floor(value);
+    return normalized > 0 ? normalized : null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (/^\d+$/.test(trimmed)) {
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+    return parsed > 9_999_999_999 ? Math.floor(parsed / 1000) : parsed;
+  }
+
+  const millis = Date.parse(trimmed);
+  if (Number.isNaN(millis)) {
+    return null;
+  }
+
+  return Math.floor(millis / 1000);
+}
+
+function capExpiry(expiresAt: number, notAfter: number | undefined): number {
+  return notAfter === undefined ? expiresAt : Math.min(expiresAt, notAfter);
 }
 
 function normalizeAgentExpiresIn(value: unknown): number {
