@@ -5,6 +5,7 @@ import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { keyIdFromPublicJwk } from "../lib/sign-rs256.js";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(currentDir, "../../../../");
@@ -98,7 +99,11 @@ test("dev token generator produces valid JWT structure", async () => {
   const header = decodeJwtPart(encodedHeader);
   const payload = decodeJwtPart(encodedPayload);
 
-  assert.deepEqual(header, { alg: "RS256", typ: "JWT" });
+  // The token's `kid` must be the RFC 7638 thumbprint of the signing public key
+  // so RelayAuth can locate the verification key in its JWKS (a missing/mismatched
+  // kid is rejected as invalid_token).
+  const expectedKid = await keyIdFromPublicJwk(publicKey.export({ format: "jwk" }));
+  assert.deepEqual(header, { alg: "RS256", kid: expectedKid, typ: "JWT" });
   assert.match(signature, /^[A-Za-z0-9_-]+$/, "JWT signature should be base64url encoded");
 
   const validSignature = crypto.verify(
