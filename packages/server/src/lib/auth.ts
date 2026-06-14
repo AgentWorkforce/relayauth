@@ -242,7 +242,9 @@ async function verifyToken(token: string, env: AppEnv["Bindings"]): Promise<Rela
     const claims = await verifyRs256Token(token, env);
     emitTokenVerified(claims, Math.floor(Date.now() / 1000));
     return claims;
-  } catch {
+  } catch (err) {
+    // [mintdbg] temporary diagnostic — surface the swallowed verification error.
+    console.error("[mintdbg] verifyToken threw:", err instanceof Error ? `${err.name}: ${err.message}` : String(err));
     emitTokenInvalid("invalid_token", payload);
     return null;
   }
@@ -264,6 +266,9 @@ function emitTokenVerified(claims: RelayAuthTokenClaims, nowSeconds: number): vo
 function emitTokenInvalid(reason: string, claims?: Partial<RelayAuthTokenClaims> | null): void {
   const sub = typeof claims?.sub === "string" ? claims.sub : undefined;
   const org = typeof claims?.org === "string" ? claims.org : undefined;
+
+  // [mintdbg] temporary diagnostic — surface the exact reject reason (observer bus is in-process only).
+  console.error("[mintdbg] token.invalid reason=", reason, "sub=", sub, "org=", org);
 
   emitObserverEvent({
     type: "token.invalid",
