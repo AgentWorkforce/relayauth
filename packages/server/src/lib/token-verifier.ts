@@ -22,25 +22,32 @@ export async function verifyRs256Token(
 }
 
 async function resolveJwksUrl(env: VerifierEnv): Promise<string> {
+  // Prefer building the JWKS inline from the locally-bound signing public key.
+  // The worker already holds its own public key, so it never needs a network
+  // sub-request — and on Cloudflare, fetching BASE_URL means the worker fetching
+  // its OWN custom domain (api.relayauth.dev), a self-subrequest that fails and
+  // throws "Failed to fetch JWKS", breaking ALL RS256 bearer verification
+  // (e.g. the admin-bearer api-key mint -> 401 invalid_token). Only fall back to
+  // a network fetch when no public key is bound (e.g. local/dev).
+  const publicKeyPem = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
+  if (publicKeyPem) {
+    const keyWithPlaceholderKid = await rsaPublicJwkFromPem(publicKeyPem, "");
+    const jwks = {
+      keys: [
+        {
+          ...keyWithPlaceholderKid,
+          kid: await keyIdFromPublicJwk(keyWithPlaceholderKid),
+        },
+      ],
+    };
+
+    return `data:application/json,${encodeURIComponent(JSON.stringify(jwks))}`;
+  }
+
   const baseUrl = env.BASE_URL?.trim();
   if (baseUrl) {
     return new URL("/.well-known/jwks.json", baseUrl).toString();
   }
 
-  const publicKeyPem = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
-  if (!publicKeyPem) {
-    return "http://127.0.0.1:8787/.well-known/jwks.json";
-  }
-
-  const keyWithPlaceholderKid = await rsaPublicJwkFromPem(publicKeyPem, "");
-  const jwks = {
-    keys: [
-      {
-        ...keyWithPlaceholderKid,
-        kid: await keyIdFromPublicJwk(keyWithPlaceholderKid),
-      },
-    ],
-  };
-
-  return `data:application/json,${encodeURIComponent(JSON.stringify(jwks))}`;
+  return "http://127.0.0.1:8787/.well-known/jwks.json";
 }
