@@ -30,6 +30,7 @@ const VALID_ACTIONS = new Set([
   "run",
   "send",
   "invoke",
+  "trigger",
   "*",
 ]);
 
