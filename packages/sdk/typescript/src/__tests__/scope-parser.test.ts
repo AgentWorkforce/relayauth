@@ -80,6 +80,23 @@ test('parseScope("cloud:workflow:run") defaults the omitted path to "*"', () => 
   });
 });
 
+test('parseScope("relayfile:sync:trigger:*") accepts the trigger action', () => {
+  const { parseScope } = getParserApi();
+
+  // `trigger` backs the relayfile daemon's `sync:trigger` capability
+  // (force-refresh / writeback-ack / dead-letter replay). Without it as a
+  // first-class action, `relayfile:sync:trigger:*` fails to parse and the
+  // RelayAuth `/v1/tokens/{workspace,agent}` mint chain rejects it as
+  // insufficient_scope — breaking `relayfile pull`.
+  assert.deepEqual(parseScope("relayfile:sync:trigger:*"), {
+    plane: "relayfile",
+    resource: "sync",
+    action: "trigger",
+    path: "*",
+    raw: "relayfile:sync:trigger:*",
+  });
+});
+
 test('parseScope("*") expands the superuser wildcard alias', () => {
   const { parseScope } = getParserApi();
 
