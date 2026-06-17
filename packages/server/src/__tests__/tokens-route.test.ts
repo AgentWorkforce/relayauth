@@ -1758,4 +1758,54 @@ test("POST /v1/tokens refreshTokenTtlSeconds", async (t) => {
     );
     assert.equal(rotatedRefreshClaims.meta?.refreshTokenTtl, String(THIRTY_DAYS));
   });
+
+  await t.test("workspace-path mint: 90d TTL lands in token meta and survives /v1/tokens/refresh", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: [
+          "relayauth:api-key:manage:*",
+          "relayfile:fs:read:*",
+          "relayfile:fs:write:*",
+        ],
+      },
+    });
+    const orgApiKey = await issueApiKey(app, authHeaders, [
+      "relayauth:api-key:manage:*",
+      "relayfile:fs:read:*",
+      "relayfile:fs:write:*",
+    ]);
+    const NINETY_DAYS = 90 * 24 * 3600;
+
+    const mintResponse = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
+      body: {
+        workspaceId: "ws_tokens_route",
+        agentName: "cloud-orchestrator",
+        paths: ["/github/repos/*"],
+        scopes: ["relayfile:fs:read:/github/repos/*"],
+        refreshTokenTtlSeconds: NINETY_DAYS,
+      },
+      headers: { "x-api-key": orgApiKey.key },
+    });
+
+    const minted = await assertJsonResponse<WorkspacePathTokenPair>(mintResponse, 201);
+    const mintedRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(minted.refreshToken, 1);
+
+    const mintedRefreshTtl = mintedRefreshClaims.exp - mintedRefreshClaims.iat;
+    assert.ok(mintedRefreshTtl >= NINETY_DAYS - 5, `minted refresh TTL should be ~90d, got ${mintedRefreshTtl}`);
+    assert.ok(mintedRefreshTtl <= NINETY_DAYS + 5, `minted refresh TTL should be ~90d, got ${mintedRefreshTtl}`);
+    assert.equal(mintedRefreshClaims.meta?.refreshTokenTtl, String(NINETY_DAYS));
+
+    const refreshResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: { refreshToken: minted.refreshToken },
+    });
+    const rotated = await assertJsonResponse<TokenPair>(refreshResponse, 200);
+
+    const rotatedRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(rotated.refreshToken, 1);
+    const rotatedRefreshTtl = rotatedRefreshClaims.exp - rotatedRefreshClaims.iat;
+    assert.ok(rotatedRefreshTtl >= NINETY_DAYS - 5, `rotated refresh TTL should be ~90d, got ${rotatedRefreshTtl}`);
+    assert.ok(rotatedRefreshTtl <= NINETY_DAYS + 5, `rotated refresh TTL should be ~90d, got ${rotatedRefreshTtl}`);
+    assert.equal(rotatedRefreshClaims.meta?.refreshTokenTtl, String(NINETY_DAYS));
+    assert.match(rotated.accessToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    assert.match(rotated.refreshToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  });
 });
