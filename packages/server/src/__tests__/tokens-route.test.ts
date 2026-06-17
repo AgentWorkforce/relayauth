@@ -1658,3 +1658,104 @@ test("derived agent bearer auth", async (t) => {
     });
   });
 });
+
+test("POST /v1/tokens refreshTokenTtlSeconds", async (t) => {
+  await t.test("issues a refresh token with the requested TTL when refreshTokenTtlSeconds is provided", async () => {
+    const { app, identity, authHeaders } = await createHarness();
+    const THIRTY_DAYS = 30 * 24 * 3600;
+
+    const response = await requestRoute(app, "POST", "/v1/tokens", {
+      body: {
+        identityId: identity.id,
+        scopes: ["specialist:invoke"],
+        audience: ["specialist"],
+        refreshTokenTtlSeconds: THIRTY_DAYS,
+      },
+      headers: authHeaders,
+    });
+
+    const body = await assertJsonResponse<TokenPair>(response, 201);
+    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.refreshToken, 1);
+    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
+
+    const refreshTtl = refreshClaims.exp - refreshClaims.iat;
+    assert.ok(refreshTtl >= THIRTY_DAYS - 5, `expected refresh TTL ~${THIRTY_DAYS}s, got ${refreshTtl}`);
+    assert.ok(refreshTtl <= THIRTY_DAYS + 5, `expected refresh TTL ~${THIRTY_DAYS}s, got ${refreshTtl}`);
+
+    assert.equal(refreshClaims.meta?.refreshTokenTtl, String(THIRTY_DAYS));
+    assert.equal(accessClaims.meta?.refreshTokenTtl, String(THIRTY_DAYS));
+  });
+
+  await t.test("caps refreshTokenTtlSeconds at 90 days (MAX_OPERATOR_REFRESH_TOKEN_TTL_SECONDS)", async () => {
+    const { app, identity, authHeaders } = await createHarness();
+    const NINETY_DAYS = 90 * 24 * 3600;
+    const TOO_LARGE = 365 * 24 * 3600;
+
+    const response = await requestRoute(app, "POST", "/v1/tokens", {
+      body: {
+        identityId: identity.id,
+        scopes: ["specialist:invoke"],
+        refreshTokenTtlSeconds: TOO_LARGE,
+      },
+      headers: authHeaders,
+    });
+
+    const body = await assertJsonResponse<TokenPair>(response, 201);
+    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.refreshToken, 1);
+    const refreshTtl = refreshClaims.exp - refreshClaims.iat;
+    assert.ok(refreshTtl <= NINETY_DAYS + 5, `refresh TTL must be capped at 90d, got ${refreshTtl}`);
+    assert.equal(refreshClaims.meta?.refreshTokenTtl, String(NINETY_DAYS));
+  });
+
+  await t.test("defaults to 24h refresh TTL when refreshTokenTtlSeconds is absent", async () => {
+    const { app, identity, authHeaders } = await createHarness();
+    const DEFAULT_24H = 24 * 3600;
+
+    const response = await requestRoute(app, "POST", "/v1/tokens", {
+      body: {
+        identityId: identity.id,
+        scopes: ["specialist:invoke"],
+      },
+      headers: authHeaders,
+    });
+
+    const body = await assertJsonResponse<TokenPair>(response, 201);
+    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.refreshToken, 1);
+    const refreshTtl = refreshClaims.exp - refreshClaims.iat;
+    assert.ok(refreshTtl >= DEFAULT_24H - 5, `expected default 24h refresh TTL, got ${refreshTtl}`);
+    assert.ok(refreshTtl <= DEFAULT_24H + 5, `expected default 24h refresh TTL, got ${refreshTtl}`);
+    assert.equal(refreshClaims.meta?.refreshTokenTtl, undefined);
+  });
+
+  await t.test("propagates refreshTokenTtl through rotation so each new refresh token gets the same TTL", async () => {
+    const { app, identity, authHeaders } = await createHarness();
+    const THIRTY_DAYS = 30 * 24 * 3600;
+
+    const issueResponse = await requestRoute(app, "POST", "/v1/tokens", {
+      body: {
+        identityId: identity.id,
+        scopes: ["specialist:invoke"],
+        refreshTokenTtlSeconds: THIRTY_DAYS,
+      },
+      headers: authHeaders,
+    });
+    const issued = await assertJsonResponse<TokenPair>(issueResponse, 201);
+
+    const refreshResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+      body: { refreshToken: issued.refreshToken },
+    });
+    const rotated = await assertJsonResponse<TokenPair>(refreshResponse, 200);
+
+    const rotatedRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(rotated.refreshToken, 1);
+    const rotatedRefreshTtl = rotatedRefreshClaims.exp - rotatedRefreshClaims.iat;
+    assert.ok(
+      rotatedRefreshTtl >= THIRTY_DAYS - 5,
+      `expected rotated refresh TTL ~${THIRTY_DAYS}s, got ${rotatedRefreshTtl}`,
+    );
+    assert.ok(
+      rotatedRefreshTtl <= THIRTY_DAYS + 5,
+      `expected rotated refresh TTL ~${THIRTY_DAYS}s, got ${rotatedRefreshTtl}`,
+    );
+    assert.equal(rotatedRefreshClaims.meta?.refreshTokenTtl, String(THIRTY_DAYS));
+  });
+});

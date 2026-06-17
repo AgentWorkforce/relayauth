@@ -18,6 +18,7 @@ type IssueTokenRequest = {
   scopes?: unknown;
   audience?: unknown;
   expiresIn?: unknown;
+  refreshTokenTtlSeconds?: unknown;
 };
 
 type RefreshTokenRequest = {
@@ -127,6 +128,8 @@ const tokens = new Hono<AppEnv>();
 
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 3600;
 const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 24 * 3600;
+const MAX_OPERATOR_REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 3600;
+const REFRESH_TOKEN_TTL_META_KEY = "refreshTokenTtl";
 const CLOCK_SKEW_SECONDS = 60;
 const MAX_SPONSOR_CHAIN_DEPTH = 10;
 const EXPECTED_ISSUER = "https://relayauth.dev";
@@ -209,11 +212,13 @@ tokens.post("/", async (c) => {
   }
   const accessAudience = normalizeAudience(body.audience, accessScopes);
   const accessExpiresIn = normalizeExpiresIn(body.expiresIn);
+  const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(body.refreshTokenTtlSeconds);
 
   const tokenPair = await issueTokenPair(storage, c.env, identity, {
     accessScopes,
     accessAudience,
     accessExpiresIn,
+    refreshTokenTtlSeconds,
     action: "token.issued",
   });
 
@@ -599,6 +604,7 @@ tokens.post("/refresh", async (c) => {
     accessExpiresIn: isDerivedClaims(verification.claims)
       ? MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS
       : DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+    refreshTokenTtlSeconds: parseMetaRefreshTokenTtl(verification.claims.meta),
     sessionId: presentedSid,
     action: "token.refreshed",
     parentTokenId: normalizeOptionalString(verification.claims.parentTokenId),
@@ -729,6 +735,7 @@ async function issueTokenPair(
     accessScopes: string[];
     accessAudience: string[];
     accessExpiresIn: number;
+    refreshTokenTtlSeconds?: number;
     sessionId?: string;
     action: "token.issued" | "token.refreshed";
     parentTokenId?: string;
@@ -741,8 +748,14 @@ async function issueTokenPair(
 ): Promise<TokenPair> {
   const issuedAtSeconds = Math.floor(Date.now() / 1000);
   const sessionId = options.sessionId ?? createSessionId();
+  const refreshTtl = options.refreshTokenTtlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
   const accessExpiresAt = capExpiry(issuedAtSeconds + options.accessExpiresIn, options.expiresNotAfter);
-  const refreshExpiresAt = capExpiry(issuedAtSeconds + DEFAULT_REFRESH_TOKEN_TTL_SECONDS, options.expiresNotAfter);
+  const refreshExpiresAt = capExpiry(issuedAtSeconds + refreshTtl, options.expiresNotAfter);
+  // Embed refreshTokenTtl in meta so rotation (/tokens/refresh) can reissue
+  // the same TTL without the caller needing to re-supply it each time.
+  const mergedMeta: Record<string, string> | undefined = options.refreshTokenTtlSeconds !== undefined
+    ? { ...(options.meta ?? {}), [REFRESH_TOKEN_TTL_META_KEY]: String(options.refreshTokenTtlSeconds) }
+    : options.meta;
   const accessClaims: RelayAuthTokenClaims = {
     sub: identity.id,
     org: identity.orgId,
@@ -758,7 +771,7 @@ async function issueTokenPair(
     jti: createTokenId(options.tokenIdPrefix),
     sid: sessionId,
     ...(options.parentTokenId ? { parentTokenId: options.parentTokenId } : {}),
-    ...(options.meta ? { meta: options.meta } : {}),
+    ...(mergedMeta ? { meta: mergedMeta } : {}),
   };
 
   const refreshClaims: RelayAuthTokenClaims = {
@@ -776,7 +789,7 @@ async function issueTokenPair(
     jti: createTokenId(options.tokenIdPrefix),
     sid: sessionId,
     ...(options.parentTokenId ? { parentTokenId: options.parentTokenId } : {}),
-    ...(options.meta ? { meta: options.meta } : {}),
+    ...(mergedMeta ? { meta: mergedMeta } : {}),
   };
 
   const signedAccessToken = await signToken(accessClaims, env);
@@ -1201,6 +1214,36 @@ function capExpiry(expiresAt: number, notAfter: number | undefined): number {
 
 function normalizeAgentExpiresIn(value: unknown): number {
   return Math.min(normalizeExpiresIn(value), MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS);
+}
+
+function normalizeRefreshTokenTtl(value: unknown): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const parsed = typeof value === "number"
+    ? value
+    : typeof value === "string"
+      ? Number.parseInt(value, 10)
+      : NaN;
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+
+  return Math.min(Math.floor(parsed), MAX_OPERATOR_REFRESH_TOKEN_TTL_SECONDS);
+}
+
+function parseMetaRefreshTokenTtl(meta: Record<string, string> | undefined): number | undefined {
+  const raw = meta?.[REFRESH_TOKEN_TTL_META_KEY];
+  if (!raw) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.min(parsed, MAX_OPERATOR_REFRESH_TOKEN_TTL_SECONDS)
+    : undefined;
 }
 
 function parseMetaStringArray(value: string | undefined, fallback: string[]): string[] {
