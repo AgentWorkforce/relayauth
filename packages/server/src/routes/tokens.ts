@@ -36,6 +36,7 @@ type AgentTokenRequest = {
   scopes?: unknown;
   audience?: unknown;
   expiresIn?: unknown;
+  refreshTokenTtlSeconds?: unknown;
 };
 
 type PathTokenRequest = {
@@ -48,6 +49,7 @@ type PathTokenRequest = {
   expiresIn?: unknown;
   ttlSeconds?: unknown;
   delegationNotAfter?: unknown;
+  refreshTokenTtlSeconds?: unknown;
 };
 
 type RevokeTokenRequest = {
@@ -320,10 +322,12 @@ tokens.post("/agent", async (c) => {
 
   const accessAudience = normalizeAudience(body.audience, accessScopes);
   const accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn);
+  const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(body.refreshTokenTtlSeconds);
   const tokenPair = await issueTokenPair(storage, c.env, identity, {
     accessScopes,
     accessAudience,
     accessExpiresIn,
+    refreshTokenTtlSeconds,
     action: "token.issued",
     parentTokenId: workspaceToken.id,
     meta: {
@@ -388,6 +392,7 @@ tokens.post("/path", async (c) => {
 
   const accessAudience = normalizeAudience(body.audience, accessScopes.scopes);
   const accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn ?? body.ttlSeconds);
+  const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(body.refreshTokenTtlSeconds);
   const delegationNotAfter = normalizeDelegationNotAfter(body.delegationNotAfter);
   if (!delegationNotAfter.ok) {
     return c.json({ error: delegationNotAfter.error, code: delegationNotAfter.code }, delegationNotAfter.status);
@@ -408,6 +413,7 @@ tokens.post("/path", async (c) => {
     accessScopes: accessScopes.scopes,
     accessAudience,
     accessExpiresIn,
+    refreshTokenTtlSeconds,
     action: "token.issued",
     parentTokenId: workspaceToken.id,
     meta: {
@@ -480,6 +486,7 @@ tokens.post("/workspace-path", async (c) => {
 
   const accessAudience = normalizeAudience(body.audience, accessScopes.scopes);
   const accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn ?? body.ttlSeconds);
+  const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(body.refreshTokenTtlSeconds);
   const delegationNotAfter = normalizeDelegationNotAfter(body.delegationNotAfter);
   if (!delegationNotAfter.ok) {
     return c.json({ error: delegationNotAfter.error, code: delegationNotAfter.code }, delegationNotAfter.status);
@@ -500,6 +507,7 @@ tokens.post("/workspace-path", async (c) => {
     accessScopes: accessScopes.scopes,
     accessAudience,
     accessExpiresIn,
+    refreshTokenTtlSeconds,
     action: "token.issued",
     meta: {
       tokenClass: "path",
