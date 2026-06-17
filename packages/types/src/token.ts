@@ -45,6 +45,15 @@ export interface TokenPair {
   tokenType: "Bearer";
 }
 
+export interface IdentityTokenIssueRequest {
+  identityId: string;
+  scopes?: string[];
+  audience?: string[];
+  expiresIn?: number;
+  /** TTL in seconds for the refresh token. Defaults to 24h; max 90 days. */
+  refreshTokenTtlSeconds?: number;
+}
+
 export interface WorkspaceTokenIssueRequest {
   workspaceId: string;
   name?: string;
