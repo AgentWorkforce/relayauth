@@ -1490,15 +1490,26 @@ function normalizePathTokenScope(value: unknown): string | null {
 }
 
 function scopeWithinPaths(scope: string, paths: string[]): boolean {
-  return paths.some((path) => {
-    const readGrant = `relayfile:fs:read:${path}`;
-    const writeGrant = `relayfile:fs:write:${path}`;
-    try {
+  const scopeMatch = /^relayfile:fs:(read|write):/.exec(scope);
+  if (!scopeMatch) {
+    return false;
+  }
+
+  try {
+    const coveredByRequestedPath = paths.some((path) => {
+      const readGrant = `relayfile:fs:read:${path}`;
+      const writeGrant = `relayfile:fs:write:${path}`;
       return matchScope(scope, [readGrant, writeGrant]);
-    } catch {
-      return false;
+    });
+    if (coveredByRequestedPath) {
+      return true;
     }
-  });
+
+    const action = scopeMatch[1];
+    return paths.every((path) => matchScope(`relayfile:fs:${action}:${path}`, [scope]));
+  } catch {
+    return false;
+  }
 }
 
 function relayTokenPrefix(prefix: string | undefined): typeof RELAY_AGENT_TOKEN_PREFIX | typeof RELAY_PATH_TOKEN_PREFIX {

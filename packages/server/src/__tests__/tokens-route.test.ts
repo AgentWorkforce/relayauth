@@ -777,6 +777,42 @@ test("POST /v1/tokens/workspace-path", async (t) => {
     assert.ok(accessClaims.exp - accessClaims.iat <= 120, "direct path access TTL should honor short ttlSeconds");
   });
 
+  await t.test("mints a provider-subtree scope for a narrower writeback path", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: [
+          "relayauth:api-key:manage:*",
+          "relayfile:fs:read:*",
+          "relayfile:fs:write:*",
+        ],
+      },
+    });
+    const orgApiKey = await issueApiKey(app, authHeaders, [
+      "relayauth:api-key:manage:*",
+      "relayfile:fs:read:*",
+      "relayfile:fs:write:*",
+    ]);
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
+      body: {
+        workspaceId: "ws_tokens_route",
+        agentName: "relayfile-writeback",
+        paths: ["/linear/issues/issue-55.json"],
+        scopes: ["relayfile:fs:write:/linear/**"],
+      },
+      headers: {
+        "x-api-key": orgApiKey.key,
+      },
+    });
+
+    const body = await assertJsonResponse<WorkspacePathTokenPair>(response, 201);
+    assert.deepEqual(body.paths, ["/linear/issues/issue-55.json"]);
+
+    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
+    assert.deepEqual(JSON.parse(accessClaims.meta?.paths ?? "[]"), ["/linear/issues/issue-55.json"]);
+    assert.deepEqual(accessClaims.scopes, ["relayfile:fs:write:/linear/*"]);
+  });
+
   await t.test("stamps the authenticated org even when the workspaceId is associated with another org", async () => {
     const { app, authHeaders } = await createHarness({
       authClaims: {
@@ -862,6 +898,57 @@ test("POST /v1/tokens/workspace-path", async (t) => {
 
     await assertJsonResponse<ErrorBody>(response, 403, (body) => {
       assert.equal(body.code, "insufficient_scope");
+    });
+  });
+
+  await t.test("rejects whole-tree scopes even with a narrow requested path", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayfile:fs:write:*"],
+      },
+    });
+
+    const wholeTreeScopes = [
+      "relayfile:fs:write:*",
+      "relayfile:fs:write:/",
+      "relayfile:fs:write:/*",
+      "relayfile:fs:write:/**",
+    ];
+
+    for (const scope of wholeTreeScopes) {
+      const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
+        body: {
+          workspaceId: "ws_tokens_route",
+          paths: ["/linear/issues/issue-55.json"],
+          scopes: [scope],
+        },
+        headers: authHeaders,
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+        assert.equal(body.code, "invalid_scope", `expected ${scope} to be rejected`);
+      });
+    }
+  });
+
+  await t.test("rejects provider-subtree scopes that do not cover every requested path", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayfile:fs:write:*"],
+      },
+    });
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
+      body: {
+        workspaceId: "ws_tokens_route",
+        paths: ["/linear/issues/issue-55.json", "/github/issues/issue-55.json"],
+        scopes: ["relayfile:fs:write:/linear/**"],
+      },
+      headers: authHeaders,
+    });
+
+    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+      assert.equal(body.code, "invalid_scope");
     });
   });
 
