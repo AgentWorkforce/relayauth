@@ -1435,11 +1435,18 @@ function normalizePathTokenPath(value: unknown): string | null {
   if (normalized.includes("..") || normalized.includes("\\")) {
     return null;
   }
+  if (normalized.split("/").includes(".")) {
+    return null;
+  }
 
   if (normalized.endsWith("/**")) {
     normalized = `${normalized.slice(0, -3)}/*`;
   } else if (normalized.endsWith("/")) {
     normalized = `${normalized.slice(0, -1)}/*`;
+  }
+
+  if (normalized === "/" || normalized === "/*") {
+    return null;
   }
 
   const starIndex = normalized.indexOf("*");
@@ -1494,18 +1501,17 @@ function scopeWithinPaths(scope: string, paths: string[]): boolean {
   if (!scopeMatch) {
     return false;
   }
+  const action = scopeMatch[1];
 
   try {
     const coveredByRequestedPath = paths.some((path) => {
-      const readGrant = `relayfile:fs:read:${path}`;
-      const writeGrant = `relayfile:fs:write:${path}`;
-      return matchScope(scope, [readGrant, writeGrant]);
+      const grant = `relayfile:fs:${action}:${path}`;
+      return matchScope(scope, [grant]);
     });
     if (coveredByRequestedPath) {
       return true;
     }
 
-    const action = scopeMatch[1];
     return paths.every((path) => matchScope(`relayfile:fs:${action}:${path}`, [scope]));
   } catch {
     return false;

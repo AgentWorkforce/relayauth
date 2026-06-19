@@ -913,6 +913,11 @@ test("POST /v1/tokens/workspace-path", async (t) => {
       "relayfile:fs:write:/",
       "relayfile:fs:write:/*",
       "relayfile:fs:write:/**",
+      "relayfile:fs:write://",
+      "relayfile:fs:write://**",
+      "relayfile:fs:write:////",
+      "relayfile:fs:write:/./",
+      "relayfile:fs:write:/./**",
     ];
 
     for (const scope of wholeTreeScopes) {
