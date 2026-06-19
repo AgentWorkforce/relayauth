@@ -1435,11 +1435,18 @@ function normalizePathTokenPath(value: unknown): string | null {
   if (normalized.includes("..") || normalized.includes("\\")) {
     return null;
   }
+  if (normalized.split("/").includes(".")) {
+    return null;
+  }
 
   if (normalized.endsWith("/**")) {
     normalized = `${normalized.slice(0, -3)}/*`;
   } else if (normalized.endsWith("/")) {
     normalized = `${normalized.slice(0, -1)}/*`;
+  }
+
+  if (normalized === "/" || normalized === "/*") {
+    return null;
   }
 
   const starIndex = normalized.indexOf("*");
@@ -1490,15 +1497,25 @@ function normalizePathTokenScope(value: unknown): string | null {
 }
 
 function scopeWithinPaths(scope: string, paths: string[]): boolean {
-  return paths.some((path) => {
-    const readGrant = `relayfile:fs:read:${path}`;
-    const writeGrant = `relayfile:fs:write:${path}`;
-    try {
-      return matchScope(scope, [readGrant, writeGrant]);
-    } catch {
-      return false;
+  const scopeMatch = /^relayfile:fs:(read|write):/.exec(scope);
+  if (!scopeMatch) {
+    return false;
+  }
+  const action = scopeMatch[1];
+
+  try {
+    const coveredByRequestedPath = paths.some((path) => {
+      const grant = `relayfile:fs:${action}:${path}`;
+      return matchScope(scope, [grant]);
+    });
+    if (coveredByRequestedPath) {
+      return true;
     }
-  });
+
+    return paths.every((path) => matchScope(`relayfile:fs:${action}:${path}`, [scope]));
+  } catch {
+    return false;
+  }
 }
 
 function relayTokenPrefix(prefix: string | undefined): typeof RELAY_AGENT_TOKEN_PREFIX | typeof RELAY_PATH_TOKEN_PREFIX {
