@@ -52,6 +52,14 @@ type PathTokenRequest = {
   refreshTokenTtlSeconds?: unknown;
 };
 
+type RelayhistoryAssertionRequest = {
+  orgId?: unknown;
+  workspaceId?: unknown;
+  sponsorId?: unknown;
+  scopes?: unknown;
+  expiresIn?: unknown;
+};
+
 type RevokeTokenRequest = {
   tokenId?: string;
   identityId?: string;
@@ -98,6 +106,12 @@ type WorkspacePathTokenResponse = TokenPair & {
   delegationNotAfter?: string;
 };
 
+type RelayhistoryAssertionResponse = {
+  accessToken: string;
+  accessTokenExpiresAt: string;
+  tokenType: "Bearer";
+};
+
 type TokenRow = {
   id?: string | null;
   token_id?: string | null;
@@ -138,6 +152,10 @@ const EXPECTED_ISSUER = "https://relayauth.dev";
 const REFRESH_AUDIENCE = "relayauth";
 const MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS = 3600;
 const DELEGATION_NOT_AFTER_META_KEY = "delegationNotAfter";
+const RELAYHISTORY_ASSERTION_SCOPE = "relayauth:assertion:create:relayhistory";
+const RELAYHISTORY_ASSERTION_AUDIENCE = "relayhistory";
+const MAX_RELAYHISTORY_ASSERTION_TTL_SECONDS = 60;
+const RELAYHISTORY_ASSERTION_SCOPES = ["rth:read", "rth:sync"] as const;
 
 const SELECT_TOKEN_BY_ID_SQL = `
   SELECT id, token_id, jti, identity_id, status, session_id, expires_at
@@ -534,6 +552,50 @@ tokens.post("/workspace-path", async (c) => {
   }, 201);
 });
 
+tokens.post("/relayhistory-assertion", async (c) => {
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
+    RELAYHISTORY_ASSERTION_SCOPE,
+    matchScope,
+  );
+  if (!auth.ok) {
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
+  }
+
+  if (c.get("apiKeyVia") !== "api_key") {
+    return c.json(
+      {
+        error: "relayhistory assertion mint requires a dedicated api key",
+        code: "assertion_key_required",
+      },
+      403,
+    );
+  }
+
+  const body = await parseJsonObjectBody<RelayhistoryAssertionRequest>(c.req.raw);
+  if (!body) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const request = normalizeRelayhistoryAssertionRequest(body);
+  if (!request.ok) {
+    return c.json({ error: request.error, code: request.code }, request.status);
+  }
+
+  const storage = getSqlStorage(c.get("storage"));
+  const assertion = await issueRelayhistoryAssertion(storage, c.env, {
+    orgId: request.orgId,
+    workspaceId: request.workspaceId,
+    sponsorId: request.sponsorId,
+    scopes: request.scopes,
+    expiresIn: request.expiresIn,
+    actorId: auth.claims.sub,
+    actorOrgId: auth.claims.org,
+  });
+
+  return c.json<RelayhistoryAssertionResponse>(assertion, 201);
+});
+
 tokens.post("/refresh", async (c) => {
   const body = await parseJsonObjectBody<RefreshTokenRequest>(c.req.raw);
   if (!body) {
@@ -826,6 +888,64 @@ async function issueTokenPair(
   };
 }
 
+async function issueRelayhistoryAssertion(
+  storage: SqlBackedStorage,
+  env: AppEnv["Bindings"],
+  options: {
+    orgId: string;
+    workspaceId: string;
+    sponsorId: string;
+    scopes: string[];
+    expiresIn: number;
+    actorId: string;
+    actorOrgId: string;
+  },
+): Promise<RelayhistoryAssertionResponse> {
+  const issuedAtSeconds = Math.floor(Date.now() / 1000);
+  const sessionId = createSessionId();
+  const claims: RelayAuthTokenClaims = {
+    sub: "agent_relayhistory_assertion",
+    org: options.orgId,
+    wks: options.workspaceId,
+    scopes: options.scopes,
+    sponsorId: options.sponsorId,
+    sponsorChain: [options.sponsorId, "agent_relayhistory_assertion"],
+    token_type: "access",
+    iss: EXPECTED_ISSUER,
+    aud: [RELAYHISTORY_ASSERTION_AUDIENCE],
+    exp: issuedAtSeconds + options.expiresIn,
+    iat: issuedAtSeconds,
+    jti: createTokenId(),
+    sid: sessionId,
+    meta: {
+      tokenClass: "relayhistory_assertion",
+      actorId: options.actorId,
+      actorOrgId: options.actorOrgId,
+      requestedOrgId: options.orgId,
+      workspaceId: options.workspaceId,
+      grantedScopes: JSON.stringify(options.scopes),
+    },
+  };
+
+  const accessToken = await signToken(claims, env);
+  await persistIssuedToken(storage, claims.sub, claims);
+  await writeAssertionAudit(storage, {
+    actorId: options.actorId,
+    actorOrgId: options.actorOrgId,
+    orgId: options.orgId,
+    workspaceId: options.workspaceId,
+    sponsorId: options.sponsorId,
+    tokenId: claims.jti,
+    scopes: options.scopes,
+  });
+
+  return {
+    accessToken,
+    accessTokenExpiresAt: new Date(claims.exp * 1000).toISOString(),
+    tokenType: "Bearer",
+  };
+}
+
 async function persistIssuedToken(
   storage: SqlBackedStorage,
   identityId: string,
@@ -867,6 +987,37 @@ async function writeTokenAudit(
     metadata: {
       tokenId: options.tokenId,
       ...(options.actorId ? { actorId: options.actorId } : {}),
+    },
+    timestamp: new Date().toISOString(),
+  });
+}
+
+async function writeAssertionAudit(
+  storage: SqlBackedStorage,
+  options: {
+    actorId: string;
+    actorOrgId: string;
+    orgId: string;
+    workspaceId: string;
+    sponsorId: string;
+    tokenId: string;
+    scopes: string[];
+  },
+): Promise<void> {
+  await storage.audit.write({
+    id: crypto.randomUUID(),
+    action: "token.issued",
+    identityId: options.actorId,
+    orgId: options.orgId,
+    workspaceId: options.workspaceId,
+    plane: "relayauth",
+    resource: "relayhistory-assertion",
+    result: "allowed",
+    metadata: {
+      tokenId: options.tokenId,
+      actorOrgId: options.actorOrgId,
+      sponsorId: options.sponsorId,
+      grantedScopes: JSON.stringify(options.scopes),
     },
     timestamp: new Date().toISOString(),
   });
@@ -1118,6 +1269,139 @@ function normalizeExpiresIn(value: unknown): number {
   }
 
   return DEFAULT_ACCESS_TOKEN_TTL_SECONDS;
+}
+
+function normalizeRelayhistoryAssertionRequest(value: RelayhistoryAssertionRequest):
+  | {
+    ok: true;
+    orgId: string;
+    workspaceId: string;
+    sponsorId: string;
+    scopes: string[];
+    expiresIn: number;
+  }
+  | { ok: false; error: string; code: string; status: 400 } {
+  const orgId = normalizeOptionalString(value.orgId);
+  if (!orgId) {
+    return {
+      ok: false,
+      error: "orgId is required",
+      code: "orgId_required",
+      status: 400,
+    };
+  }
+
+  const workspaceId = normalizeOptionalString(value.workspaceId);
+  if (!workspaceId) {
+    return {
+      ok: false,
+      error: "workspaceId is required",
+      code: "workspaceId_required",
+      status: 400,
+    };
+  }
+
+  const sponsorId = normalizeOptionalString(value.sponsorId);
+  if (!sponsorId) {
+    return {
+      ok: false,
+      error: "sponsorId is required",
+      code: "sponsorId_required",
+      status: 400,
+    };
+  }
+
+  const scopes = normalizeRelayhistoryAssertionScopes(value.scopes);
+  if (!scopes.ok) {
+    return {
+      ok: false,
+      error: scopes.error,
+      code: scopes.code,
+      status: scopes.status,
+    };
+  }
+
+  const expiresIn = normalizeRelayhistoryAssertionExpiresIn(value.expiresIn);
+  if (!expiresIn.ok) {
+    return {
+      ok: false,
+      error: expiresIn.error,
+      code: expiresIn.code,
+      status: expiresIn.status,
+    };
+  }
+
+  return {
+    ok: true,
+    orgId,
+    workspaceId,
+    sponsorId,
+    scopes: scopes.scopes,
+    expiresIn: expiresIn.expiresIn,
+  };
+}
+
+function normalizeRelayhistoryAssertionScopes(value: unknown):
+  | { ok: true; scopes: string[] }
+  | { ok: false; error: string; code: string; status: 400 } {
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      error: "scopes must be a non-empty array",
+      code: "invalid_scope",
+      status: 400,
+    };
+  }
+
+  const normalized = value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter(Boolean);
+  if (normalized.length === 0) {
+    return {
+      ok: false,
+      error: "scopes must include at least one relayhistory scope",
+      code: "invalid_scope",
+      status: 400,
+    };
+  }
+
+  const unique = [...new Set(normalized)];
+  if (!unique.every((scope) => RELAYHISTORY_ASSERTION_SCOPES.includes(scope as typeof RELAYHISTORY_ASSERTION_SCOPES[number]))) {
+    return {
+      ok: false,
+      error: "scopes may only include rth:read or rth:sync",
+      code: "invalid_scope",
+      status: 400,
+    };
+  }
+
+  return { ok: true, scopes: RELAYHISTORY_ASSERTION_SCOPES.filter((scope) => unique.includes(scope)) };
+}
+
+function normalizeRelayhistoryAssertionExpiresIn(value: unknown):
+  | { ok: true; expiresIn: number }
+  | { ok: false; error: string; code: string; status: 400 } {
+  if (value === undefined || value === null) {
+    return { ok: true, expiresIn: MAX_RELAYHISTORY_ASSERTION_TTL_SECONDS };
+  }
+
+  const parsed =
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.floor(value)
+      : typeof value === "string"
+        ? Number.parseInt(value, 10)
+        : Number.NaN;
+
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > MAX_RELAYHISTORY_ASSERTION_TTL_SECONDS) {
+    return {
+      ok: false,
+      error: `expiresIn must be between 1 and ${MAX_RELAYHISTORY_ASSERTION_TTL_SECONDS} seconds`,
+      code: "invalid_expires_in",
+      status: 400,
+    };
+  }
+
+  return { ok: true, expiresIn: parsed };
 }
 
 function normalizeDelegationNotAfter(value: unknown):
