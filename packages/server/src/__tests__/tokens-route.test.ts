@@ -44,6 +44,13 @@ type ApiKeyCreateResponse = {
   };
 };
 
+type RelayhistoryAssertionResponse = {
+  accessToken: string;
+  accessTokenExpiresAt: string;
+  refreshToken?: string;
+  tokenType: "Bearer";
+};
+
 function base64UrlEncode(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
 }
@@ -984,6 +991,162 @@ test("POST /v1/tokens/workspace-path", async (t) => {
     });
     await assertJsonResponse<ErrorBody>(traversal, 400, (body) => {
       assert.equal(body.code, "invalid_paths");
+    });
+  });
+});
+
+test("POST /v1/tokens/relayhistory-assertion", async (t) => {
+  const assertionScope = "relayauth:assertion:create:relayhistory";
+  const assertionKeyIssuerScopes = [
+    "relayauth:api-key:manage:*",
+    assertionScope,
+  ];
+
+  async function issueAssertionKey(app: ReturnType<typeof createTestApp>, headers: HeadersInit) {
+    return issueApiKey(app, headers, [assertionScope]);
+  }
+
+  await t.test("mints a short-lived access-only relayhistory assertion from a dedicated api key", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: assertionKeyIssuerScopes,
+      },
+    });
+    const assertionKey = await issueAssertionKey(app, authHeaders);
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
+      body: {
+        orgId: "org_relayhistory_target",
+        workspaceId: "ws_relayhistory_target",
+        sponsorId: "user_cloud_login",
+        scopes: ["rth:sync", "rth:read"],
+        expiresIn: 45,
+      },
+      headers: {
+        "x-api-key": assertionKey.key,
+      },
+    });
+
+    const body = await assertJsonResponse<RelayhistoryAssertionResponse>(response, 201);
+    assert.equal(body.tokenType, "Bearer");
+    assert.equal("refreshToken" in body, false, "relayhistory assertions must not issue refresh tokens");
+
+    const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
+    assert.equal(claims.sub, "agent_relayhistory_assertion");
+    assert.equal(claims.org, "org_relayhistory_target");
+    assert.equal(claims.wks, "ws_relayhistory_target");
+    assert.equal(claims.sponsorId, "user_cloud_login");
+    assert.deepEqual(claims.sponsorChain, ["user_cloud_login", "agent_relayhistory_assertion"]);
+    assert.deepEqual(claims.aud, ["relayhistory"]);
+    assert.deepEqual(claims.scopes, ["rth:read", "rth:sync"]);
+    assert.equal(claims.token_type, "access");
+    assert.equal(claims.exp - claims.iat, 45);
+    assert.match(claims.jti, /^tok_[A-Za-z0-9_-]+$/);
+    assert.deepEqual(claims.meta, {
+      tokenClass: "relayhistory_assertion",
+      actorId: "api_key:" + assertionKey.apiKey.id,
+      actorOrgId: "org_tokens_route",
+      requestedOrgId: "org_relayhistory_target",
+      workspaceId: "ws_relayhistory_target",
+      grantedScopes: JSON.stringify(["rth:read", "rth:sync"]),
+    });
+    assert.equal(await countStoredTokens(app), 1, "only the access assertion should be persisted");
+
+    const auditRow = await app.storage.DB.prepare(`
+      SELECT action, identity_id, org_id, workspace_id, resource, metadata_json
+      FROM audit_logs
+      WHERE resource = 'relayhistory-assertion'
+      LIMIT 1
+    `).first<{
+      action: string;
+      identity_id: string;
+      org_id: string;
+      workspace_id: string;
+      resource: string;
+      metadata_json: string;
+    }>();
+    assert.equal(auditRow?.action, "token.issued");
+    assert.equal(auditRow?.identity_id, "api_key:" + assertionKey.apiKey.id);
+    assert.equal(auditRow?.org_id, "org_relayhistory_target");
+    assert.equal(auditRow?.workspace_id, "ws_relayhistory_target");
+    assert.deepEqual(JSON.parse(auditRow?.metadata_json ?? "{}"), {
+      tokenId: claims.jti,
+      actorOrgId: "org_tokens_route",
+      sponsorId: "user_cloud_login",
+      grantedScopes: JSON.stringify(["rth:read", "rth:sync"]),
+    });
+  });
+
+  await t.test("requires the dedicated api-key path even when a bearer has the assertion scope", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: [assertionScope],
+      },
+    });
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
+      body: {
+        orgId: "org_relayhistory_target",
+        workspaceId: "ws_relayhistory_target",
+        sponsorId: "user_cloud_login",
+        scopes: ["rth:read"],
+      },
+      headers: authHeaders,
+    });
+
+    await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+      assert.equal(body.code, "assertion_key_required");
+    });
+  });
+
+  await t.test("strict-rejects non-relayhistory scopes instead of silently dropping them", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: assertionKeyIssuerScopes,
+      },
+    });
+    const assertionKey = await issueAssertionKey(app, authHeaders);
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
+      body: {
+        orgId: "org_relayhistory_target",
+        workspaceId: "ws_relayhistory_target",
+        sponsorId: "user_cloud_login",
+        scopes: ["rth:read", "rth:admin"],
+      },
+      headers: {
+        "x-api-key": assertionKey.key,
+      },
+    });
+
+    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+      assert.equal(body.code, "invalid_scope");
+    });
+  });
+
+  await t.test("strict-rejects ttl requests above the 60 second ceiling", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: assertionKeyIssuerScopes,
+      },
+    });
+    const assertionKey = await issueAssertionKey(app, authHeaders);
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
+      body: {
+        orgId: "org_relayhistory_target",
+        workspaceId: "ws_relayhistory_target",
+        sponsorId: "user_cloud_login",
+        scopes: ["rth:read"],
+        expiresIn: 61,
+      },
+      headers: {
+        "x-api-key": assertionKey.key,
+      },
+    });
+
+    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+      assert.equal(body.code, "invalid_expires_in");
     });
   });
 });
