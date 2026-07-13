@@ -55,7 +55,7 @@ export function apiKeyAuth(): MiddlewareHandler<AppEnv> {
             }
 
             c.set("identityCreateRateLimitChecked", true);
-            const decision = c.get("identityCreateRateLimiter").consume([
+            const decision = c.get("identityCreatePreAuthRateLimiter").consume([
               `api-key-hash:${hashApiKey(normalizedApiKey)}`,
             ]);
             setRateLimitHeaders(c, decision);

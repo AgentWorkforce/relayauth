@@ -4,7 +4,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { AgentIdentity } from "@relayauth/types";
-import { FixedWindowRateLimiter } from "../lib/rate-limit.js";
+import {
+  FixedWindowRateLimiter,
+  FixedWindowSketchRateLimiter,
+} from "../lib/rate-limit.js";
 import {
   assertJsonResponse,
   createTestApp,
@@ -169,6 +172,7 @@ test("an overloaded API-key lookup is retried and surfaces as 503 with Retry-Aft
 
 test("the API-key identity-create limiter rejects a runaway caller before another storage lookup", async () => {
   const app = createTestApp({}, {
+    identityCreatePreAuthRateLimiter: new FixedWindowRateLimiter(1, 60_000),
     identityCreateRateLimiter: new FixedWindowRateLimiter(1, 60_000),
   });
   const created = await mintApiKey(app, ["relayauth:identity:manage:*"]);
@@ -210,6 +214,7 @@ test("the API-key identity-create limiter rejects a runaway caller before anothe
 
 test("the API-key identity-create limiter normalizes trailing slashes", async () => {
   const app = createTestApp({}, {
+    identityCreatePreAuthRateLimiter: new FixedWindowRateLimiter(1, 60_000),
     identityCreateRateLimiter: new FixedWindowRateLimiter(1, 60_000),
   });
   const created = await mintApiKey(app, ["relayauth:identity:manage:*"]);
@@ -246,6 +251,42 @@ test("the API-key identity-create limiter normalizes trailing slashes", async ()
 
   assert.equal(body.code, "rate_limited");
   assert.equal(lookupCount, 1, "the path variant must be rejected before another lookup");
+});
+
+test("untrusted API-key spray cannot consume authenticated limiter capacity", async () => {
+  const app = createTestApp({}, {
+    identityCreatePreAuthRateLimiter:
+      new FixedWindowSketchRateLimiter(60, 60_000, 1_024, 4, 1),
+    identityCreateRateLimiter: new FixedWindowRateLimiter(1, 60_000, 2),
+  });
+  const created = await mintApiKey(app, ["relayauth:identity:manage:*"]);
+
+  for (let index = 0; index < 50; index += 1) {
+    const sprayed = await app.request(
+      createTestRequest(
+        "POST",
+        "/v1/identities",
+        { name: `spray-${index}`, sponsorId: "attacker" },
+        { "x-api-key": `rak_invalid_spray_${index}` },
+      ),
+      undefined,
+      app.bindings,
+    );
+    assert.equal(sprayed.status, 401);
+  }
+
+  const legitimate = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "legitimate-after-spray", sponsorId: "svc_sponsor_legitimate" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  await assertJsonResponse<AgentIdentity>(legitimate, 201);
 });
 
 test("stale API-key usage work is registered with the request execution lifecycle", async () => {
@@ -358,6 +399,7 @@ test("Authorization: Bearer without token does not crash apiKeyAuth-mounted rout
 
 test("bearer-wins precedence: a valid bearer takes over even when x-api-key is also present", async () => {
   const app = createTestApp({}, {
+    identityCreatePreAuthRateLimiter: new FixedWindowRateLimiter(1, 60_000),
     identityCreateRateLimiter: new FixedWindowRateLimiter(1, 60_000),
   });
   const created = await mintApiKey(app, ["relayauth:identity:read:*"]);

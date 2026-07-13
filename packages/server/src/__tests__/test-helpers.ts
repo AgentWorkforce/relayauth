@@ -8,7 +8,11 @@ import type {
 import type { Hono } from "hono";
 import type { AppEnv } from "../env.js";
 import type { DeferredTaskScheduler } from "../lib/deferred.js";
-import { FixedWindowRateLimiter, type RequestRateLimiter } from "../lib/rate-limit.js";
+import {
+  FixedWindowRateLimiter,
+  FixedWindowSketchRateLimiter,
+  type RequestRateLimiter,
+} from "../lib/rate-limit.js";
 import type {
   AuthStorage,
   AuditWebhookRecord,
@@ -29,6 +33,7 @@ type TestStorage = AuthStorage & Partial<ReturnType<typeof createSqliteStorage>>
 type TestAppOptions = {
   storage?: TestStorage;
   deferTask?: DeferredTaskScheduler;
+  identityCreatePreAuthRateLimiter?: RequestRateLimiter;
   identityCreateRateLimiter?: RequestRateLimiter;
 };
 
@@ -229,6 +234,8 @@ export function createTestApp(
     storage,
     defaultBindings: bindings,
     deferTask: options.deferTask,
+    identityCreatePreAuthRateLimiter:
+      options.identityCreatePreAuthRateLimiter ?? new FixedWindowSketchRateLimiter(60, 60_000),
     identityCreateRateLimiter:
       options.identityCreateRateLimiter ?? new FixedWindowRateLimiter(60, 60_000),
   });

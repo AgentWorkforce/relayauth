@@ -18,6 +18,7 @@ export type AppEnv = {
     requestId: string;
     storage: AuthStorage;
     deferTask: DeferredTaskScheduler;
+    identityCreatePreAuthRateLimiter: RequestRateLimiter;
     identityCreateRateLimiter: RequestRateLimiter;
     // Populated by apiKeyAuth() middleware when an x-api-key successfully
     // authenticates. Downstream auth helpers read this BEFORE falling back
