@@ -217,7 +217,7 @@ export class FixedWindowSketchRateLimiter implements RequestRateLimiter {
         }
         const index = this.hashIndex(key, rowIndex);
         if (row[index] !== 0xffff_ffff) {
-          row[index] = (row[index] ?? 0) + 1;
+          row[index] += 1;
         }
       }
       mostConsumed = Math.max(mostConsumed, this.estimate(key));
@@ -244,9 +244,9 @@ export class FixedWindowSketchRateLimiter implements RequestRateLimiter {
       if (!row) {
         continue;
       }
-      estimate = Math.min(estimate, row[this.hashIndex(key, rowIndex)] ?? 0);
+      estimate = Math.min(estimate, row[this.hashIndex(key, rowIndex)]);
     }
-    return Number.isFinite(estimate) ? estimate : 0;
+    return estimate;
   }
 
   private hashIndex(key: string, rowIndex: number): number {
