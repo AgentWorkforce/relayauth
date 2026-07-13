@@ -6,12 +6,13 @@ import { Hono } from "hono";
 import type { AppEnv } from "../env.js";
 import { extractPrefix, generateApiKey, WORKSPACE_TOKEN_PREFIX } from "../lib/api-keys.js";
 import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
+import { scheduleDeferredTask, type DeferredTaskScheduler } from "../lib/deferred.js";
 import { RELAY_AGENT_TOKEN_PREFIX, RELAY_PATH_TOKEN_PREFIX, wrapRelayToken } from "../lib/jwt.js";
 import { signToken } from "../lib/sign.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { StoredApiKey } from "../storage/api-key-types.js";
-import type { AuthStorage, RevocationStorage } from "../storage/index.js";
+import type { AuditLogWriteEntry, AuthStorage, RevocationStorage } from "../storage/index.js";
 
 type IssueTokenRequest = {
   identityId?: string;
@@ -235,6 +236,7 @@ tokens.post("/", async (c) => {
   const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(body.refreshTokenTtlSeconds);
 
   const tokenPair = await issueTokenPair(storage, c.env, identity, {
+    deferTask: c.get("deferTask"),
     accessScopes,
     accessAudience,
     accessExpiresIn,
@@ -342,6 +344,7 @@ tokens.post("/agent", async (c) => {
   const accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn);
   const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(body.refreshTokenTtlSeconds);
   const tokenPair = await issueTokenPair(storage, c.env, identity, {
+    deferTask: c.get("deferTask"),
     accessScopes,
     accessAudience,
     accessExpiresIn,
@@ -428,6 +431,7 @@ tokens.post("/path", async (c) => {
   });
 
   const tokenPair = await issueTokenPair(storage, c.env, identity, {
+    deferTask: c.get("deferTask"),
     accessScopes: accessScopes.scopes,
     accessAudience,
     accessExpiresIn,
@@ -522,6 +526,7 @@ tokens.post("/workspace-path", async (c) => {
   });
 
   const tokenPair = await issueTokenPair(storage, c.env, identity, {
+    deferTask: c.get("deferTask"),
     accessScopes: accessScopes.scopes,
     accessAudience,
     accessExpiresIn,
@@ -584,6 +589,7 @@ tokens.post("/relayhistory-assertion", async (c) => {
 
   const storage = getSqlStorage(c.get("storage"));
   const assertion = await issueRelayhistoryAssertion(storage, c.env, {
+    deferTask: c.get("deferTask"),
     orgId: request.orgId,
     workspaceId: request.workspaceId,
     sponsorId: request.sponsorId,
@@ -662,6 +668,7 @@ tokens.post("/refresh", async (c) => {
   }
 
   const tokenPair = await issueTokenPair(storage, c.env, identity, {
+    deferTask: c.get("deferTask"),
     accessScopes: isDerivedClaims(verification.claims)
       ? parseMetaStringArray(verification.claims.meta?.accessScopes, identity.scopes)
       : normalizeScopes(undefined, identity.scopes),
@@ -802,6 +809,7 @@ async function issueTokenPair(
   env: AppEnv["Bindings"],
   identity: StoredIdentity,
   options: {
+    deferTask: DeferredTaskScheduler;
     accessScopes: string[];
     accessAudience: string[];
     accessExpiresIn: number;
@@ -873,11 +881,15 @@ async function issueTokenPair(
 
   await persistIssuedToken(storage, identity.id, accessClaims);
   await persistIssuedToken(storage, identity.id, refreshClaims);
-  await writeTokenAudit(storage, {
-    action: options.action,
-    identity,
-    tokenId: accessClaims.jti,
-  });
+  scheduleDeferredTask(
+    options.deferTask,
+    "audit.token_mint",
+    () => writeTokenAuditBatch(storage, {
+      action: options.action,
+      identity,
+      tokenId: accessClaims.jti,
+    }),
+  );
 
   return {
     accessToken,
@@ -892,6 +904,7 @@ async function issueRelayhistoryAssertion(
   storage: SqlBackedStorage,
   env: AppEnv["Bindings"],
   options: {
+    deferTask: DeferredTaskScheduler;
     orgId: string;
     workspaceId: string;
     sponsorId: string;
@@ -929,15 +942,19 @@ async function issueRelayhistoryAssertion(
 
   const accessToken = await signToken(claims, env);
   await persistIssuedToken(storage, claims.sub, claims);
-  await writeAssertionAudit(storage, {
-    actorId: options.actorId,
-    actorOrgId: options.actorOrgId,
-    orgId: options.orgId,
-    workspaceId: options.workspaceId,
-    sponsorId: options.sponsorId,
-    tokenId: claims.jti,
-    scopes: options.scopes,
-  });
+  scheduleDeferredTask(
+    options.deferTask,
+    "audit.relayhistory_assertion_mint",
+    () => writeAssertionAuditBatch(storage, {
+      actorId: options.actorId,
+      actorOrgId: options.actorOrgId,
+      orgId: options.orgId,
+      workspaceId: options.workspaceId,
+      sponsorId: options.sponsorId,
+      tokenId: claims.jti,
+      scopes: options.scopes,
+    }),
+  );
 
   return {
     accessToken,
@@ -975,7 +992,30 @@ async function writeTokenAudit(
     actorId?: string;
   },
 ): Promise<void> {
-  await storage.audit.write({
+  await storage.audit.write(createTokenAuditEntry(options));
+}
+
+async function writeTokenAuditBatch(
+  storage: SqlBackedStorage,
+  options: {
+    action: "token.issued" | "token.refreshed" | "token.revoked";
+    identity: StoredIdentity;
+    tokenId: string;
+    actorId?: string;
+  },
+): Promise<void> {
+  await storage.audit.writeBatch([createTokenAuditEntry(options)]);
+}
+
+function createTokenAuditEntry(
+  options: {
+    action: "token.issued" | "token.refreshed" | "token.revoked";
+    identity: StoredIdentity;
+    tokenId: string;
+    actorId?: string;
+  },
+): AuditLogWriteEntry {
+  return {
     id: crypto.randomUUID(),
     action: options.action,
     identityId: options.identity.id,
@@ -989,10 +1029,10 @@ async function writeTokenAudit(
       ...(options.actorId ? { actorId: options.actorId } : {}),
     },
     timestamp: new Date().toISOString(),
-  });
+  };
 }
 
-async function writeAssertionAudit(
+async function writeAssertionAuditBatch(
   storage: SqlBackedStorage,
   options: {
     actorId: string;
@@ -1004,7 +1044,7 @@ async function writeAssertionAudit(
     scopes: string[];
   },
 ): Promise<void> {
-  await storage.audit.write({
+  await storage.audit.writeBatch([{
     id: crypto.randomUUID(),
     action: "token.issued",
     identityId: options.actorId,
@@ -1020,7 +1060,7 @@ async function writeAssertionAudit(
       grantedScopes: JSON.stringify(options.scopes),
     },
     timestamp: new Date().toISOString(),
-  });
+  }]);
 }
 
 async function findTargetTokensByTokenId(storage: SqlBackedStorage, tokenId: string): Promise<TokenRow[]> {

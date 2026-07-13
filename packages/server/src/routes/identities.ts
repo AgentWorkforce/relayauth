@@ -10,6 +10,11 @@ import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext, authenticateBearerOrApiKey, authorizeClaims, decodeBase64UrlJson } from "../lib/auth.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
+import {
+  isStorageOverloadedError,
+  storageOverloadResponse,
+  withStorageRetry,
+} from "../lib/storage-retry.js";
 import type { IdentityBudget, StoredIdentity } from "../storage/identity-types.js";
 import { isStorageError, type AuthStorage } from "../storage/index.js";
 
@@ -406,7 +411,22 @@ identities.post("/", async (c) => {
     "relayauth:identity:manage:*",
   );
   if (!auth.ok) {
-    return c.json({ error: auth.error }, auth.status);
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
+  }
+
+  const rateLimit = c.get("identityCreateRateLimiter").consume(
+    identityCreateRateLimitKeys(auth.claims),
+  );
+  c.header("RateLimit-Limit", String(rateLimit.limit));
+  c.header("RateLimit-Remaining", String(rateLimit.remaining));
+  c.header("RateLimit-Reset", String(rateLimit.retryAfterSeconds));
+  if (!rateLimit.allowed) {
+    c.header("Retry-After", String(rateLimit.retryAfterSeconds));
+    return c.json({
+      error: "Identity create rate limit exceeded",
+      code: "rate_limited",
+      retryable: true,
+    }, 429);
   }
 
   const body = await c.req.json<CreateIdentityRequest>().catch(() => null);
@@ -425,33 +445,42 @@ identities.post("/", async (c) => {
   }
 
   const storage = c.get("storage");
-  const duplicate = await storage.identities.findDuplicate(auth.claims.org, name);
-  if (duplicate) {
-    return c.json({ error: "identity_already_exists" }, 409);
-  }
-
-  const timestamp = new Date().toISOString();
-  const id = createIdentityId();
-  const budget = body.budget ?? (await storage.identities.loadOrgBudget(auth.claims.org));
-  const storedIdentity: StoredIdentity = {
-    id,
-    name,
-    type: normalizeIdentityType(body.type),
-    orgId: auth.claims.org,
-    status: "active",
-    scopes: normalizeStringList(body.scopes),
-    roles: normalizeStringList(body.roles),
-    metadata: normalizeMetadata(body.metadata),
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    sponsorId,
-    sponsorChain: [...auth.claims.sponsorChain, id],
-    workspaceId: normalizeWorkspaceId(body.workspaceId, auth.claims.wks),
-    ...(budget ? { budget } : {}),
-  };
-
   try {
-    const createdIdentity = await storage.identities.create(storedIdentity);
+    const duplicate = await withStorageRetry(
+      () => storage.identities.findDuplicate(auth.claims.org, name),
+      { operation: "identities.find_duplicate" },
+    );
+    if (duplicate) {
+      return c.json({ error: "identity_already_exists", code: "identity_already_exists" }, 409);
+    }
+
+    const timestamp = new Date().toISOString();
+    const id = createIdentityId();
+    const budget = body.budget ?? await withStorageRetry(
+      () => storage.identities.loadOrgBudget(auth.claims.org),
+      { operation: "identities.load_org_budget" },
+    );
+    const storedIdentity: StoredIdentity = {
+      id,
+      name,
+      type: normalizeIdentityType(body.type),
+      orgId: auth.claims.org,
+      status: "active",
+      scopes: normalizeStringList(body.scopes),
+      roles: normalizeStringList(body.roles),
+      metadata: normalizeMetadata(body.metadata),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      sponsorId,
+      sponsorChain: [...auth.claims.sponsorChain, id],
+      workspaceId: normalizeWorkspaceId(body.workspaceId, auth.claims.wks),
+      ...(budget ? { budget } : {}),
+    };
+
+    const createdIdentity = await withStorageRetry(
+      () => storage.identities.create(storedIdentity),
+      { operation: "identities.create" },
+    );
     emitObserverEvent({
       type: "identity.created",
       timestamp: observerNow(),
@@ -463,8 +492,21 @@ identities.post("/", async (c) => {
     });
     return c.json(createdIdentity, 201);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to create identity";
-    return c.json({ error: message }, 500);
+    if (isStorageOverloadedError(error)) {
+      return storageOverloadResponse(c, error);
+    }
+
+    if (isStorageError(error)) {
+      return c.json({ error: error.message, code: error.code }, error.status as 400 | 401 | 403 | 404 | 409 | 500);
+    }
+
+    const requestId = c.get("requestId");
+    console.error("RelayAuth identity create failed", {
+      requestId,
+      orgId: auth.claims.org,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return c.json({ error: "Failed to create identity", code: "identity_create_failed", requestId }, 500);
   }
 });
 
@@ -487,12 +529,30 @@ async function authenticateBearerOrApiKeyAndAuthorize(
     c.req.raw,
     c.env,
     c.get("storage"),
+    { deferTask: c.get("deferTask") },
   );
   if (!auth.ok) {
     return auth;
   }
 
   return authorizeClaims(auth.claims, requiredScope, matchScope);
+}
+
+function identityCreateRateLimitKeys(claims: RelayAuthTokenClaims): string[] {
+  const apiKeyId = normalizeCredential(claims.meta?.apiKeyId);
+  return [
+    `org:${claims.org}`,
+    ...(apiKeyId ? [`api-key:${apiKeyId}`] : []),
+  ];
+}
+
+function normalizeCredential(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized || undefined;
 }
 
 function normalizeIdentityType(type: IdentityType | undefined): IdentityType {

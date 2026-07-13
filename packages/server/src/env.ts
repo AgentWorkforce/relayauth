@@ -1,4 +1,6 @@
 import type { RelayAuthTokenClaims } from "@relayauth/types";
+import type { DeferredTaskScheduler } from "./lib/deferred.js";
+import type { RequestRateLimiter } from "./lib/rate-limit.js";
 import type { AuthStorage } from "./storage/index.js";
 
 export type AppConfig = {
@@ -15,6 +17,8 @@ export type AppEnv = {
   Variables: {
     requestId: string;
     storage: AuthStorage;
+    deferTask: DeferredTaskScheduler;
+    identityCreateRateLimiter: RequestRateLimiter;
     // Populated by apiKeyAuth() middleware when an x-api-key successfully
     // authenticates. Downstream auth helpers read this BEFORE falling back
     // to parsing the Authorization header. We use context instead of
@@ -23,5 +27,6 @@ export type AppEnv = {
     // "Can't modify immutable headers" on mutation.
     apiKeyClaims?: RelayAuthTokenClaims;
     apiKeyVia?: "api_key";
+    identityCreateRateLimitChecked?: boolean;
   };
 };

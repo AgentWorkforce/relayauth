@@ -7,6 +7,8 @@ import type {
 } from "@relayauth/types";
 import type { Hono } from "hono";
 import type { AppEnv } from "../env.js";
+import type { DeferredTaskScheduler } from "../lib/deferred.js";
+import { FixedWindowRateLimiter, type RequestRateLimiter } from "../lib/rate-limit.js";
 import type {
   AuthStorage,
   AuditWebhookRecord,
@@ -23,6 +25,12 @@ type TestBindings = Pick<
 >;
 
 type TestStorage = AuthStorage & Partial<ReturnType<typeof createSqliteStorage>>;
+
+type TestAppOptions = {
+  storage?: TestStorage;
+  deferTask?: DeferredTaskScheduler;
+  identityCreateRateLimiter?: RequestRateLimiter;
+};
 
 type TestApp = Hono<AppEnv> & {
   app: Hono<AppEnv>;
@@ -202,8 +210,11 @@ export function mockKV(): KVNamespace {
   } as unknown as KVNamespace;
 }
 
-export function createTestApp(bindingsOverrides: Partial<TestBindings> = {}): TestApp {
-  const storage = createTestStorage();
+export function createTestApp(
+  bindingsOverrides: Partial<TestBindings> = {},
+  options: TestAppOptions = {},
+): TestApp {
+  const storage = options.storage ?? createTestStorage();
   const bindings: TestBindings = {
     INTERNAL_SECRET: bindingsOverrides.INTERNAL_SECRET ?? storage.INTERNAL_SECRET,
     RELAYAUTH_SIGNING_KEY_PEM:
@@ -217,6 +228,9 @@ export function createTestApp(bindingsOverrides: Partial<TestBindings> = {}): Te
   const app = createApp({
     storage,
     defaultBindings: bindings,
+    deferTask: options.deferTask,
+    identityCreateRateLimiter:
+      options.identityCreateRateLimiter ?? new FixedWindowRateLimiter(60, 60_000),
   });
 
   const testApp = app as TestApp;
