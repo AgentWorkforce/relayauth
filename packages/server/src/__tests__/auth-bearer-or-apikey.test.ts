@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import test from "node:test";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 import type { AppEnv } from "../env.js";
+import type { DeferredTask } from "../lib/deferred.js";
 import {
   generateTestToken,
   TEST_RS256_PRIVATE_KEY_PEM,
@@ -15,6 +16,7 @@ type StoredApiKey = {
   prefix: string;
   scopes: string[];
   orgId: string;
+  lastUsedAt?: string;
   revokedAt?: string | null;
 };
 
@@ -40,6 +42,10 @@ type AuthenticateBearerOrApiKey = (
   apiKey: string | undefined,
   env: AppEnv["Bindings"],
   apiKeys: ApiKeyStorageLike,
+  options?: {
+    deferTask?: (task: DeferredTask) => void;
+    now?: () => number;
+  },
 ) => Promise<AuthenticateSuccess | AuthenticateFailure>;
 
 const TEST_BINDINGS: AppEnv["Bindings"] = {
@@ -102,6 +108,7 @@ function createStoredApiKey(
     prefix: overrides.prefix ?? "rak_test_auth",
     scopes: overrides.scopes ?? ["relayauth:identity:manage:*"],
     orgId: overrides.orgId ?? "org_test",
+    ...(overrides.lastUsedAt ? { lastUsedAt: overrides.lastUsedAt } : {}),
     revokedAt: overrides.revokedAt ?? null,
   };
 }
@@ -167,12 +174,15 @@ test("authenticateBearerOrApiKey accepts a valid x-api-key and returns synthesiz
   });
   const { storage, touched } = createApiKeyStorage([storedKey]);
 
+  const deferred: DeferredTask[] = [];
   const auth = await authenticateBearerOrApiKey(
     undefined,
     plaintext,
     TEST_BINDINGS,
     storage,
+    { deferTask: (task) => deferred.push(task) },
   );
+  await Promise.all(deferred.map((task) => task()));
 
   assert.equal(auth.ok, true);
   assert.equal(auth.claims.org, "org_api_key_auth");
@@ -235,15 +245,156 @@ test("authenticateBearerOrApiKey updates last_used_at when an API key authentica
     }),
   ]);
 
+  const deferred: DeferredTask[] = [];
   const auth = await authenticateBearerOrApiKey(
     undefined,
     "rak_test_auth_plaintext_fixture",
     TEST_BINDINGS,
     storage,
+    { deferTask: (task) => deferred.push(task) },
   );
+  await Promise.all(deferred.map((task) => task()));
 
   assert.equal(auth.ok, true);
   assert.equal(touched.length, 1, "API-key authentication should mark the key as used");
   assert.equal(touched[0]?.id, "ak_touch_last_used");
   assert.equal(Number.isNaN(Date.parse(touched[0]?.usedAt ?? "")), false);
+});
+
+test("authenticateBearerOrApiKey skips last_used_at writes while the stored timestamp is fresh", async () => {
+  const authenticateBearerOrApiKey = await loadAuthenticateBearerOrApiKey();
+  const now = Date.parse("2026-07-13T14:00:00.000Z");
+  const { storage, touched } = createApiKeyStorage([
+    createStoredApiKey({
+      id: "ak_touch_fresh",
+      lastUsedAt: new Date(now - 60_000).toISOString(),
+    }),
+  ]);
+  const deferred: DeferredTask[] = [];
+
+  const auth = await authenticateBearerOrApiKey(
+    undefined,
+    "rak_test_auth_plaintext_fixture",
+    TEST_BINDINGS,
+    storage,
+    {
+      now: () => now,
+      deferTask: (task) => deferred.push(task),
+    },
+  );
+
+  assert.equal(auth.ok, true);
+  assert.equal(deferred.length, 0, "fresh API keys must not enqueue a write");
+  assert.deepEqual(touched, []);
+});
+
+test("authenticateBearerOrApiKey defers stale last_used_at writes without blocking authentication", async () => {
+  const authenticateBearerOrApiKey = await loadAuthenticateBearerOrApiKey();
+  const now = Date.parse("2026-07-13T14:00:00.000Z");
+  const storedKey = createStoredApiKey({
+    id: "ak_touch_stale_nonblocking",
+    lastUsedAt: new Date(now - 10 * 60_000).toISOString(),
+  });
+  let releaseTouch!: () => void;
+  const touchGate = new Promise<void>((resolve) => {
+    releaseTouch = resolve;
+  });
+  let touchStarted = false;
+  const storage: ApiKeyStorageLike = {
+    getByHash: async () => storedKey,
+    touchLastUsed: async () => {
+      touchStarted = true;
+      await touchGate;
+    },
+  };
+  const deferred: DeferredTask[] = [];
+
+  const auth = await authenticateBearerOrApiKey(
+    undefined,
+    "rak_test_auth_plaintext_fixture",
+    TEST_BINDINGS,
+    storage,
+    {
+      now: () => now,
+      deferTask: (task) => deferred.push(task),
+    },
+  );
+
+  assert.equal(auth.ok, true, "authentication must complete before the write resolves");
+  assert.equal(deferred.length, 1);
+  assert.equal(touchStarted, false, "capturing the deferred thunk must not start the write");
+  const draining = Promise.all(deferred.map((task) => task()));
+  await Promise.resolve();
+  assert.equal(touchStarted, true);
+  releaseTouch();
+  await draining;
+});
+
+test("repeated authentication of the same stale key enqueues only one debounced write", async () => {
+  const authenticateBearerOrApiKey = await loadAuthenticateBearerOrApiKey();
+  const now = Date.parse("2026-07-13T14:00:00.000Z");
+  const { storage, touched } = createApiKeyStorage([
+    createStoredApiKey({
+      id: "ak_touch_stale_debounced",
+      lastUsedAt: new Date(now - 10 * 60_000).toISOString(),
+    }),
+  ]);
+  const deferred: DeferredTask[] = [];
+  const options = {
+    now: () => now,
+    deferTask: (task: DeferredTask) => deferred.push(task),
+  };
+
+  const [first, second] = await Promise.all([
+    authenticateBearerOrApiKey(
+      undefined,
+      "rak_test_auth_plaintext_fixture",
+      TEST_BINDINGS,
+      storage,
+      options,
+    ),
+    authenticateBearerOrApiKey(
+      undefined,
+      "rak_test_auth_plaintext_fixture",
+      TEST_BINDINGS,
+      storage,
+      options,
+    ),
+  ]);
+  await Promise.all(deferred.map((task) => task()));
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(deferred.length, 1);
+  assert.equal(touched.length, 1);
+});
+
+test("a deferred last_used_at failure never turns valid API-key authentication into a 500", async () => {
+  const authenticateBearerOrApiKey = await loadAuthenticateBearerOrApiKey();
+  const now = Date.parse("2026-07-13T14:00:00.000Z");
+  const storedKey = createStoredApiKey({
+    id: "ak_touch_failure_isolated",
+    lastUsedAt: new Date(now - 10 * 60_000).toISOString(),
+  });
+  const storage: ApiKeyStorageLike = {
+    getByHash: async () => storedKey,
+    touchLastUsed: async () => {
+      throw new Error("write failed");
+    },
+  };
+  const deferred: DeferredTask[] = [];
+
+  const auth = await authenticateBearerOrApiKey(
+    undefined,
+    "rak_test_auth_plaintext_fixture",
+    TEST_BINDINGS,
+    storage,
+    {
+      now: () => now,
+      deferTask: (task) => deferred.push(task),
+    },
+  );
+  await Promise.all(deferred.map((task) => task()));
+
+  assert.equal(auth.ok, true);
 });

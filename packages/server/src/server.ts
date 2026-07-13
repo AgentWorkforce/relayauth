@@ -5,6 +5,13 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 
 import type { AppConfig, AppEnv } from "./env.js";
+import { resolveDeferredTaskScheduler, type DeferredTaskScheduler } from "./lib/deferred.js";
+import {
+  FixedWindowRateLimiter,
+  isRateLimitExceededError,
+  type RequestRateLimiter,
+} from "./lib/rate-limit.js";
+import { isStorageOverloadedError, storageOverloadResponse } from "./lib/storage-retry.js";
 import { apiKeyAuth } from "./middleware/api-key-auth.js";
 import auditExport from "./routes/audit-export.js";
 import auditQuery from "./routes/audit-query.js";
@@ -30,6 +37,16 @@ const PUBLIC_PATHS = new Set([
 ]);
 const BRIDGE_RATE_LIMIT = 30;
 const BRIDGE_RATE_WINDOW_MS = 60_000;
+const IDENTITY_CREATE_RATE_LIMIT = 60;
+const IDENTITY_CREATE_RATE_WINDOW_MS = 60_000;
+
+// The cloud entrypoint intentionally constructs an app per request. Keeping
+// the default limiter at module scope preserves a per-isolate bucket across
+// those app instances, while Node consumers can inject their own limiter.
+const sharedIdentityCreateRateLimiter = new FixedWindowRateLimiter(
+  IDENTITY_CREATE_RATE_LIMIT,
+  IDENTITY_CREATE_RATE_WINDOW_MS,
+);
 
 export type CreateAppOptions = {
   storage?: AuthStorage;
@@ -38,6 +55,8 @@ export type CreateAppOptions = {
   internalSecret?: string;
   baseUrl?: string;
   allowedOrigins?: string;
+  deferTask?: DeferredTaskScheduler;
+  identityCreateRateLimiter?: RequestRateLimiter;
 };
 
 export type StartServerOptions = {
@@ -69,7 +88,33 @@ function getClientIp(forwardedFor: string | undefined, realIp: string | undefine
 export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const bridgeRateMap = new Map<string, { count: number; resetAt: number }>();
+  const identityCreateRateLimiter =
+    options.identityCreateRateLimiter ?? sharedIdentityCreateRateLimiter;
   const config = normalizeConfig(options);
+
+  app.onError((error, c) => {
+    if (isStorageOverloadedError(error)) {
+      return storageOverloadResponse(c, error);
+    }
+    if (isRateLimitExceededError(error)) {
+      c.header("RateLimit-Limit", String(error.decision.limit));
+      c.header("RateLimit-Remaining", String(error.decision.remaining));
+      c.header("RateLimit-Reset", String(error.decision.retryAfterSeconds));
+      c.header("Retry-After", String(error.decision.retryAfterSeconds));
+      return c.json({
+        error: "Identity create rate limit exceeded",
+        code: "rate_limited",
+        retryable: true,
+      }, 429);
+    }
+
+    const requestId = c.get("requestId") || c.req.header("x-request-id") || "unknown";
+    console.error("Unhandled RelayAuth request error", {
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return c.json({ error: "Internal Server Error", code: "internal_error", requestId }, 500);
+  });
 
   if (Object.keys(config).length > 0) {
     app.use("*", async (c, next) => {
@@ -87,6 +132,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
     }
 
     c.set("storage", options.storage);
+    c.set("deferTask", resolveDeferredTaskScheduler(c, options.deferTask));
+    c.set("identityCreateRateLimiter", identityCreateRateLimiter);
     await next();
   });
 

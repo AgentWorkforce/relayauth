@@ -3,8 +3,13 @@ import { parseScope } from "@relayauth/sdk";
 import type { Context } from "hono";
 
 import { hashApiKey } from "./api-keys.js";
+import {
+  scheduleDeferredTask,
+  type DeferredTaskScheduler,
+} from "./deferred.js";
 import { decodeBase64UrlJson, splitJwtSegments } from "./jwt.js";
 import { emitObserverEvent, now as observerNow } from "./events.js";
+import { withStorageRetry } from "./storage-retry.js";
 import { verifyRs256Token } from "./token-verifier.js";
 import type { AppEnv } from "../env.js";
 import type { AuthStorage, ApiKeyStorage } from "../storage/index.js";
@@ -21,6 +26,22 @@ type AuthenticateSuccess = {
   ok: true;
   claims: RelayAuthTokenClaims;
   via?: "bearer" | "api_key";
+};
+
+export type ApiKeyAuthenticationOptions = {
+  deferTask?: DeferredTaskScheduler;
+  now?: () => number;
+  beforeApiKeyLookup?: (apiKey: string) => void;
+};
+
+export const API_KEY_LAST_USED_DEBOUNCE_MS = 5 * 60_000;
+
+const MAX_RECENT_API_KEY_TOUCHES = 10_000;
+const recentlyScheduledApiKeyTouches = new Map<string, number>();
+const defaultDeferredTaskScheduler: DeferredTaskScheduler = (task) => {
+  setTimeout(() => {
+    void task();
+  }, 0);
 };
 
 export async function authenticate(
@@ -53,24 +74,32 @@ export async function authenticateBearerOrApiKey(
   request: Request,
   env: AppEnv["Bindings"],
   storage: ApiKeyStorage | AuthStorage,
+  options?: ApiKeyAuthenticationOptions,
 ): Promise<AuthenticateSuccess | AuthenticateFailure>;
 export async function authenticateBearerOrApiKey(
   authorization: string | undefined,
   apiKey: string | undefined,
   env: AppEnv["Bindings"],
   storage: ApiKeyStorage | AuthStorage,
+  options?: ApiKeyAuthenticationOptions,
 ): Promise<AuthenticateSuccess | AuthenticateFailure>;
 export async function authenticateBearerOrApiKey(
   requestOrAuthorization: Request | string | undefined,
   apiKeyOrEnv: string | AppEnv["Bindings"] | undefined,
   envOrStorage: AppEnv["Bindings"] | ApiKeyStorage | AuthStorage,
-  maybeStorage?: ApiKeyStorage | AuthStorage,
+  maybeStorageOrOptions?: ApiKeyStorage | AuthStorage | ApiKeyAuthenticationOptions,
+  maybeOptions?: ApiKeyAuthenticationOptions,
 ): Promise<AuthenticateSuccess | AuthenticateFailure> {
+  const options = requestOrAuthorization instanceof Request
+    ? (maybeStorageOrOptions as ApiKeyAuthenticationOptions | undefined)
+    : maybeOptions;
   const { authorization, apiKey, env, storage } = resolveBearerOrApiKeyArgs(
     requestOrAuthorization,
     apiKeyOrEnv,
     envOrStorage,
-    maybeStorage,
+    requestOrAuthorization instanceof Request
+      ? undefined
+      : maybeStorageOrOptions as ApiKeyStorage | AuthStorage | undefined,
   );
   const apiKeyStorage = resolveApiKeyStorage(storage);
   const bearerAuth = authorization
@@ -95,8 +124,12 @@ export async function authenticateBearerOrApiKey(
     };
   }
 
+  options?.beforeApiKeyLookup?.(normalizedApiKey);
   const keyHash = hashApiKey(normalizedApiKey);
-  const storedApiKey = await apiKeyStorage.getByHash(keyHash);
+  const storedApiKey = await withStorageRetry(
+    () => apiKeyStorage.getByHash(keyHash),
+    { operation: "api_keys.get_by_hash" },
+  );
   if (!storedApiKey) {
     return invalidApiKeyFailure();
   }
@@ -114,7 +147,7 @@ export async function authenticateBearerOrApiKey(
     };
   }
 
-  await apiKeyStorage.touchLastUsed(storedApiKey.id, new Date().toISOString());
+  scheduleApiKeyLastUsedTouch(apiKeyStorage, storedApiKey, options);
 
   return {
     ok: true,
@@ -450,7 +483,10 @@ async function isBearerTokenInactive(storage: AuthStorage, claims: RelayAuthToke
     isRevoked?: (jti: string) => Promise<boolean>;
   };
   return typeof revocations.isRevoked === "function"
-    ? revocations.isRevoked(claims.jti)
+    ? withStorageRetry(
+      () => revocations.isRevoked!(claims.jti),
+      { operation: "revocations.is_token_revoked" },
+    )
     : false;
 }
 
@@ -463,7 +499,10 @@ async function isWorkspaceLineageRevoked(
     return false;
   }
 
-  const workspaceToken = await resolveApiKeyStorage(storage).get(workspaceTokenId);
+  const workspaceToken = await withStorageRetry(
+    () => resolveApiKeyStorage(storage).get(workspaceTokenId),
+    { operation: "api_keys.get_workspace_lineage" },
+  );
   if (!workspaceToken || normalizeCredential(workspaceToken.revokedAt ?? undefined)) {
     return true;
   }
@@ -483,4 +522,74 @@ function constantTimeEquals(left: string, right: string): boolean {
   }
 
   return mismatch === 0;
+}
+
+function scheduleApiKeyLastUsedTouch(
+  apiKeyStorage: Pick<ApiKeyStorage, "touchLastUsed">,
+  storedApiKey: StoredApiKey,
+  options: ApiKeyAuthenticationOptions | undefined,
+): void {
+  const nowMs = options?.now?.() ?? Date.now();
+  if (!shouldTouchApiKeyLastUsed(storedApiKey, nowMs)) {
+    return;
+  }
+
+  pruneApiKeyTouchCache(nowMs);
+  if (
+    recentlyScheduledApiKeyTouches.size >= MAX_RECENT_API_KEY_TOUCHES
+    && !recentlyScheduledApiKeyTouches.has(storedApiKey.id)
+  ) {
+    // Preserve active debounce markers instead of evicting one and recreating
+    // the write storm this cache exists to suppress. Usage telemetry is
+    // best-effort, so dropping a new touch is safer than dropping protection.
+    return;
+  }
+
+  const usedAt = new Date(nowMs).toISOString();
+  recentlyScheduledApiKeyTouches.delete(storedApiKey.id);
+  recentlyScheduledApiKeyTouches.set(storedApiKey.id, nowMs);
+
+  scheduleDeferredTask(
+    options?.deferTask ?? defaultDeferredTaskScheduler,
+    "api_keys.touch_last_used",
+    () => withStorageRetry(
+      () => apiKeyStorage.touchLastUsed(storedApiKey.id, usedAt),
+      { operation: "api_keys.touch_last_used" },
+    ),
+    ({ error }) => {
+      // Keep the debounce marker even when the best-effort write fails. A
+      // storage outage must not turn every authenticated request into another
+      // background write storm; approximate usage can wait for the next
+      // debounce window.
+      console.error("Deferred API-key usage update failed", {
+        apiKeyId: storedApiKey.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
+  );
+}
+
+function shouldTouchApiKeyLastUsed(storedApiKey: StoredApiKey, nowMs: number): boolean {
+  const storedLastUsedMs = storedApiKey.lastUsedAt
+    ? Date.parse(storedApiKey.lastUsedAt)
+    : Number.NaN;
+  const scheduledLastUsedMs = recentlyScheduledApiKeyTouches.get(storedApiKey.id);
+  const lastUsedMs = Math.max(
+    Number.isFinite(storedLastUsedMs) ? storedLastUsedMs : Number.NEGATIVE_INFINITY,
+    scheduledLastUsedMs ?? Number.NEGATIVE_INFINITY,
+  );
+
+  return !Number.isFinite(lastUsedMs) || nowMs - lastUsedMs >= API_KEY_LAST_USED_DEBOUNCE_MS;
+}
+
+function pruneApiKeyTouchCache(nowMs: number): void {
+  for (const [apiKeyId, touchedAt] of recentlyScheduledApiKeyTouches) {
+    if (nowMs - touchedAt >= API_KEY_LAST_USED_DEBOUNCE_MS) {
+      recentlyScheduledApiKeyTouches.delete(apiKeyId);
+    } else {
+      // Touches are delete/re-inserted above, so iteration order follows their
+      // scheduled timestamp. Once one marker is active, the rest are active.
+      break;
+    }
+  }
 }

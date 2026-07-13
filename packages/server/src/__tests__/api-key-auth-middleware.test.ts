@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { AgentIdentity } from "@relayauth/types";
+import { FixedWindowRateLimiter } from "../lib/rate-limit.js";
 import {
   assertJsonResponse,
   createTestApp,
@@ -136,6 +137,144 @@ test("POST /v1/identities with x-api-key succeeds against a Workers-style locked
   assert.equal(body.name, "svc-via-locked-headers-request");
 });
 
+test("an overloaded API-key lookup is retried and surfaces as 503 with Retry-After", async () => {
+  const app = createTestApp();
+  const created = await mintApiKey(app, ["relayauth:identity:manage:*"]);
+  let attempts = 0;
+  app.storage.apiKeys.getByHash = async () => {
+    attempts += 1;
+    throw new Error("DB is overloaded. Requests queued for too long.");
+  };
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "auth-overload-probe", sponsorId: "svc_sponsor_overload" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  const body = await assertJsonResponse<{
+    code?: string;
+    retryable?: boolean;
+  }>(response, 503);
+  assert.equal(attempts, 3);
+  assert.equal(response.headers.get("Retry-After"), "1");
+  assert.equal(body.code, "storage_overloaded");
+  assert.equal(body.retryable, true);
+});
+
+test("the API-key identity-create limiter rejects a runaway caller before another storage lookup", async () => {
+  const app = createTestApp({}, {
+    identityCreateRateLimiter: new FixedWindowRateLimiter(1, 60_000),
+  });
+  const created = await mintApiKey(app, ["relayauth:identity:manage:*"]);
+  const getByHash = app.storage.apiKeys.getByHash.bind(app.storage.apiKeys);
+  let lookupCount = 0;
+  app.storage.apiKeys.getByHash = async (keyHash) => {
+    lookupCount += 1;
+    return getByHash(keyHash);
+  };
+
+  const first = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "limited-api-key-first", sponsorId: "svc_sponsor_limit" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+  assert.equal(first.status, 201);
+
+  const second = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "limited-api-key-second", sponsorId: "svc_sponsor_limit" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const body = await assertJsonResponse<{ code?: string }>(second, 429);
+
+  assert.equal(body.code, "rate_limited");
+  assert.equal(second.headers.get("RateLimit-Remaining"), "0");
+  assert.equal(lookupCount, 1, "the rejected request must not consume another storage read");
+});
+
+test("the API-key identity-create limiter normalizes trailing slashes", async () => {
+  const app = createTestApp({}, {
+    identityCreateRateLimiter: new FixedWindowRateLimiter(1, 60_000),
+  });
+  const created = await mintApiKey(app, ["relayauth:identity:manage:*"]);
+  const getByHash = app.storage.apiKeys.getByHash.bind(app.storage.apiKeys);
+  let lookupCount = 0;
+  app.storage.apiKeys.getByHash = async (keyHash) => {
+    lookupCount += 1;
+    return getByHash(keyHash);
+  };
+
+  const first = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "normalized-first", sponsorId: "svc_sponsor_normalized" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+  assert.equal(first.status, 201);
+
+  const second = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities/",
+      { name: "normalized-second", sponsorId: "svc_sponsor_normalized" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const body = await assertJsonResponse<{ code?: string }>(second, 429);
+
+  assert.equal(body.code, "rate_limited");
+  assert.equal(lookupCount, 1, "the path variant must be rejected before another lookup");
+});
+
+test("stale API-key usage work is registered with the request execution lifecycle", async () => {
+  const app = createTestApp();
+  const created = await mintApiKey(app, ["relayauth:identity:manage:*"]);
+  const deferred: Promise<unknown>[] = [];
+  const executionContext = {
+    waitUntil(task: Promise<unknown>) {
+      deferred.push(task);
+    },
+    passThroughOnException() {},
+  };
+
+  const response = await app.fetch(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "execution-lifecycle-touch", sponsorId: "svc_sponsor_lifecycle" },
+      { "x-api-key": created.key },
+    ),
+    app.bindings,
+    executionContext as never,
+  );
+
+  assert.equal(response.status, 201);
+  assert.equal(deferred.length, 1, "the last-used update should be registered via waitUntil");
+  await Promise.all(deferred);
+});
+
 test("POST /v1/tokens with x-api-key succeeds against a Workers-style locked-headers Request", async () => {
   const app = createTestApp();
   const created = await mintApiKey(app, [
@@ -218,8 +357,24 @@ test("Authorization: Bearer without token does not crash apiKeyAuth-mounted rout
 });
 
 test("bearer-wins precedence: a valid bearer takes over even when x-api-key is also present", async () => {
-  const app = createTestApp();
+  const app = createTestApp({}, {
+    identityCreateRateLimiter: new FixedWindowRateLimiter(1, 60_000),
+  });
   const created = await mintApiKey(app, ["relayauth:identity:read:*"]);
+
+  // Consume the API-key pre-auth bucket. The valid bearer request below must
+  // still bypass that bucket because it never needs an API-key storage lookup.
+  const apiKeyOnlyResponse = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "read-only-api-key", sponsorId: "svc_sponsor_precedence" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+  assert.equal(apiKeyOnlyResponse.status, 403);
 
   // The api-key scope is read-only and would FAIL scope checks for POST. A
   // manage-scoped bearer alongside the api-key must win, letting the request

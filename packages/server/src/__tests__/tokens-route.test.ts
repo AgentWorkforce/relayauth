@@ -11,6 +11,7 @@ import type {
   WorkspaceTokenIssueResponse,
 } from "@relayauth/types";
 
+import type { DeferredTask } from "../lib/deferred.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import {
   assertJsonResponse,
@@ -276,11 +277,13 @@ function assertRs256Algorithm(token: string, _audience?: string[]): void {
 async function createHarness({
   authClaims,
   identity,
+  deferTask,
 }: {
   authClaims?: Partial<RelayAuthTokenClaims>;
   identity?: StoredIdentity;
+  deferTask?: (task: DeferredTask) => void;
 } = {}) {
-  const app = createTestApp();
+  const app = createTestApp({}, { deferTask });
   const storedIdentity = identity ?? createStoredIdentity({
     id: "agent_tokens_subject",
     name: "Tokens Subject",
@@ -409,6 +412,40 @@ test("POST /v1/tokens", async (t) => {
 
     await assertRs256Algorithm(body.accessToken, ["specialist"]);
     await assertRs256Algorithm(body.refreshToken, ["relayauth"]);
+  });
+
+  await t.test("returns the minted pair when a deferred batched audit insert fails", async () => {
+    const deferred: DeferredTask[] = [];
+    const { app, identity, authHeaders } = await createHarness({
+      deferTask: (task) => deferred.push(task),
+    });
+    let auditBatchAttempts = 0;
+    app.storage.audit.writeBatch = async () => {
+      auditBatchAttempts += 1;
+      throw new Error("audit insert failed");
+    };
+    const logged: unknown[][] = [];
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args);
+    };
+
+    try {
+      const response = await requestRoute(app, "POST", "/v1/tokens", {
+        body: { identityId: identity.id },
+        headers: authHeaders,
+      });
+
+      const body = await assertJsonResponse<TokenPair>(response, 201);
+      assert.equal(typeof body.accessToken, "string");
+      assert.equal(deferred.length, 1, "audit work should be registered with the request lifecycle");
+      assert.equal(await countStoredTokens(app), 2, "essential token records must be committed before responding");
+      await Promise.all(deferred.map((task) => task()));
+      assert.equal(auditBatchAttempts, 1);
+      assert.ok(logged.some((args) => String(args[0]).includes("Deferred RelayAuth task failed")));
+    } finally {
+      console.error = originalConsoleError;
+    }
   });
 
   await t.test("returns 401 when Authorization is missing", async () => {
@@ -1007,10 +1044,12 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
   }
 
   await t.test("mints a short-lived access-only relayhistory assertion from a dedicated api key", async () => {
+    const deferred: DeferredTask[] = [];
     const { app, authHeaders } = await createHarness({
       authClaims: {
         scopes: assertionKeyIssuerScopes,
       },
+      deferTask: (task) => deferred.push(task),
     });
     const assertionKey = await issueAssertionKey(app, authHeaders);
 
@@ -1051,6 +1090,7 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
       grantedScopes: JSON.stringify(["rth:read", "rth:sync"]),
     });
     assert.equal(await countStoredTokens(app), 1, "only the access assertion should be persisted");
+    await Promise.all(deferred.map((task) => task()));
 
     const auditRow = await app.storage.DB.prepare(`
       SELECT action, identity_id, org_id, workspace_id, resource, metadata_json
