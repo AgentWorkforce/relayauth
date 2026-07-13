@@ -162,3 +162,112 @@ export class FixedWindowRateLimiter implements RequestRateLimiter {
     return first;
   }
 }
+
+/**
+ * Fixed-memory limiter for untrusted, high-cardinality keys.
+ *
+ * A count-min sketch avoids admission-slot exhaustion: distinct attacker keys
+ * may add small collision noise, but they cannot fill a Map and force every
+ * previously unseen legitimate key to fail closed.
+ */
+export class FixedWindowSketchRateLimiter implements RequestRateLimiter {
+  private readonly rows: Uint32Array[];
+  private readonly salt: number;
+  private resetAt = 0;
+
+  constructor(
+    readonly limit: number,
+    readonly windowMs: number,
+    private readonly width = 10_000,
+    depth = 4,
+    salt = Math.floor(Math.random() * 0x1_0000_0000),
+  ) {
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new Error("rate-limit limit must be a positive integer");
+    }
+    if (!Number.isFinite(windowMs) || windowMs < 1) {
+      throw new Error("rate-limit windowMs must be positive");
+    }
+    if (!Number.isInteger(width) || width < 1) {
+      throw new Error("rate-limit sketch width must be a positive integer");
+    }
+    if (!Number.isInteger(depth) || depth < 1) {
+      throw new Error("rate-limit sketch depth must be a positive integer");
+    }
+
+    this.rows = Array.from({ length: depth }, () => new Uint32Array(width));
+    this.salt = salt >>> 0;
+  }
+
+  consume(keys: string[], now = Date.now()): RateLimitDecision {
+    this.rollWindow(now);
+    const uniqueKeys = [...new Set(keys.filter(Boolean))];
+    const estimates = uniqueKeys.map((key) => this.estimate(key));
+    const blockedCount = estimates.find((count) => count >= this.limit);
+    if (blockedCount !== undefined) {
+      return this.decision(false, blockedCount, now);
+    }
+
+    let mostConsumed = 1;
+    for (const key of uniqueKeys) {
+      for (let rowIndex = 0; rowIndex < this.rows.length; rowIndex += 1) {
+        const row = this.rows[rowIndex];
+        if (!row) {
+          continue;
+        }
+        const index = this.hashIndex(key, rowIndex);
+        if (row[index] !== 0xffff_ffff) {
+          row[index] += 1;
+        }
+      }
+      mostConsumed = Math.max(mostConsumed, this.estimate(key));
+    }
+
+    return this.decision(true, mostConsumed, now);
+  }
+
+  private rollWindow(now: number): void {
+    if (this.resetAt !== 0 && now < this.resetAt) {
+      return;
+    }
+
+    for (const row of this.rows) {
+      row.fill(0);
+    }
+    this.resetAt = now + this.windowMs;
+  }
+
+  private estimate(key: string): number {
+    let estimate = Number.POSITIVE_INFINITY;
+    for (let rowIndex = 0; rowIndex < this.rows.length; rowIndex += 1) {
+      const row = this.rows[rowIndex];
+      if (!row) {
+        continue;
+      }
+      estimate = Math.min(estimate, row[this.hashIndex(key, rowIndex)]);
+    }
+    return estimate;
+  }
+
+  private hashIndex(key: string, rowIndex: number): number {
+    let hash = (0x811c9dc5 ^ this.salt ^ Math.imul(rowIndex + 1, 0x9e3779b1)) >>> 0;
+    for (let index = 0; index < key.length; index += 1) {
+      hash ^= key.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    hash ^= hash >>> 16;
+    hash = Math.imul(hash, 0x85ebca6b);
+    hash ^= hash >>> 13;
+    return (hash >>> 0) % this.width;
+  }
+
+  private decision(allowed: boolean, count: number, now: number): RateLimitDecision {
+    return {
+      allowed,
+      limit: this.limit,
+      remaining: Math.max(0, this.limit - count),
+      resetAt: this.resetAt,
+      retryAfterSeconds: Math.max(1, Math.ceil((this.resetAt - now) / 1000)),
+    };
+  }
+}
