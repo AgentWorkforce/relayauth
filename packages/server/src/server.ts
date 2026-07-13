@@ -8,6 +8,7 @@ import type { AppConfig, AppEnv } from "./env.js";
 import { resolveDeferredTaskScheduler, type DeferredTaskScheduler } from "./lib/deferred.js";
 import {
   FixedWindowRateLimiter,
+  FixedWindowSketchRateLimiter,
   isRateLimitExceededError,
   type RequestRateLimiter,
 } from "./lib/rate-limit.js";
@@ -47,6 +48,10 @@ const sharedIdentityCreateRateLimiter = new FixedWindowRateLimiter(
   IDENTITY_CREATE_RATE_LIMIT,
   IDENTITY_CREATE_RATE_WINDOW_MS,
 );
+const sharedIdentityCreatePreAuthRateLimiter = new FixedWindowSketchRateLimiter(
+  IDENTITY_CREATE_RATE_LIMIT,
+  IDENTITY_CREATE_RATE_WINDOW_MS,
+);
 
 export type CreateAppOptions = {
   storage?: AuthStorage;
@@ -56,6 +61,7 @@ export type CreateAppOptions = {
   baseUrl?: string;
   allowedOrigins?: string;
   deferTask?: DeferredTaskScheduler;
+  identityCreatePreAuthRateLimiter?: RequestRateLimiter;
   identityCreateRateLimiter?: RequestRateLimiter;
 };
 
@@ -88,6 +94,8 @@ function getClientIp(forwardedFor: string | undefined, realIp: string | undefine
 export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const bridgeRateMap = new Map<string, { count: number; resetAt: number }>();
+  const identityCreatePreAuthRateLimiter =
+    options.identityCreatePreAuthRateLimiter ?? sharedIdentityCreatePreAuthRateLimiter;
   const identityCreateRateLimiter =
     options.identityCreateRateLimiter ?? sharedIdentityCreateRateLimiter;
   const config = normalizeConfig(options);
@@ -133,6 +141,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
 
     c.set("storage", options.storage);
     c.set("deferTask", resolveDeferredTaskScheduler(c, options.deferTask));
+    c.set("identityCreatePreAuthRateLimiter", identityCreatePreAuthRateLimiter);
     c.set("identityCreateRateLimiter", identityCreateRateLimiter);
     await next();
   });
