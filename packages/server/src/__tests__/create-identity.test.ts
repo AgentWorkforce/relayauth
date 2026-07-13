@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import type { AgentIdentity, CreateIdentityInput, RelayAuthTokenClaims } from "@relayauth/types";
-import { FixedWindowRateLimiter } from "../lib/rate-limit.js";
+import { FixedWindowRateLimiter, RateLimitExceededError } from "../lib/rate-limit.js";
 import type { IdentityBudget, StoredIdentity } from "../storage/identity-types.js";
 import {
   assertJsonResponse,
@@ -244,7 +244,9 @@ test("POST /v1/identities retries an overloaded pre-create read then returns 503
   );
 
   const body = await assertJsonResponse<{
+    attempts?: number;
     code?: string;
+    operation?: string;
     retryable?: boolean;
     requestId?: string;
   }>(response, 503);
@@ -253,6 +255,8 @@ test("POST /v1/identities retries an overloaded pre-create read then returns 503
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.equal(body.code, "storage_overloaded");
   assert.equal(body.retryable, true);
+  assert.equal(body.operation, "identities.find_duplicate");
+  assert.equal(body.attempts, 3);
   assert.equal(typeof body.requestId, "string");
 });
 
@@ -280,6 +284,41 @@ test("POST /v1/identities protects org-budget reads with the same overload respo
   assert.equal(attempts, 3);
   assert.equal(response.headers.get("Retry-After"), "1");
   assert.equal(body.code, "storage_overloaded");
+});
+
+test("POST /v1/identities never retries a create that may already have committed", async () => {
+  const storage = createTestStorage();
+  const create = storage.identities.create.bind(storage.identities);
+  let attempts = 0;
+  storage.identities.create = async (identity) => {
+    attempts += 1;
+    await create(identity);
+    throw Object.assign(new Error("database write failed"), { code: "SQLITE_BUSY" });
+  };
+  const app = createTestApp({}, { storage });
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "committed-before-overload", sponsorId: "user_sponsor_1" },
+      { Authorization: `Bearer ${createAuthToken()}` },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  const body = await assertJsonResponse<{
+    attempts?: number;
+    code?: string;
+    operation?: string;
+  }>(response, 503);
+  assert.equal(attempts, 1);
+  assert.equal(body.code, "storage_overloaded");
+  assert.equal(body.operation, "identities.create");
+  assert.equal(body.attempts, 1);
+  const stored = await storage.identities.list("org_auth_ctx");
+  assert.equal(stored.filter((identity) => identity.name === "committed-before-overload").length, 1);
 });
 
 test("POST /v1/identities returns 429 before storage reads after the API-key/org limit is exhausted", async () => {
@@ -325,4 +364,37 @@ test("POST /v1/identities returns 429 before storage reads after the API-key/org
   assert.match(second.headers.get("Retry-After") ?? "", /^\d+$/);
   assert.equal(second.headers.get("RateLimit-Remaining"), "0");
   assert.equal(duplicateReads, 1, "rejected requests must not reach identity storage");
+});
+
+test("the global error handler preserves rate-limit errors as 429 responses", async () => {
+  const decision = {
+    allowed: false,
+    limit: 1,
+    remaining: 0,
+    resetAt: Date.now() + 60_000,
+    retryAfterSeconds: 60,
+  };
+  const app = createTestApp({}, {
+    identityCreateRateLimiter: {
+      consume() {
+        throw new RateLimitExceededError(decision);
+      },
+    },
+  });
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "global-rate-limit", sponsorId: "user_sponsor_1" },
+      { Authorization: `Bearer ${createAuthToken()}` },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  const body = await assertJsonResponse<{ code?: string }>(response, 429);
+  assert.equal(body.code, "rate_limited");
+  assert.equal(response.headers.get("Retry-After"), "60");
+  assert.equal(response.headers.get("RateLimit-Remaining"), "0");
 });

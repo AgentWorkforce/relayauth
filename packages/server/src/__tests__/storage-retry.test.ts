@@ -70,3 +70,11 @@ test("isTransientStorageOverload recognizes nested queue-capacity failures", () 
   assert.equal(isTransientStorageOverload(error), true);
   assert.equal(isTransientStorageOverload(new Error("identity_already_exists")), false);
 });
+
+test("isTransientStorageOverload recognizes SQLite busy codes and lock messages", () => {
+  const busy = Object.assign(new Error("database write failed"), { code: "SQLITE_BUSY" });
+
+  assert.equal(isTransientStorageOverload(busy), true);
+  assert.equal(isTransientStorageOverload(new Error("database is locked")), true);
+  assert.equal(isTransientStorageOverload(new Error("SQLITE_CONSTRAINT")), false);
+});

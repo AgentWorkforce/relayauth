@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import test from "node:test";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 import type { AppEnv } from "../env.js";
+import type { DeferredTask } from "../lib/deferred.js";
 import {
   generateTestToken,
   TEST_RS256_PRIVATE_KEY_PEM,
@@ -42,7 +43,7 @@ type AuthenticateBearerOrApiKey = (
   env: AppEnv["Bindings"],
   apiKeys: ApiKeyStorageLike,
   options?: {
-    deferTask?: (task: Promise<unknown>) => void;
+    deferTask?: (task: DeferredTask) => void;
     now?: () => number;
   },
 ) => Promise<AuthenticateSuccess | AuthenticateFailure>;
@@ -173,7 +174,7 @@ test("authenticateBearerOrApiKey accepts a valid x-api-key and returns synthesiz
   });
   const { storage, touched } = createApiKeyStorage([storedKey]);
 
-  const deferred: Promise<unknown>[] = [];
+  const deferred: DeferredTask[] = [];
   const auth = await authenticateBearerOrApiKey(
     undefined,
     plaintext,
@@ -181,7 +182,7 @@ test("authenticateBearerOrApiKey accepts a valid x-api-key and returns synthesiz
     storage,
     { deferTask: (task) => deferred.push(task) },
   );
-  await Promise.all(deferred);
+  await Promise.all(deferred.map((task) => task()));
 
   assert.equal(auth.ok, true);
   assert.equal(auth.claims.org, "org_api_key_auth");
@@ -244,7 +245,7 @@ test("authenticateBearerOrApiKey updates last_used_at when an API key authentica
     }),
   ]);
 
-  const deferred: Promise<unknown>[] = [];
+  const deferred: DeferredTask[] = [];
   const auth = await authenticateBearerOrApiKey(
     undefined,
     "rak_test_auth_plaintext_fixture",
@@ -252,7 +253,7 @@ test("authenticateBearerOrApiKey updates last_used_at when an API key authentica
     storage,
     { deferTask: (task) => deferred.push(task) },
   );
-  await Promise.all(deferred);
+  await Promise.all(deferred.map((task) => task()));
 
   assert.equal(auth.ok, true);
   assert.equal(touched.length, 1, "API-key authentication should mark the key as used");
@@ -269,7 +270,7 @@ test("authenticateBearerOrApiKey skips last_used_at writes while the stored time
       lastUsedAt: new Date(now - 60_000).toISOString(),
     }),
   ]);
-  const deferred: Promise<unknown>[] = [];
+  const deferred: DeferredTask[] = [];
 
   const auth = await authenticateBearerOrApiKey(
     undefined,
@@ -306,7 +307,7 @@ test("authenticateBearerOrApiKey defers stale last_used_at writes without blocki
       await touchGate;
     },
   };
-  const deferred: Promise<unknown>[] = [];
+  const deferred: DeferredTask[] = [];
 
   const auth = await authenticateBearerOrApiKey(
     undefined,
@@ -321,10 +322,12 @@ test("authenticateBearerOrApiKey defers stale last_used_at writes without blocki
 
   assert.equal(auth.ok, true, "authentication must complete before the write resolves");
   assert.equal(deferred.length, 1);
+  assert.equal(touchStarted, false, "capturing the deferred thunk must not start the write");
+  const draining = Promise.all(deferred.map((task) => task()));
   await Promise.resolve();
   assert.equal(touchStarted, true);
   releaseTouch();
-  await Promise.all(deferred);
+  await draining;
 });
 
 test("repeated authentication of the same stale key enqueues only one debounced write", async () => {
@@ -336,10 +339,10 @@ test("repeated authentication of the same stale key enqueues only one debounced 
       lastUsedAt: new Date(now - 10 * 60_000).toISOString(),
     }),
   ]);
-  const deferred: Promise<unknown>[] = [];
+  const deferred: DeferredTask[] = [];
   const options = {
     now: () => now,
-    deferTask: (task: Promise<unknown>) => deferred.push(task),
+    deferTask: (task: DeferredTask) => deferred.push(task),
   };
 
   const [first, second] = await Promise.all([
@@ -358,7 +361,7 @@ test("repeated authentication of the same stale key enqueues only one debounced 
       options,
     ),
   ]);
-  await Promise.all(deferred);
+  await Promise.all(deferred.map((task) => task()));
 
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
@@ -379,7 +382,7 @@ test("a deferred last_used_at failure never turns valid API-key authentication i
       throw new Error("write failed");
     },
   };
-  const deferred: Promise<unknown>[] = [];
+  const deferred: DeferredTask[] = [];
 
   const auth = await authenticateBearerOrApiKey(
     undefined,
@@ -391,7 +394,7 @@ test("a deferred last_used_at failure never turns valid API-key authentication i
       deferTask: (task) => deferred.push(task),
     },
   );
-  await Promise.all(deferred);
+  await Promise.all(deferred.map((task) => task()));
 
   assert.equal(auth.ok, true);
 });

@@ -26,8 +26,14 @@ type RateLimitEntry = {
   resetAt: number;
 };
 
+type RateLimitExpiry = {
+  key: string;
+  resetAt: number;
+};
+
 export class FixedWindowRateLimiter implements RequestRateLimiter {
   private readonly entries = new Map<string, RateLimitEntry>();
+  private readonly expiries: RateLimitExpiry[] = [];
 
   constructor(
     readonly limit: number,
@@ -40,40 +46,52 @@ export class FixedWindowRateLimiter implements RequestRateLimiter {
     if (!Number.isFinite(windowMs) || windowMs < 1) {
       throw new Error("rate-limit windowMs must be positive");
     }
+    if (!Number.isInteger(maxEntries) || maxEntries < 1) {
+      throw new Error("rate-limit maxEntries must be a positive integer");
+    }
   }
 
   consume(keys: string[], now = Date.now()): RateLimitDecision {
+    this.pruneExpired(now);
     const uniqueKeys = [...new Set(keys.filter(Boolean))];
     const activeEntries = uniqueKeys.map((key) => ({
       key,
-      entry: this.getActiveEntry(key, now),
+      entry: this.entries.get(key),
     }));
-    const blocked = activeEntries.find(({ entry }) => entry.count >= this.limit);
+    const blocked = activeEntries.find(({ entry }) => entry && entry.count >= this.limit);
 
-    if (blocked) {
+    if (blocked?.entry) {
       return this.decision(false, blocked.entry, now);
     }
 
+    const newEntryCount = activeEntries.reduce(
+      (count, { entry }) => count + (entry ? 0 : 1),
+      0,
+    );
+    if (this.entries.size + newEntryCount > this.maxEntries) {
+      // Never evict an active bucket: doing so resets its counter and lets an
+      // attacker bypass throttling by flooding the limiter with distinct keys.
+      // Reject new admissions until the earliest active window expires.
+      return this.decision(false, {
+        count: this.limit,
+        resetAt: this.expiries[0]?.resetAt ?? now + this.windowMs,
+      }, now);
+    }
+
     let mostConsumed: RateLimitEntry | undefined;
-    for (const { key, entry } of activeEntries) {
+    for (const { key, entry: existing } of activeEntries) {
+      const entry = existing ?? { count: 0, resetAt: now + this.windowMs };
       entry.count += 1;
-      this.entries.set(key, entry);
+      if (!existing) {
+        this.entries.set(key, entry);
+        this.pushExpiry({ key, resetAt: entry.resetAt });
+      }
       if (!mostConsumed || entry.count > mostConsumed.count) {
         mostConsumed = entry;
       }
     }
 
-    this.pruneIfNeeded(now);
     return this.decision(true, mostConsumed ?? { count: 1, resetAt: now + this.windowMs }, now);
-  }
-
-  private getActiveEntry(key: string, now: number): RateLimitEntry {
-    const existing = this.entries.get(key);
-    if (existing && now < existing.resetAt) {
-      return existing;
-    }
-
-    return { count: 0, resetAt: now + this.windowMs };
   }
 
   private decision(allowed: boolean, entry: RateLimitEntry, now: number): RateLimitDecision {
@@ -86,23 +104,61 @@ export class FixedWindowRateLimiter implements RequestRateLimiter {
     };
   }
 
-  private pruneIfNeeded(now: number): void {
-    if (this.entries.size <= this.maxEntries) {
-      return;
-    }
+  private pruneExpired(now: number): void {
+    while (this.expiries[0] && now >= this.expiries[0].resetAt) {
+      const expired = this.popExpiry();
+      if (!expired) {
+        return;
+      }
 
-    for (const [key, entry] of this.entries) {
-      if (now >= entry.resetAt) {
-        this.entries.delete(key);
+      const entry = this.entries.get(expired.key);
+      if (entry?.resetAt === expired.resetAt) {
+        this.entries.delete(expired.key);
       }
     }
+  }
 
-    while (this.entries.size > this.maxEntries) {
-      const oldestKey = this.entries.keys().next().value as string | undefined;
-      if (!oldestKey) {
+  private pushExpiry(expiry: RateLimitExpiry): void {
+    this.expiries.push(expiry);
+    let index = this.expiries.length - 1;
+    while (index > 0) {
+      const parentIndex = Math.floor((index - 1) / 2);
+      const parent = this.expiries[parentIndex];
+      if (!parent || parent.resetAt <= expiry.resetAt) {
         break;
       }
-      this.entries.delete(oldestKey);
+      this.expiries[index] = parent;
+      index = parentIndex;
     }
+    this.expiries[index] = expiry;
+  }
+
+  private popExpiry(): RateLimitExpiry | undefined {
+    const first = this.expiries[0];
+    const last = this.expiries.pop();
+    if (!first || !last || this.expiries.length === 0) {
+      return first;
+    }
+
+    let index = 0;
+    while (true) {
+      const leftIndex = (index * 2) + 1;
+      const rightIndex = leftIndex + 1;
+      const left = this.expiries[leftIndex];
+      const right = this.expiries[rightIndex];
+      if (!left) {
+        break;
+      }
+
+      const childIndex = right && right.resetAt < left.resetAt ? rightIndex : leftIndex;
+      const child = this.expiries[childIndex];
+      if (!child || child.resetAt >= last.resetAt) {
+        break;
+      }
+      this.expiries[index] = child;
+      index = childIndex;
+    }
+    this.expiries[index] = last;
+    return first;
   }
 }

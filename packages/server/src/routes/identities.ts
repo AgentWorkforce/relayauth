@@ -11,7 +11,9 @@ import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext, authenticateBearerOrApiKey, authorizeClaims, decodeBase64UrlJson } from "../lib/auth.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 import {
+  isTransientStorageOverload,
   isStorageOverloadedError,
+  StorageOverloadedError,
   storageOverloadResponse,
   withStorageRetry,
 } from "../lib/storage-retry.js";
@@ -477,10 +479,18 @@ identities.post("/", async (c) => {
       ...(budget ? { budget } : {}),
     };
 
-    const createdIdentity = await withStorageRetry(
-      () => storage.identities.create(storedIdentity),
-      { operation: "identities.create" },
-    );
+    let createdIdentity: StoredIdentity;
+    try {
+      // Identity creation is not guaranteed to be idempotent across storage
+      // adapters. Never retry a write that may have committed before its
+      // adapter surfaced an overload error.
+      createdIdentity = await storage.identities.create(storedIdentity);
+    } catch (error) {
+      if (isTransientStorageOverload(error)) {
+        throw new StorageOverloadedError("identities.create", 1, { cause: error });
+      }
+      throw error;
+    }
     emitObserverEvent({
       type: "identity.created",
       timestamp: observerNow(),

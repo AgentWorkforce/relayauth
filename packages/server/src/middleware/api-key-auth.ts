@@ -45,9 +45,10 @@ export function apiKeyAuth(): MiddlewareHandler<AppEnv> {
         {
           deferTask: c.get("deferTask"),
           beforeApiKeyLookup: (normalizedApiKey) => {
+            const normalizedPath = c.req.path.replace(/\/+$/, "") || "/";
             if (
               c.req.method !== "POST"
-              || c.req.path !== "/v1/identities"
+              || normalizedPath !== "/v1/identities"
               || c.get("identityCreateRateLimitChecked")
             ) {
               return;

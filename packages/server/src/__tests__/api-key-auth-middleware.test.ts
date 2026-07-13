@@ -208,6 +208,46 @@ test("the API-key identity-create limiter rejects a runaway caller before anothe
   assert.equal(lookupCount, 1, "the rejected request must not consume another storage read");
 });
 
+test("the API-key identity-create limiter normalizes trailing slashes", async () => {
+  const app = createTestApp({}, {
+    identityCreateRateLimiter: new FixedWindowRateLimiter(1, 60_000),
+  });
+  const created = await mintApiKey(app, ["relayauth:identity:manage:*"]);
+  const getByHash = app.storage.apiKeys.getByHash.bind(app.storage.apiKeys);
+  let lookupCount = 0;
+  app.storage.apiKeys.getByHash = async (keyHash) => {
+    lookupCount += 1;
+    return getByHash(keyHash);
+  };
+
+  const first = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "normalized-first", sponsorId: "svc_sponsor_normalized" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+  assert.equal(first.status, 201);
+
+  const second = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities/",
+      { name: "normalized-second", sponsorId: "svc_sponsor_normalized" },
+      { "x-api-key": created.key },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const body = await assertJsonResponse<{ code?: string }>(second, 429);
+
+  assert.equal(body.code, "rate_limited");
+  assert.equal(lookupCount, 1, "the path variant must be rejected before another lookup");
+});
+
 test("stale API-key usage work is registered with the request execution lifecycle", async () => {
   const app = createTestApp();
   const created = await mintApiKey(app, ["relayauth:identity:manage:*"]);

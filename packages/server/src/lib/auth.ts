@@ -36,9 +36,12 @@ export type ApiKeyAuthenticationOptions = {
 
 export const API_KEY_LAST_USED_DEBOUNCE_MS = 5 * 60_000;
 
+const MAX_RECENT_API_KEY_TOUCHES = 10_000;
 const recentlyScheduledApiKeyTouches = new Map<string, number>();
 const defaultDeferredTaskScheduler: DeferredTaskScheduler = (task) => {
-  void task;
+  setTimeout(() => {
+    void task();
+  }, 0);
 };
 
 export async function authenticate(
@@ -531,9 +534,20 @@ function scheduleApiKeyLastUsedTouch(
     return;
   }
 
-  const usedAt = new Date(nowMs).toISOString();
-  recentlyScheduledApiKeyTouches.set(storedApiKey.id, nowMs);
   pruneApiKeyTouchCache(nowMs);
+  if (
+    recentlyScheduledApiKeyTouches.size >= MAX_RECENT_API_KEY_TOUCHES
+    && !recentlyScheduledApiKeyTouches.has(storedApiKey.id)
+  ) {
+    // Preserve active debounce markers instead of evicting one and recreating
+    // the write storm this cache exists to suppress. Usage telemetry is
+    // best-effort, so dropping a new touch is safer than dropping protection.
+    return;
+  }
+
+  const usedAt = new Date(nowMs).toISOString();
+  recentlyScheduledApiKeyTouches.delete(storedApiKey.id);
+  recentlyScheduledApiKeyTouches.set(storedApiKey.id, nowMs);
 
   scheduleDeferredTask(
     options?.deferTask ?? defaultDeferredTaskScheduler,
@@ -569,23 +583,13 @@ function shouldTouchApiKeyLastUsed(storedApiKey: StoredApiKey, nowMs: number): b
 }
 
 function pruneApiKeyTouchCache(nowMs: number): void {
-  if (recentlyScheduledApiKeyTouches.size < 10_000) {
-    return;
-  }
-
   for (const [apiKeyId, touchedAt] of recentlyScheduledApiKeyTouches) {
     if (nowMs - touchedAt >= API_KEY_LAST_USED_DEBOUNCE_MS) {
       recentlyScheduledApiKeyTouches.delete(apiKeyId);
-    }
-  }
-
-  while (recentlyScheduledApiKeyTouches.size > 10_000) {
-    const oldestApiKeyId = recentlyScheduledApiKeyTouches.keys().next().value as
-      | string
-      | undefined;
-    if (!oldestApiKeyId) {
+    } else {
+      // Touches are delete/re-inserted above, so iteration order follows their
+      // scheduled timestamp. Once one marker is active, the rest are active.
       break;
     }
-    recentlyScheduledApiKeyTouches.delete(oldestApiKeyId);
   }
 }

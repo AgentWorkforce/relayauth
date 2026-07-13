@@ -42,6 +42,8 @@ export function isTransientStorageOverload(error: unknown): boolean {
     || /\brequests?\s+queued\b/i.test(message)
     || /\bqueue(?:d)?\b.{0,24}\btoo\s+long\b/i.test(message)
     || /\btoo\s+many\s+(?:concurrent\s+)?requests\b/i.test(message)
+    || /\bSQLITE_BUSY(?:_\w+)?\b/i.test(message)
+    || /\bdatabase\s+(?:is\s+)?locked\b/i.test(message)
   );
 }
 
@@ -60,7 +62,9 @@ export async function withStorageRetry<T>(
   const sleep = options.sleep ?? delay;
   const random = options.random ?? Math.random;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  let attempt = 0;
+  while (true) {
+    attempt += 1;
     try {
       return await task();
     } catch (error) {
@@ -77,8 +81,6 @@ export async function withStorageRetry<T>(
       await sleep(Math.max(0, Math.round(exponentialDelay * jitterMultiplier)));
     }
   }
-
-  throw new StorageOverloadedError(options.operation, maxAttempts);
 }
 
 export function storageOverloadResponse(
@@ -100,6 +102,8 @@ export function storageOverloadResponse(
     error: "Storage is temporarily overloaded",
     code: error.code,
     retryable: true,
+    operation: error.operation,
+    attempts: error.attempts,
     requestId,
   }, 503);
 }
@@ -113,6 +117,10 @@ function collectErrorMessages(error: unknown): string[] {
     visited.add(current);
     if (current instanceof Error) {
       messages.push(current.message);
+      const code = (current as Error & { code?: unknown }).code;
+      if (typeof code === "string") {
+        messages.push(code);
+      }
       current = current.cause;
       continue;
     }

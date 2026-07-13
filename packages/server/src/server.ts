@@ -6,7 +6,11 @@ import { cors } from "hono/cors";
 
 import type { AppConfig, AppEnv } from "./env.js";
 import { resolveDeferredTaskScheduler, type DeferredTaskScheduler } from "./lib/deferred.js";
-import { FixedWindowRateLimiter, type RequestRateLimiter } from "./lib/rate-limit.js";
+import {
+  FixedWindowRateLimiter,
+  isRateLimitExceededError,
+  type RequestRateLimiter,
+} from "./lib/rate-limit.js";
 import { isStorageOverloadedError, storageOverloadResponse } from "./lib/storage-retry.js";
 import { apiKeyAuth } from "./middleware/api-key-auth.js";
 import auditExport from "./routes/audit-export.js";
@@ -91,6 +95,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.onError((error, c) => {
     if (isStorageOverloadedError(error)) {
       return storageOverloadResponse(c, error);
+    }
+    if (isRateLimitExceededError(error)) {
+      c.header("RateLimit-Limit", String(error.decision.limit));
+      c.header("RateLimit-Remaining", String(error.decision.remaining));
+      c.header("RateLimit-Reset", String(error.decision.retryAfterSeconds));
+      c.header("Retry-After", String(error.decision.retryAfterSeconds));
+      return c.json({
+        error: "Identity create rate limit exceeded",
+        code: "rate_limited",
+        retryable: true,
+      }, 429);
     }
 
     const requestId = c.get("requestId") || c.req.header("x-request-id") || "unknown";
