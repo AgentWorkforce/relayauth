@@ -105,9 +105,9 @@ test("audit retention uses overrides, a 90-day default, and bounded batches", as
   const { storage, db } = createStorage(t);
 
   await storage.DB.prepare(
-    "INSERT INTO audit_retention_config (org_id, retention_days) VALUES (?, ?), (?, ?), (?, ?)",
+    "INSERT INTO audit_retention_config (org_id, retention_days) VALUES (?, ?), (?, ?), (?, ?), (?, ?)",
   )
-    .bind("org_short", 30, "org_long", 180, "org_invalid", 1)
+    .bind("org_short", 30, "org_long", 180, "org_invalid", 1, "org_fractional", 30.5)
     .run();
 
   await insertAuditLog(storage, "aud_default_old", "org_default", daysBeforeNow(100));
@@ -116,6 +116,7 @@ test("audit retention uses overrides, a 90-day default, and bounded batches", as
   await insertAuditLog(storage, "aud_short_recent", "org_short", daysBeforeNow(20));
   await insertAuditLog(storage, "aud_long_recent", "org_long", daysBeforeNow(100));
   await insertAuditLog(storage, "aud_invalid_old", "org_invalid", daysBeforeNow(100));
+  await insertAuditLog(storage, "aud_fractional_recent", "org_fractional", daysBeforeNow(40));
 
   assert.deepEqual(await countExpiredEntriesBatch(db, { now: NOW, limit: 2 }), {
     expiredCount: 2,
@@ -128,6 +129,7 @@ test("audit retention uses overrides, a 90-day default, and bounded batches", as
   assert.equal(secondBatch.deletedCount, 1);
   assert.deepEqual(await readIds(storage, "audit_logs"), [
     "aud_default_recent",
+    "aud_fractional_recent",
     "aud_long_recent",
     "aud_short_recent",
   ]);

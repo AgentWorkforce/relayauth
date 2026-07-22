@@ -131,7 +131,8 @@ export async function purgeExpiredEntriesBatch(
             printf(
               '-%d days',
               CASE
-                WHEN config.retention_days BETWEEN ? AND ?
+                WHEN typeof(config.retention_days) = 'integer'
+                  AND config.retention_days BETWEEN ? AND ?
                   THEN config.retention_days
                 ELSE ?
               END
@@ -175,7 +176,8 @@ export async function countExpiredEntriesBatch(
             printf(
               '-%d days',
               CASE
-                WHEN config.retention_days BETWEEN ? AND ?
+                WHEN typeof(config.retention_days) = 'integer'
+                  AND config.retention_days BETWEEN ? AND ?
                   THEN config.retention_days
                 ELSE ?
               END
