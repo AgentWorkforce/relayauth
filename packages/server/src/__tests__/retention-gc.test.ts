@@ -176,3 +176,38 @@ test("bootstrap installs the retention query indexes", async (t) => {
     ],
   );
 });
+
+test("audit candidate query plan uses both retention indexes", async (t) => {
+  const { storage } = createStorage(t);
+  let capturedSql = "";
+  let capturedParams: unknown[] = [];
+  const capturingDb: RetentionGcSqlExecutor = {
+    prepare(sql) {
+      capturedSql = sql;
+      return {
+        bind(...params: unknown[]) {
+          capturedParams = params;
+          const statement = storage.DB.prepare(sql).bind(...params);
+          return {
+            bind: () => {
+              throw new Error("unexpected second bind");
+            },
+            run: () => statement.run(),
+            first: <T>() => statement.first<T>(),
+          };
+        },
+        run: () => storage.DB.prepare(sql).run(),
+        first: <T>() => storage.DB.prepare(sql).first<T>(),
+      };
+    },
+  };
+
+  await countExpiredEntriesBatch(capturingDb, { now: NOW, limit: 1_000 });
+  const plan = await storage.DB.prepare(`EXPLAIN QUERY PLAN ${capturedSql}`)
+    .bind(...capturedParams)
+    .all<{ detail: string }>();
+  const details = plan.results.map((row) => row.detail).join("\n");
+
+  assert.match(details, /idx_audit_logs_created_at/);
+  assert.match(details, /idx_audit_logs_org_created_at/);
+});

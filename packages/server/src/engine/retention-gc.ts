@@ -47,6 +47,51 @@ const DEFAULT_GC_BATCH_SIZE = 1_000;
 const MAX_GC_BATCH_SIZE = 50_000;
 const DEFAULT_TOKEN_EXPIRY_GRACE_SECONDS = 60;
 
+// The two branches are disjoint. Default/malformed configs use the global
+// created_at index; valid per-org configs use (org_id, created_at). Comparing
+// against a YYYY-MM-DD cutoff is deliberately conservative for both SQLite's
+// `CURRENT_TIMESTAMP` format and ISO timestamps: rows on the boundary day are
+// retained for up to one extra day rather than deleted early.
+const AUDIT_RETENTION_CANDIDATES_SQL = `
+  SELECT rowid
+  FROM (
+    SELECT rowid, created_at
+    FROM (
+      SELECT logs.rowid AS rowid, logs.created_at AS created_at
+      FROM audit_logs AS logs
+      LEFT JOIN audit_retention_config AS config
+        ON config.org_id = logs.org_id
+      WHERE (
+          config.org_id IS NULL
+          OR typeof(config.retention_days) != 'integer'
+          OR config.retention_days NOT BETWEEN ? AND ?
+        )
+        AND logs.created_at < date(?, printf('-%d days', ?))
+      ORDER BY logs.created_at ASC, logs.rowid ASC
+      LIMIT ?
+    )
+
+    UNION ALL
+
+    SELECT rowid, created_at
+    FROM (
+      SELECT logs.rowid AS rowid, logs.created_at AS created_at
+      FROM audit_retention_config AS config
+      JOIN audit_logs AS logs
+        ON logs.org_id = config.org_id
+      WHERE typeof(config.retention_days) = 'integer'
+        AND config.retention_days BETWEEN ? AND ?
+        AND logs.created_at < date(
+          ?,
+          printf('-%d days', config.retention_days)
+        )
+      LIMIT ?
+    )
+  )
+  ORDER BY created_at ASC, rowid ASC
+  LIMIT ?
+`;
+
 /**
  * Deletes one bounded batch of tokens that can no longer pass verification.
  *
@@ -122,32 +167,20 @@ export async function purgeExpiredEntriesBatch(
       `
         DELETE FROM audit_logs
         WHERE rowid IN (
-          SELECT logs.rowid
-          FROM audit_logs AS logs
-          LEFT JOIN audit_retention_config AS config
-            ON config.org_id = logs.org_id
-          WHERE julianday(logs.created_at) < julianday(
-            ?,
-            printf(
-              '-%d days',
-              CASE
-                WHEN typeof(config.retention_days) = 'integer'
-                  AND config.retention_days BETWEEN ? AND ?
-                  THEN config.retention_days
-                ELSE ?
-              END
-            )
-          )
-          ORDER BY logs.created_at ASC, logs.rowid ASC
-          LIMIT ?
+          ${AUDIT_RETENTION_CANDIDATES_SQL}
         )
       `,
     )
     .bind(
-      now,
       MIN_RETENTION_DAYS,
       MAX_RETENTION_DAYS,
+      now,
       DEFAULT_RETENTION_DAYS,
+      limit,
+      MIN_RETENTION_DAYS,
+      MAX_RETENTION_DAYS,
+      now,
+      limit,
       limit,
     )
     .run();
@@ -167,32 +200,20 @@ export async function countExpiredEntriesBatch(
       `
         SELECT COUNT(*) AS count
         FROM (
-          SELECT logs.rowid
-          FROM audit_logs AS logs
-          LEFT JOIN audit_retention_config AS config
-            ON config.org_id = logs.org_id
-          WHERE julianday(logs.created_at) < julianday(
-            ?,
-            printf(
-              '-%d days',
-              CASE
-                WHEN typeof(config.retention_days) = 'integer'
-                  AND config.retention_days BETWEEN ? AND ?
-                  THEN config.retention_days
-                ELSE ?
-              END
-            )
-          )
-          ORDER BY logs.created_at ASC, logs.rowid ASC
-          LIMIT ?
+          ${AUDIT_RETENTION_CANDIDATES_SQL}
         )
       `,
     )
     .bind(
-      now,
       MIN_RETENTION_DAYS,
       MAX_RETENTION_DAYS,
+      now,
       DEFAULT_RETENTION_DAYS,
+      limit,
+      MIN_RETENTION_DAYS,
+      MAX_RETENTION_DAYS,
+      now,
+      limit,
       limit,
     )
     .first<{ count?: unknown }>();
