@@ -14,6 +14,7 @@ import {
   scanExpiredTokensWindow,
   type RetentionGcCursorSqlExecutor,
   type RetentionGcSqlExecutor,
+  type RetentionGcWindow,
 } from "../engine/retention-gc.js";
 import { createSqliteStorage, type SqliteStorage } from "../storage/sqlite.js";
 
@@ -75,6 +76,68 @@ async function readIds(storage: SqliteStorage, table: "tokens" | "audit_logs"): 
     id: string;
   }>();
   return result.results.map((row) => row.id);
+}
+
+function mutateAfterNextWindowScan(
+  storage: SqliteStorage,
+  table: "tokens" | "audit_logs",
+  mutate: () => Promise<void>,
+): RetentionGcCursorSqlExecutor {
+  let mutated = false;
+
+  return {
+    prepare(sql) {
+      const prepared = storage.DB.prepare(sql);
+      const maybeMutate = async <T>(result: { results?: T[]; meta?: unknown }) => {
+        if (
+          !mutated &&
+          new RegExp(`\\bFROM\\s+${table}\\b`, "i").test(sql) &&
+          /ORDER BY/i.test(sql) &&
+          /LIMIT/i.test(sql)
+        ) {
+          mutated = true;
+          await mutate();
+        }
+        return result;
+      };
+
+      return {
+        bind(...params: unknown[]) {
+          const bound = prepared.bind(...params);
+          return {
+            bind: () => {
+              throw new Error("unexpected second bind");
+            },
+            all: async <T>() => maybeMutate(await bound.all<T>()),
+            run: () => bound.run(),
+            first: <T>() => bound.first<T>(),
+          };
+        },
+        all: async <T>() => maybeMutate(await prepared.all<T>()),
+        run: () => prepared.run(),
+        first: <T>() => prepared.first<T>(),
+      };
+    },
+  };
+}
+
+async function readRowidSummary(
+  storage: SqliteStorage,
+  table: "tokens" | "audit_logs",
+): Promise<{ rowCount: number; minRowid: number; maxRowid: number }> {
+  const row = await storage.DB.prepare(
+    `SELECT COUNT(*) AS rowCount, MIN(rowid) AS minRowid, MAX(rowid) AS maxRowid FROM ${table}`,
+  ).first<{ rowCount: number; minRowid: number; maxRowid: number }>();
+  assert.ok(row);
+
+  // node:sqlite returns null-prototype rows while better-sqlite3 returns plain
+  // objects. Normalize the test observation so both supported backends assert
+  // the retention behavior rather than their row-object representation.
+  return {
+    rowCount: Number(row.rowCount),
+    minRowid: Number(row.minRowid),
+    maxRowid: Number(row.maxRowid),
+  };
 }
 
 test("pruneExpiredTokens bounds a batch and preserves verifier clock skew", async (t) => {
@@ -177,8 +240,8 @@ test("token cursor windows skip sparse rowid holes and prune only the closed win
     },
   );
 
-  // This insert gets a higher rowid after the window closed and must not be
-  // eligible for deletion from the already-proven range.
+  // This row was not observed as a candidate and must not be eligible for
+  // deletion from the already-proven window.
   await insertToken(storage, "tok_concurrent", nowSeconds - 600, 10_000_002);
   const pruned = await pruneExpiredTokensWindow(db, first, { now: NOW });
   assert.equal(pruned.deletedCount, 1);
@@ -232,6 +295,168 @@ test("audit cursor windows apply config/default retention inside a bounded rowid
   assert.equal(second.scannedCount, 1);
   assert.equal(second.expiredCount, 1);
   assert.equal(second.exhausted, true);
+});
+
+test("token windows retain exact candidates across max-rowid reuse", async (t) => {
+  const { storage, db } = createStorage(t);
+  const nowSeconds = Math.floor(NOW.getTime() / 1_000);
+
+  await insertToken(storage, "tok_original_first", nowSeconds - 600, 1);
+  await insertToken(storage, "tok_original_max", nowSeconds - 600, 2_000);
+
+  const racingDb = mutateAfterNextWindowScan(storage, "tokens", async () => {
+    await storage.DB.prepare("DELETE FROM tokens WHERE rowid = ?").bind(2_000).run();
+    await storage.DB.prepare(
+      `
+        WITH RECURSIVE seq(n) AS (
+          SELECT 2
+          UNION ALL
+          SELECT n + 1 FROM seq WHERE n < 2000
+        )
+        INSERT INTO tokens (id, identity_id, expires_at, status, created_at)
+        SELECT 'tok_reused_live_' || n, 'identity_test', ?, 'active', ?
+        FROM seq
+      `,
+    )
+      .bind(nowSeconds + 600, NOW.toISOString())
+      .run();
+  });
+
+  const window = await scanExpiredTokensWindow(racingDb, { cursor: 0, limit: 2, now: NOW });
+  assert.deepEqual(await readRowidSummary(storage, "tokens"), {
+    rowCount: 2_000,
+    minRowid: 1,
+    maxRowid: 2_000,
+  });
+  assert.equal(window.scannedCount, 2);
+  assert.equal(window.expiredCount, 2);
+  assert.deepEqual(
+    (window as typeof window & { candidateIds?: string[] }).candidateIds,
+    ["tok_original_first", "tok_original_max"],
+  );
+
+  const pruned = await pruneExpiredTokensWindow(db, window, { now: NOW });
+  assert.equal(pruned.deletedCount, 1);
+  assert.equal((await readIds(storage, "tokens")).includes("tok_original_first"), false);
+  assert.equal((await readIds(storage, "tokens")).includes("tok_reused_live_2000"), true);
+});
+
+test("audit windows retain exact candidates across max-rowid reuse", async (t) => {
+  const { storage, db } = createStorage(t);
+  const expiredAt = daysBeforeNow(100);
+  const liveAt = daysBeforeNow(1);
+
+  await insertAuditLog(storage, "aud_original_first", "org_default", expiredAt, 1);
+  await insertAuditLog(storage, "aud_original_max", "org_default", expiredAt, 2_000);
+
+  const racingDb = mutateAfterNextWindowScan(storage, "audit_logs", async () => {
+    await storage.DB.prepare("DELETE FROM audit_logs WHERE rowid = ?").bind(2_000).run();
+    await storage.DB.prepare(
+      `
+        WITH RECURSIVE seq(n) AS (
+          SELECT 2
+          UNION ALL
+          SELECT n + 1 FROM seq WHERE n < 2000
+        )
+        INSERT INTO audit_logs (
+          id, action, identity_id, org_id, result, timestamp, created_at
+        )
+        SELECT
+          'aud_reused_live_' || n,
+          'token.validated',
+          'identity_test',
+          'org_default',
+          'allowed',
+          ?,
+          ?
+        FROM seq
+      `,
+    )
+      .bind(liveAt, liveAt)
+      .run();
+  });
+
+  const window = await scanExpiredAuditEntriesWindow(racingDb, {
+    cursor: 0,
+    limit: 2,
+    now: NOW,
+  });
+  assert.deepEqual(await readRowidSummary(storage, "audit_logs"), {
+    rowCount: 2_000,
+    minRowid: 1,
+    maxRowid: 2_000,
+  });
+  assert.equal(window.scannedCount, 2);
+  assert.equal(window.expiredCount, 2);
+  assert.deepEqual(
+    (window as typeof window & { candidateIds?: string[] }).candidateIds,
+    ["aud_original_first", "aud_original_max"],
+  );
+
+  const purged = await purgeExpiredAuditEntriesWindow(db, window, { now: NOW });
+  assert.equal(purged.deletedCount, 1);
+  assert.equal((await readIds(storage, "audit_logs")).includes("aud_original_first"), false);
+  assert.equal((await readIds(storage, "audit_logs")).includes("aud_reused_live_2000"), true);
+});
+
+test("window mutations recheck expiry when a stable id is replaced", async (t) => {
+  const { storage, db } = createStorage(t);
+  const nowSeconds = Math.floor(NOW.getTime() / 1_000);
+
+  await insertToken(storage, "tok_replaced", nowSeconds - 600, 1);
+  const tokenWindow = await scanExpiredTokensWindow(db, { now: NOW });
+  await storage.DB.prepare("DELETE FROM tokens WHERE id = ?").bind("tok_replaced").run();
+  await insertToken(storage, "tok_replaced", nowSeconds + 600);
+  assert.equal((await pruneExpiredTokensWindow(db, tokenWindow, { now: NOW })).deletedCount, 0);
+  assert.deepEqual(await readIds(storage, "tokens"), ["tok_replaced"]);
+
+  await insertAuditLog(storage, "aud_replaced", "org_default", daysBeforeNow(100), 1);
+  const auditWindow = await scanExpiredAuditEntriesWindow(db, { now: NOW });
+  await storage.DB.prepare("DELETE FROM audit_logs WHERE id = ?").bind("aud_replaced").run();
+  await insertAuditLog(storage, "aud_replaced", "org_default", daysBeforeNow(1));
+  assert.equal((await purgeExpiredAuditEntriesWindow(db, auditWindow, { now: NOW })).deletedCount, 0);
+  assert.deepEqual(await readIds(storage, "audit_logs"), ["aud_replaced"]);
+});
+
+test("window mutations fail closed on missing or malformed candidate evidence", async (t) => {
+  const { db } = createStorage(t);
+  const base: RetentionGcWindow = {
+    cursorBefore: 0,
+    cursorAfter: 2,
+    scannedCount: 2,
+    exhausted: false,
+  };
+
+  await assert.rejects(
+    () => pruneExpiredTokensWindow(db, base, { now: NOW }),
+    /must include candidateIds/,
+  );
+  await assert.rejects(
+    () => pruneExpiredTokensWindow(db, { ...base, candidateIds: ["tok", "tok"] }, { now: NOW }),
+    /must not contain duplicates/,
+  );
+  await assert.rejects(
+    () => pruneExpiredTokensWindow(
+      db,
+      { ...base, candidateIds: ["tok", 42] as unknown as string[] },
+      { now: NOW },
+    ),
+    /invalid stable id/,
+  );
+  await assert.rejects(
+    () => pruneExpiredTokensWindow(
+      db,
+      {
+        cursorBefore: 0,
+        cursorAfter: 1_000,
+        scannedCount: 1_000,
+        exhausted: false,
+        candidateIds: Array.from({ length: 1_001 }, (_, index) => `tok_${index}`),
+      },
+      { now: NOW },
+    ),
+    /must not exceed the scanned window/,
+  );
 });
 
 test("cursor windows report exhaustion without advancing or deleting", async (t) => {
@@ -337,7 +562,7 @@ test("audit candidate query plan uses both retention indexes", async (t) => {
   assert.match(details, /idx_audit_logs_org_created_at/);
 });
 
-test("cursor queries use rowid range searches without temporary sorting", async (t) => {
+test("cursor scans use rowid seeks and mutations use exact stable-id lookups", async (t) => {
   const { storage, db } = createStorage(t);
   const nowSeconds = Math.floor(NOW.getTime() / 1_000);
   await insertToken(storage, "tok_plan", nowSeconds - 600, 10);
@@ -371,6 +596,10 @@ test("cursor queries use rowid range searches without temporary sorting", async 
   const auditWindow = await scanExpiredAuditEntriesWindow(capturingDb, { now: NOW });
   await purgeExpiredAuditEntriesWindow(capturingDb, auditWindow, { now: NOW });
 
+  // Each table gets exactly one LIMITed scan and one exact-ID mutation. A
+  // second numeric-range COUNT would reintroduce sparse-range work in dry-run.
+  assert.equal(captured.length, 4);
+
   for (const { sql, params } of captured) {
     const plan = await storage.DB.prepare(`EXPLAIN QUERY PLAN ${sql}`)
       .bind(...params)
@@ -383,16 +612,36 @@ test("cursor queries use rowid range searches without temporary sorting", async 
 
   const tokenDelete = captured.find(({ sql }) => /DELETE FROM tokens/.test(sql));
   const auditDelete = captured.find(({ sql }) => /DELETE FROM audit_logs/.test(sql));
+  const tokenScan = captured.find(({ sql }) => /SELECT[\s\S]*FROM tokens[\s\S]*ORDER BY rowid/.test(sql));
+  const auditScan = captured.find(({ sql }) => /SELECT[\s\S]*FROM audit_logs AS logs[\s\S]*ORDER BY logs\.rowid/.test(sql));
   assert.ok(tokenDelete);
   assert.ok(auditDelete);
+  assert.ok(tokenScan);
+  assert.ok(auditScan);
+
+  for (const scan of [tokenScan, auditScan]) {
+    assert.match(scan.sql, /\bexpired\b/);
+    assert.match(scan.sql, /LIMIT \?/);
+    assert.doesNotMatch(scan.sql, /COUNT\s*\(/i);
+    const plan = await storage.DB.prepare(`EXPLAIN QUERY PLAN ${scan.sql}`)
+      .bind(...scan.params)
+      .all<{ detail: string }>();
+    assert.match(plan.results.map(({ detail }) => detail).join("\n"), /INTEGER PRIMARY KEY/);
+  }
 
   const tokenDeletePlan = await storage.DB.prepare(`EXPLAIN QUERY PLAN ${tokenDelete.sql}`)
     .bind(...tokenDelete.params)
     .all<{ detail: string }>();
-  assert.match(tokenDeletePlan.results.map(({ detail }) => detail).join("\n"), /INTEGER PRIMARY KEY/);
+  const tokenDeleteDetails = tokenDeletePlan.results.map(({ detail }) => detail).join("\n");
+  assert.match(tokenDeleteDetails, /SEARCH tokens USING INDEX .*\(id=\?\)/);
+  assert.match(tokenDeleteDetails, /SCAN json_each VIRTUAL TABLE/);
+  assert.doesNotMatch(tokenDelete.sql, /rowid\s*(?:>|<|BETWEEN)/i);
 
   const auditDeletePlan = await storage.DB.prepare(`EXPLAIN QUERY PLAN ${auditDelete.sql}`)
     .bind(...auditDelete.params)
     .all<{ detail: string }>();
-  assert.match(auditDeletePlan.results.map(({ detail }) => detail).join("\n"), /INTEGER PRIMARY KEY/);
+  const auditDeleteDetails = auditDeletePlan.results.map(({ detail }) => detail).join("\n");
+  assert.match(auditDeleteDetails, /SEARCH audit_logs USING INDEX .*\(id=\?\)/);
+  assert.match(auditDeleteDetails, /SCAN json_each VIRTUAL TABLE/);
+  assert.doesNotMatch(auditDelete.sql, /rowid\s*(?:>|<|BETWEEN)/i);
 });

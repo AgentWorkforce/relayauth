@@ -44,11 +44,14 @@ export type RetentionGcWindow = {
   cursorAfter: number;
   scannedCount: number;
   exhausted: boolean;
+  /** Stable primary-key evidence for expired rows observed by the scan. */
+  candidateIds?: readonly string[];
 };
 
 export type RetentionGcWindowScanResult = RetentionGcWindow & {
+  candidateIds: readonly string[];
   expiredCount: number;
-  /** D1 query metadata for the bounded rowid scan, when supplied by the executor. */
+  /** D1 query metadata for the bounded existing-row scan, when supplied by the executor. */
   meta?: RetentionGcRunMeta;
 };
 
@@ -87,14 +90,11 @@ const MAX_GC_BATCH_SIZE = 50_000;
 const MAX_GC_WINDOW_SIZE = 1_000;
 const DEFAULT_TOKEN_EXPIRY_GRACE_SECONDS = 60;
 
-const AUDIT_RETENTION_WINDOW_COUNT_SQL = `
-  SELECT COUNT(*) AS count
-  FROM audit_logs AS logs
-  LEFT JOIN audit_retention_config AS config
-    ON config.org_id = logs.org_id
-  WHERE logs.rowid > ?
-    AND logs.rowid <= ?
-    AND logs.created_at < date(
+const AUDIT_RETENTION_WINDOW_SCAN_SQL = `
+  SELECT
+    logs.rowid AS rowid,
+    logs.id AS id,
+    CASE WHEN logs.created_at < date(
       ?,
       printf(
         '-%d days',
@@ -105,13 +105,22 @@ const AUDIT_RETENTION_WINDOW_COUNT_SQL = `
           ELSE ?
         END
       )
-    )
+    ) THEN 1 ELSE 0 END AS expired
+  FROM audit_logs AS logs
+  LEFT JOIN audit_retention_config AS config
+    ON config.org_id = logs.org_id
+  WHERE logs.rowid > ?
+  ORDER BY logs.rowid
+  LIMIT ?
 `;
 
 const AUDIT_RETENTION_WINDOW_DELETE_SQL = `
   DELETE FROM audit_logs
-  WHERE rowid > ?
-    AND rowid <= ?
+  WHERE id IN (
+      SELECT value
+      FROM json_each(?)
+      WHERE type = 'text'
+    )
     AND created_at < date(
       ?,
       printf(
@@ -180,48 +189,49 @@ const AUDIT_RETENTION_CANDIDATES_SQL = `
 
 /**
  * Examines the next bounded set of existing token rows in intrinsic rowid
- * order, then counts expired tokens only inside that closed range.
+ * order and carries the stable IDs of expired candidates into the mutation.
  *
- * The first statement is a rowid B-tree range seek. It efficiently crosses
- * sparse rowid gaps without evaluating expiry predicates outside the returned
- * window. Once cursorAfter is fixed, later inserts receive higher rowids and
- * cannot enlarge the range; concurrent deletes can only shrink it.
+ * Expiry is projected onto the same LIMITed rows rather than counted in a
+ * second numeric range. Sparse rowid gaps therefore do not add expiry work,
+ * and later rowid reuse cannot enlarge the observed candidate set.
  */
 export async function scanExpiredTokensWindow(
   db: RetentionGcCursorSqlExecutor,
   options: TokenGcWindowOptions = {},
 ): Promise<RetentionGcWindowScanResult> {
-  const window = await scanRowidWindow(db, "tokens", options);
-  if (window.scannedCount === 0) {
-    return { ...window, expiredCount: 0 };
-  }
-
+  const cursorBefore = normalizeCursor(options.cursor);
+  const limit = normalizeWindowSize(options.limit);
   const cutoff = createTokenCutoff(options.now, options.expiryGraceSeconds);
-  const row = await db
+  const result = await db
     .prepare(
       `
-        SELECT COUNT(*) AS count
+        SELECT
+          rowid AS rowid,
+          id AS id,
+          CASE
+            WHEN expires_at IS NOT NULL AND expires_at < ? THEN 1
+            ELSE 0
+          END AS expired
         FROM tokens
         WHERE rowid > ?
-          AND rowid <= ?
-          AND expires_at IS NOT NULL
-          AND expires_at < ?
+        ORDER BY rowid
+        LIMIT ?
       `,
     )
-    .bind(window.cursorBefore, window.cursorAfter, cutoff)
-    .first<{ count?: unknown }>();
+    .bind(cutoff, cursorBefore, limit)
+    .all<RetentionGcCandidateRow>();
 
-  return { ...window, expiredCount: readCount(row?.count) };
+  return buildCandidateWindow(result, cursorBefore, limit);
 }
 
-/** Deletes expired tokens only inside a previously scanned closed window. */
+/** Deletes only the stable token candidates carried by a prior bounded scan. */
 export async function pruneExpiredTokensWindow(
   db: RetentionGcSqlExecutor,
   window: RetentionGcWindow,
   options: Pick<TokenGcWindowOptions, "now" | "expiryGraceSeconds"> = {},
 ): Promise<RetentionGcRunResult> {
   const normalizedWindow = normalizeClosedWindow(window);
-  if (normalizedWindow.scannedCount === 0) {
+  if (normalizedWindow.candidateIds.length === 0) {
     return { deletedCount: 0 };
   }
 
@@ -230,55 +240,55 @@ export async function pruneExpiredTokensWindow(
     .prepare(
       `
         DELETE FROM tokens
-        WHERE rowid > ?
-          AND rowid <= ?
+        WHERE id IN (
+            SELECT value
+            FROM json_each(?)
+            WHERE type = 'text'
+          )
           AND expires_at IS NOT NULL
           AND expires_at < ?
       `,
     )
-    .bind(normalizedWindow.cursorBefore, normalizedWindow.cursorAfter, cutoff)
+    .bind(JSON.stringify(normalizedWindow.candidateIds), cutoff)
     .run();
 
   return toGcRunResult(result);
 }
 
 /**
- * Examines the next bounded set of audit rows in intrinsic rowid order and
- * applies per-organization retention only inside that closed range.
+ * Examines the next bounded set of audit rows in intrinsic rowid order,
+ * projecting per-organization expiry onto those same rows.
  */
 export async function scanExpiredAuditEntriesWindow(
   db: RetentionGcCursorSqlExecutor,
   options: RetentionGcWindowOptions = {},
 ): Promise<RetentionGcWindowScanResult> {
-  const window = await scanRowidWindow(db, "audit_logs", options);
-  if (window.scannedCount === 0) {
-    return { ...window, expiredCount: 0 };
-  }
-
+  const cursorBefore = normalizeCursor(options.cursor);
+  const limit = normalizeWindowSize(options.limit);
   const now = normalizeNow(options.now).toISOString();
-  const row = await db
-    .prepare(AUDIT_RETENTION_WINDOW_COUNT_SQL)
+  const result = await db
+    .prepare(AUDIT_RETENTION_WINDOW_SCAN_SQL)
     .bind(
-      window.cursorBefore,
-      window.cursorAfter,
       now,
       MIN_RETENTION_DAYS,
       MAX_RETENTION_DAYS,
       DEFAULT_RETENTION_DAYS,
+      cursorBefore,
+      limit,
     )
-    .first<{ count?: unknown }>();
+    .all<RetentionGcCandidateRow>();
 
-  return { ...window, expiredCount: readCount(row?.count) };
+  return buildCandidateWindow(result, cursorBefore, limit);
 }
 
-/** Deletes expired audit rows only inside a previously scanned closed window. */
+/** Deletes only the stable audit candidates carried by a prior bounded scan. */
 export async function purgeExpiredAuditEntriesWindow(
   db: RetentionGcSqlExecutor,
   window: RetentionGcWindow,
   options: Pick<RetentionGcWindowOptions, "now"> = {},
 ): Promise<RetentionGcRunResult> {
   const normalizedWindow = normalizeClosedWindow(window);
-  if (normalizedWindow.scannedCount === 0) {
+  if (normalizedWindow.candidateIds.length === 0) {
     return { deletedCount: 0 };
   }
 
@@ -286,8 +296,7 @@ export async function purgeExpiredAuditEntriesWindow(
   const result = await db
     .prepare(AUDIT_RETENTION_WINDOW_DELETE_SQL)
     .bind(
-      normalizedWindow.cursorBefore,
-      normalizedWindow.cursorAfter,
+      JSON.stringify(normalizedWindow.candidateIds),
       now,
       MIN_RETENTION_DAYS,
       MAX_RETENTION_DAYS,
@@ -434,26 +443,39 @@ export {
   MAX_GC_WINDOW_SIZE,
 };
 
-async function scanRowidWindow(
-  db: RetentionGcCursorSqlExecutor,
-  table: "tokens" | "audit_logs",
-  options: RetentionGcWindowOptions,
-): Promise<RetentionGcWindow & { meta?: RetentionGcRunMeta }> {
-  const cursorBefore = normalizeCursor(options.cursor);
-  const limit = normalizeWindowSize(options.limit);
-  const result = await db
-    .prepare(`SELECT rowid AS rowid FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`)
-    .bind(cursorBefore, limit)
-    .all<{ rowid?: unknown }>();
+type RetentionGcCandidateRow = {
+  rowid?: unknown;
+  id?: unknown;
+  expired?: unknown;
+};
+
+function buildCandidateWindow(
+  result: SqlAllResult<RetentionGcCandidateRow>,
+  cursorBefore: number,
+  limit: number,
+): RetentionGcWindowScanResult {
   const rows = result.results ?? [];
-  const rowids = rows.map((row) => readRowid(row.rowid));
+  const rowids: number[] = [];
+  const candidateIds: string[] = [];
+  const observedIds = new Set<string>();
 
   let previous = cursorBefore;
-  for (const rowid of rowids) {
+  for (const row of rows) {
+    const rowid = readRowid(row.rowid);
     if (rowid <= previous) {
       throw new Error("rowid window must be strictly increasing after cursor");
     }
     previous = rowid;
+    rowids.push(rowid);
+
+    const id = readStableId(row.id);
+    if (observedIds.has(id)) {
+      throw new Error("candidate window returned a duplicate stable id");
+    }
+    observedIds.add(id);
+    if (readExpiredFlag(row.expired)) {
+      candidateIds.push(id);
+    }
   }
 
   const cursorAfter = rowids.at(-1) ?? cursorBefore;
@@ -461,6 +483,8 @@ async function scanRowidWindow(
     cursorBefore,
     cursorAfter,
     scannedCount: rowids.length,
+    candidateIds,
+    expiredCount: candidateIds.length,
     exhausted: rowids.length < limit,
     ...(result.meta ? { meta: result.meta } : {}),
   };
@@ -517,7 +541,9 @@ function normalizeCursor(value: number | undefined): number {
   return cursor;
 }
 
-function normalizeClosedWindow(window: RetentionGcWindow): RetentionGcWindow {
+function normalizeClosedWindow(
+  window: RetentionGcWindow,
+): RetentionGcWindow & { candidateIds: readonly string[] } {
   const cursorBefore = normalizeCursor(window.cursorBefore);
   const cursorAfter = normalizeCursor(window.cursorAfter);
   if (!Number.isInteger(window.scannedCount)
@@ -531,11 +557,28 @@ function normalizeClosedWindow(window: RetentionGcWindow): RetentionGcWindow {
   if (window.scannedCount > 0 && cursorAfter <= cursorBefore) {
     throw new Error("non-empty window must advance the cursor");
   }
+
+  if (!Array.isArray(window.candidateIds)) {
+    throw new Error("window must include candidateIds from its bounded scan");
+  }
+  if (window.candidateIds.length > window.scannedCount
+    || window.candidateIds.length > MAX_GC_WINDOW_SIZE) {
+    throw new Error("candidateIds must not exceed the scanned window");
+  }
+  const candidateIds = window.candidateIds.map((id) => readStableId(id));
+  if (new Set(candidateIds).size !== candidateIds.length) {
+    throw new Error("candidateIds must not contain duplicates");
+  }
+  const expiredCount = (window as RetentionGcWindow & { expiredCount?: unknown }).expiredCount;
+  if (expiredCount !== undefined && readCountStrict(expiredCount) !== candidateIds.length) {
+    throw new Error("expiredCount must match candidateIds evidence");
+  }
   return {
     cursorBefore,
     cursorAfter,
     scannedCount: window.scannedCount,
     exhausted: Boolean(window.exhausted),
+    candidateIds,
   };
 }
 
@@ -547,6 +590,29 @@ function readRowid(value: unknown): number {
     throw new Error("rowid window returned an invalid rowid");
   }
   return rowid;
+}
+
+function readStableId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("candidate window returned an invalid stable id");
+  }
+  return value;
+}
+
+function readExpiredFlag(value: unknown): boolean {
+  if (value === 1 || value === "1") return true;
+  if (value === 0 || value === "0") return false;
+  throw new Error("candidate window returned an invalid expiry flag");
+}
+
+function readCountStrict(value: unknown): number {
+  const count = typeof value === "string" && /^\d+$/.test(value)
+    ? Number.parseInt(value, 10)
+    : value;
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+    throw new Error("expiredCount must be a non-negative safe integer");
+  }
+  return count;
 }
 
 function toGcRunResult(result: SqlRunResult): RetentionGcRunResult {
