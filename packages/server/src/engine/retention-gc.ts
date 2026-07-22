@@ -89,48 +89,59 @@ const DEFAULT_TOKEN_EXPIRY_GRACE_SECONDS = 60;
 
 const AUDIT_RETENTION_WINDOW_COUNT_SQL = `
   SELECT COUNT(*) AS count
-  FROM audit_logs AS logs
-  LEFT JOIN audit_retention_config AS config
-    ON config.org_id = logs.org_id
-  WHERE logs.rowid > ?
-    AND logs.rowid <= ?
-    AND logs.created_at < date(
-      ?,
-      printf(
-        '-%d days',
-        CASE
-          WHEN typeof(config.retention_days) = 'integer'
-            AND config.retention_days BETWEEN ? AND ?
-          THEN config.retention_days
-          ELSE ?
-        END
+  FROM (
+    SELECT logs.rowid
+    FROM audit_logs AS logs
+    LEFT JOIN audit_retention_config AS config
+      ON config.org_id = logs.org_id
+    WHERE logs.rowid > ?
+      AND logs.rowid <= ?
+      AND logs.created_at < date(
+        ?,
+        printf(
+          '-%d days',
+          CASE
+            WHEN typeof(config.retention_days) = 'integer'
+              AND config.retention_days BETWEEN ? AND ?
+            THEN config.retention_days
+            ELSE ?
+          END
+        )
       )
-    )
+    ORDER BY logs.rowid
+    LIMIT ?
+  )
 `;
 
 const AUDIT_RETENTION_WINDOW_DELETE_SQL = `
   DELETE FROM audit_logs
-  WHERE rowid > ?
-    AND rowid <= ?
-    AND created_at < date(
-      ?,
-      printf(
-        '-%d days',
-        COALESCE(
-          (
-            SELECT CASE
-              WHEN typeof(config.retention_days) = 'integer'
-                AND config.retention_days BETWEEN ? AND ?
-              THEN config.retention_days
-              ELSE NULL
-            END
-            FROM audit_retention_config AS config
-            WHERE config.org_id = audit_logs.org_id
-          ),
-          ?
+  WHERE rowid IN (
+    SELECT logs.rowid
+    FROM audit_logs AS logs
+    WHERE logs.rowid > ?
+      AND logs.rowid <= ?
+      AND logs.created_at < date(
+        ?,
+        printf(
+          '-%d days',
+          COALESCE(
+            (
+              SELECT CASE
+                WHEN typeof(config.retention_days) = 'integer'
+                  AND config.retention_days BETWEEN ? AND ?
+                THEN config.retention_days
+                ELSE NULL
+              END
+              FROM audit_retention_config AS config
+              WHERE config.org_id = logs.org_id
+            ),
+            ?
+          )
         )
       )
-    )
+    ORDER BY logs.rowid
+    LIMIT ?
+  )
 `;
 
 // The two branches are disjoint. Default/malformed configs use the global
@@ -184,8 +195,10 @@ const AUDIT_RETENTION_CANDIDATES_SQL = `
  *
  * The first statement is a rowid B-tree range seek. It efficiently crosses
  * sparse rowid gaps without evaluating expiry predicates outside the returned
- * window. Once cursorAfter is fixed, later inserts receive higher rowids and
- * cannot enlarge the range; concurrent deletes can only shrink it.
+ * window. Candidate counting and deletion each apply a semantic LIMIT equal
+ * to this scan's observed row count. That bound remains valid even if SQLite
+ * reuses a deleted maximum rowid and repopulates the closed numeric range.
+ * Rows inserted or expiring behind the cursor are next-sweep work.
  */
 export async function scanExpiredTokensWindow(
   db: RetentionGcCursorSqlExecutor,
@@ -201,14 +214,19 @@ export async function scanExpiredTokensWindow(
     .prepare(
       `
         SELECT COUNT(*) AS count
-        FROM tokens
-        WHERE rowid > ?
-          AND rowid <= ?
-          AND expires_at IS NOT NULL
-          AND expires_at < ?
+        FROM (
+          SELECT rowid
+          FROM tokens
+          WHERE rowid > ?
+            AND rowid <= ?
+            AND expires_at IS NOT NULL
+            AND expires_at < ?
+          ORDER BY rowid
+          LIMIT ?
+        )
       `,
     )
-    .bind(window.cursorBefore, window.cursorAfter, cutoff)
+    .bind(window.cursorBefore, window.cursorAfter, cutoff, window.scannedCount)
     .first<{ count?: unknown }>();
 
   return { ...window, expiredCount: readCount(row?.count) };
@@ -230,13 +248,24 @@ export async function pruneExpiredTokensWindow(
     .prepare(
       `
         DELETE FROM tokens
-        WHERE rowid > ?
-          AND rowid <= ?
-          AND expires_at IS NOT NULL
-          AND expires_at < ?
+        WHERE rowid IN (
+          SELECT rowid
+          FROM tokens
+          WHERE rowid > ?
+            AND rowid <= ?
+            AND expires_at IS NOT NULL
+            AND expires_at < ?
+          ORDER BY rowid
+          LIMIT ?
+        )
       `,
     )
-    .bind(normalizedWindow.cursorBefore, normalizedWindow.cursorAfter, cutoff)
+    .bind(
+      normalizedWindow.cursorBefore,
+      normalizedWindow.cursorAfter,
+      cutoff,
+      normalizedWindow.scannedCount,
+    )
     .run();
 
   return toGcRunResult(result);
@@ -244,7 +273,9 @@ export async function pruneExpiredTokensWindow(
 
 /**
  * Examines the next bounded set of audit rows in intrinsic rowid order and
- * applies per-organization retention only inside that closed range.
+ * applies per-organization retention only inside that closed range. Candidate
+ * counting and deletion are independently limited to the scan's observed row
+ * count, so rowid reuse cannot enlarge either statement's work.
  */
 export async function scanExpiredAuditEntriesWindow(
   db: RetentionGcCursorSqlExecutor,
@@ -265,6 +296,7 @@ export async function scanExpiredAuditEntriesWindow(
       MIN_RETENTION_DAYS,
       MAX_RETENTION_DAYS,
       DEFAULT_RETENTION_DAYS,
+      window.scannedCount,
     )
     .first<{ count?: unknown }>();
 
@@ -292,6 +324,7 @@ export async function purgeExpiredAuditEntriesWindow(
       MIN_RETENTION_DAYS,
       MAX_RETENTION_DAYS,
       DEFAULT_RETENTION_DAYS,
+      normalizedWindow.scannedCount,
     )
     .run();
 
