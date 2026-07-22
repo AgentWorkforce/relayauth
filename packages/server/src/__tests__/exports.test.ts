@@ -48,6 +48,26 @@ test("TestIndexExportsAll", () => {
     "function",
     "index should export purgeExpiredEntriesBatch()",
   );
+  assert.equal(
+    typeof server.scanExpiredTokensWindow,
+    "function",
+    "index should export scanExpiredTokensWindow()",
+  );
+  assert.equal(
+    typeof server.pruneExpiredTokensWindow,
+    "function",
+    "index should export pruneExpiredTokensWindow()",
+  );
+  assert.equal(
+    typeof server.scanExpiredAuditEntriesWindow,
+    "function",
+    "index should export scanExpiredAuditEntriesWindow()",
+  );
+  assert.equal(
+    typeof server.purgeExpiredAuditEntriesWindow,
+    "function",
+    "index should export purgeExpiredAuditEntriesWindow()",
+  );
   assert.equal(typeof server.requireScope, "function", "index should export requireScope()");
   assert.equal(typeof server.startServer, "function", "index should export startServer()");
 });
