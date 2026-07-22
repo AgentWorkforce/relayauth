@@ -38,6 +38,16 @@ test("TestCreateAppHasAllRoutes", () => {
 
 test("TestIndexExportsAll", () => {
   assert.equal(typeof server.createApp, "function", "index should export createApp()");
+  assert.equal(
+    typeof server.pruneExpiredTokens,
+    "function",
+    "index should export pruneExpiredTokens()",
+  );
+  assert.equal(
+    typeof server.purgeExpiredEntriesBatch,
+    "function",
+    "index should export purgeExpiredEntriesBatch()",
+  );
   assert.equal(typeof server.requireScope, "function", "index should export requireScope()");
   assert.equal(typeof server.startServer, "function", "index should export startServer()");
 });
