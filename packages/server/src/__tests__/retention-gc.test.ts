@@ -77,6 +77,68 @@ async function readIds(storage: SqliteStorage, table: "tokens" | "audit_logs"): 
   return result.results.map((row) => row.id);
 }
 
+function mutateAfterNextWindowScan(
+  storage: SqliteStorage,
+  table: "tokens" | "audit_logs",
+  mutate: () => Promise<void>,
+): RetentionGcCursorSqlExecutor {
+  let mutated = false;
+
+  return {
+    prepare(sql) {
+      const prepared = storage.DB.prepare(sql);
+      const maybeMutate = async <T>(result: { results?: T[]; meta?: unknown }) => {
+        if (
+          !mutated &&
+          new RegExp(`\\bFROM\\s+${table}\\b`, "i").test(sql) &&
+          /ORDER BY/i.test(sql) &&
+          /LIMIT/i.test(sql)
+        ) {
+          mutated = true;
+          await mutate();
+        }
+        return result;
+      };
+
+      return {
+        bind(...params: unknown[]) {
+          const bound = prepared.bind(...params);
+          return {
+            bind: () => {
+              throw new Error("unexpected second bind");
+            },
+            all: async <T>() => maybeMutate(await bound.all<T>()),
+            run: () => bound.run(),
+            first: <T>() => bound.first<T>(),
+          };
+        },
+        all: async <T>() => maybeMutate(await prepared.all<T>()),
+        run: () => prepared.run(),
+        first: <T>() => prepared.first<T>(),
+      };
+    },
+  };
+}
+
+async function readRowidSummary(
+  storage: SqliteStorage,
+  table: "tokens" | "audit_logs",
+): Promise<{ rowCount: number; minRowid: number; maxRowid: number }> {
+  const row = await storage.DB.prepare(
+    `SELECT COUNT(*) AS rowCount, MIN(rowid) AS minRowid, MAX(rowid) AS maxRowid FROM ${table}`,
+  ).first<{ rowCount: number; minRowid: number; maxRowid: number }>();
+  assert.ok(row);
+
+  // node:sqlite returns null-prototype rows while better-sqlite3 returns plain
+  // objects. Normalize the test observation so both supported backends assert
+  // the retention behavior rather than their row-object representation.
+  return {
+    rowCount: Number(row.rowCount),
+    minRowid: Number(row.minRowid),
+    maxRowid: Number(row.maxRowid),
+  };
+}
+
 test("pruneExpiredTokens bounds a batch and preserves verifier clock skew", async (t) => {
   const { storage, db } = createStorage(t);
   const nowSeconds = Math.floor(NOW.getTime() / 1_000);
@@ -232,6 +294,108 @@ test("audit cursor windows apply config/default retention inside a bounded rowid
   assert.equal(second.scannedCount, 1);
   assert.equal(second.expiredCount, 1);
   assert.equal(second.exhausted, true);
+});
+
+test("token windows retain exact candidates across max-rowid reuse", async (t) => {
+  const { storage, db } = createStorage(t);
+  const nowSeconds = Math.floor(NOW.getTime() / 1_000);
+
+  await insertToken(storage, "tok_original_first", nowSeconds - 600, 1);
+  await insertToken(storage, "tok_original_max", nowSeconds - 600, 2_000);
+
+  const racingDb = mutateAfterNextWindowScan(storage, "tokens", async () => {
+    await storage.DB.prepare("DELETE FROM tokens WHERE rowid = ?").bind(2_000).run();
+    await storage.DB.prepare(
+      `
+        WITH RECURSIVE seq(n) AS (
+          SELECT 2
+          UNION ALL
+          SELECT n + 1 FROM seq WHERE n < 2000
+        )
+        INSERT INTO tokens (id, identity_id, expires_at, status, created_at)
+        SELECT 'tok_reused_live_' || n, 'identity_test', ?, 'active', ?
+        FROM seq
+      `,
+    )
+      .bind(nowSeconds + 600, NOW.toISOString())
+      .run();
+  });
+
+  const window = await scanExpiredTokensWindow(racingDb, { cursor: 0, limit: 2, now: NOW });
+  assert.deepEqual(await readRowidSummary(storage, "tokens"), {
+    rowCount: 2_000,
+    minRowid: 1,
+    maxRowid: 2_000,
+  });
+  assert.equal(window.scannedCount, 2);
+  assert.equal(window.expiredCount, 2);
+  assert.deepEqual(
+    (window as typeof window & { candidateIds?: string[] }).candidateIds,
+    ["tok_original_first", "tok_original_max"],
+  );
+
+  const pruned = await pruneExpiredTokensWindow(db, window, { now: NOW });
+  assert.equal(pruned.deletedCount, 1);
+  assert.equal((await readIds(storage, "tokens")).includes("tok_original_first"), false);
+  assert.equal((await readIds(storage, "tokens")).includes("tok_reused_live_2000"), true);
+});
+
+test("audit windows retain exact candidates across max-rowid reuse", async (t) => {
+  const { storage, db } = createStorage(t);
+  const expiredAt = daysBeforeNow(100);
+  const liveAt = daysBeforeNow(1);
+
+  await insertAuditLog(storage, "aud_original_first", "org_default", expiredAt, 1);
+  await insertAuditLog(storage, "aud_original_max", "org_default", expiredAt, 2_000);
+
+  const racingDb = mutateAfterNextWindowScan(storage, "audit_logs", async () => {
+    await storage.DB.prepare("DELETE FROM audit_logs WHERE rowid = ?").bind(2_000).run();
+    await storage.DB.prepare(
+      `
+        WITH RECURSIVE seq(n) AS (
+          SELECT 2
+          UNION ALL
+          SELECT n + 1 FROM seq WHERE n < 2000
+        )
+        INSERT INTO audit_logs (
+          id, action, identity_id, org_id, result, timestamp, created_at
+        )
+        SELECT
+          'aud_reused_live_' || n,
+          'token.validated',
+          'identity_test',
+          'org_default',
+          'allowed',
+          ?,
+          ?
+        FROM seq
+      `,
+    )
+      .bind(liveAt, liveAt)
+      .run();
+  });
+
+  const window = await scanExpiredAuditEntriesWindow(racingDb, {
+    cursor: 0,
+    limit: 2,
+    now: NOW,
+  });
+  assert.deepEqual(await readRowidSummary(storage, "audit_logs"), {
+    rowCount: 2_000,
+    minRowid: 1,
+    maxRowid: 2_000,
+  });
+  assert.equal(window.scannedCount, 2);
+  assert.equal(window.expiredCount, 2);
+  assert.deepEqual(
+    (window as typeof window & { candidateIds?: string[] }).candidateIds,
+    ["aud_original_first", "aud_original_max"],
+  );
+
+  const purged = await purgeExpiredAuditEntriesWindow(db, window, { now: NOW });
+  assert.equal(purged.deletedCount, 1);
+  assert.equal((await readIds(storage, "audit_logs")).includes("aud_original_first"), false);
+  assert.equal((await readIds(storage, "audit_logs")).includes("aud_reused_live_2000"), true);
 });
 
 test("cursor windows report exhaustion without advancing or deleting", async (t) => {
