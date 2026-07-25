@@ -12,7 +12,7 @@ import { signToken } from "../lib/sign.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { StoredApiKey } from "../storage/api-key-types.js";
-import type { AuditLogWriteEntry, AuthStorage, RevocationStorage } from "../storage/index.js";
+import type { AuditLogWriteEntry, AuthStorage, StoredTokenRecord } from "../storage/index.js";
 
 type IssueTokenRequest = {
   identityId?: string;
@@ -113,34 +113,6 @@ type RelayhistoryAssertionResponse = {
   tokenType: "Bearer";
 };
 
-type TokenRow = {
-  id?: string | null;
-  token_id?: string | null;
-  jti?: string | null;
-  identity_id?: string | null;
-  status?: string | null;
-  session_id?: string | null;
-  expires_at?: number | string | null;
-};
-
-type SqlPrepared = {
-  bind(...params: unknown[]): {
-    all<T = unknown>(): Promise<{ results: T[] }>;
-    first<T = unknown>(): Promise<T | null>;
-    run(): Promise<{ success: boolean; meta?: { changes?: number } }>;
-  };
-};
-
-type SqlBackedStorage = AuthStorage & {
-  DB: {
-    prepare(sql: string): SqlPrepared;
-  };
-  revocations: RevocationStorage & {
-    isRevoked?(jti: string): Promise<boolean>;
-    revoke?(jti: string, expiresAt: number): Promise<void>;
-  };
-};
-
 const tokens = new Hono<AppEnv>();
 
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 3600;
@@ -157,40 +129,6 @@ const RELAYHISTORY_ASSERTION_SCOPE = "relayauth:assertion:create:relayhistory";
 const RELAYHISTORY_ASSERTION_AUDIENCE = "relayhistory";
 const MAX_RELAYHISTORY_ASSERTION_TTL_SECONDS = 60;
 const RELAYHISTORY_ASSERTION_SCOPES = ["rth:read", "rth:sync"] as const;
-
-const SELECT_TOKEN_BY_ID_SQL = `
-  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
-  FROM tokens
-  WHERE id = ? OR token_id = ? OR jti = ?
-  LIMIT 1
-`;
-
-const SELECT_TOKENS_BY_IDENTITY_SQL = `
-  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
-  FROM tokens
-  WHERE identity_id = ? AND status = 'active'
-`;
-
-const SELECT_TOKENS_BY_SESSION_SQL = `
-  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
-  FROM tokens
-  WHERE session_id = ? AND status = 'active'
-`;
-
-const INSERT_TOKEN_SQL = `
-  INSERT INTO tokens (
-    id,
-    token_id,
-    jti,
-    identity_id,
-    session_id,
-    issued_at,
-    expires_at,
-    status,
-    created_at
-  )
-  VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
-`;
 
 tokens.post("/", async (c) => {
   const auth = await authenticateAndAuthorizeFromContext(
@@ -212,7 +150,7 @@ tokens.post("/", async (c) => {
     return c.json({ error: "identityId is required" }, 400);
   }
 
-  const storage = getSqlStorage(c.get("storage"));
+  const storage = c.get("storage");
   const identity = await storage.identities.get(identityId);
   if (!identity || identity.orgId !== auth.claims.org) {
     return c.json({ error: "identity_not_found" }, 404);
@@ -272,7 +210,7 @@ tokens.post("/workspace", async (c) => {
     return c.json({ error: "insufficient_scope" }, 403);
   }
 
-  const storage = getSqlStorage(c.get("storage"));
+  const storage = c.get("storage");
   const key = generateApiKey(WORKSPACE_TOKEN_PREFIX);
   const createdAt = new Date().toISOString();
   const name = normalizeOptionalString(body.name) ?? `workspace:${workspaceId}`;
@@ -304,7 +242,7 @@ tokens.post("/agent", async (c) => {
     return c.json({ error: auth.error, code: auth.code }, auth.status);
   }
 
-  const storage = getSqlStorage(c.get("storage"));
+  const storage = c.get("storage");
   const workspaceToken = await resolveWorkspaceToken(storage, auth.claims);
   if (!workspaceToken) {
     return c.json({ error: "workspace_token_required", code: "workspace_token_required" }, 401);
@@ -381,7 +319,7 @@ tokens.post("/path", async (c) => {
     return c.json({ error: auth.error, code: auth.code }, auth.status);
   }
 
-  const storage = getSqlStorage(c.get("storage"));
+  const storage = c.get("storage");
   const workspaceToken = await resolveWorkspaceToken(storage, auth.claims);
   if (!workspaceToken) {
     return c.json({ error: "workspace_token_required", code: "workspace_token_required" }, 401);
@@ -485,7 +423,7 @@ tokens.post("/workspace-path", async (c) => {
     return c.json({ error: "workspaceId is required", code: "workspaceId_required" }, 400);
   }
 
-  const storage = getSqlStorage(c.get("storage"));
+  const storage = c.get("storage");
   // Direct workspace-path minting is intentionally equivalent to:
   //   POST /v1/tokens/workspace (org API key + caller-supplied workspaceId)
   // followed by /v1/tokens/path.
@@ -587,7 +525,7 @@ tokens.post("/relayhistory-assertion", async (c) => {
     return c.json({ error: request.error, code: request.code }, request.status);
   }
 
-  const storage = getSqlStorage(c.get("storage"));
+  const storage = c.get("storage");
   const assertion = await issueRelayhistoryAssertion(storage, c.env, {
     deferTask: c.get("deferTask"),
     orgId: request.orgId,
@@ -613,7 +551,7 @@ tokens.post("/refresh", async (c) => {
     return c.json({ error: "refreshToken is required" }, 400);
   }
 
-  const storage = getSqlStorage(c.get("storage"));
+  const storage = c.get("storage");
   const verification = await verifyToken(refreshToken, c.env, { audience: [REFRESH_AUDIENCE] });
   if (!verification.ok) {
     return c.json({ error: verification.error }, 401);
@@ -728,7 +666,7 @@ tokens.post("/revoke", async (c) => {
     return c.json({ error: "tokenId, identityId, or sessionId is required" }, 400);
   }
 
-  const storage = getSqlStorage(c.get("storage"));
+  const storage = c.get("storage");
   const targetTokens = tokenId
     ? await findTargetTokensByTokenId(storage, tokenId)
     : identityId
@@ -739,7 +677,7 @@ tokens.post("/revoke", async (c) => {
     return c.json({ error: "token_not_found" }, 404);
   }
 
-  const firstIdentityId = normalizeOptionalString(targetTokens[0]?.identity_id);
+  const firstIdentityId = normalizeOptionalString(targetTokens[0]?.identityId);
   const identity = firstIdentityId ? await storage.identities.get(firstIdentityId) : null;
   if (!identity || identity.orgId !== auth.claims.org) {
     return c.json({ error: "token_not_found" }, 404);
@@ -776,7 +714,7 @@ tokens.get("/introspect", async (c) => {
     return c.json({ error: "token query parameter is required" }, 400);
   }
 
-  const storage = getSqlStorage(c.get("storage"));
+  const storage = c.get("storage");
   const verification = await verifyToken(token, c.env);
   if (!verification.ok) {
     return c.json(null, 200);
@@ -805,7 +743,7 @@ tokens.get("/introspect", async (c) => {
 export default tokens;
 
 async function issueTokenPair(
-  storage: SqlBackedStorage,
+  storage: AuthStorage,
   env: AppEnv["Bindings"],
   identity: StoredIdentity,
   options: {
@@ -901,7 +839,7 @@ async function issueTokenPair(
 }
 
 async function issueRelayhistoryAssertion(
-  storage: SqlBackedStorage,
+  storage: AuthStorage,
   env: AppEnv["Bindings"],
   options: {
     deferTask: DeferredTaskScheduler;
@@ -964,27 +902,25 @@ async function issueRelayhistoryAssertion(
 }
 
 async function persistIssuedToken(
-  storage: SqlBackedStorage,
+  storage: AuthStorage,
   identityId: string,
   claims: RelayAuthTokenClaims,
 ): Promise<void> {
   const createdAt = new Date(claims.iat * 1000).toISOString();
-  await storage.DB.prepare(INSERT_TOKEN_SQL)
-    .bind(
-      claims.jti,
-      claims.jti,
-      claims.jti,
-      identityId,
-      claims.sid ?? null,
-      claims.iat,
-      claims.exp,
-      createdAt,
-    )
-    .run();
+  await storage.tokens.persistIssued({
+    id: claims.jti,
+    tokenId: claims.jti,
+    jti: claims.jti,
+    identityId,
+    sessionId: claims.sid ?? null,
+    issuedAt: claims.iat,
+    expiresAt: claims.exp,
+    createdAt,
+  });
 }
 
 async function writeTokenAudit(
-  storage: SqlBackedStorage,
+  storage: AuthStorage,
   options: {
     action: "token.issued" | "token.refreshed" | "token.revoked";
     identity: StoredIdentity;
@@ -996,7 +932,7 @@ async function writeTokenAudit(
 }
 
 async function writeTokenAuditBatch(
-  storage: SqlBackedStorage,
+  storage: AuthStorage,
   options: {
     action: "token.issued" | "token.refreshed" | "token.revoked";
     identity: StoredIdentity;
@@ -1033,7 +969,7 @@ function createTokenAuditEntry(
 }
 
 async function writeAssertionAuditBatch(
-  storage: SqlBackedStorage,
+  storage: AuthStorage,
   options: {
     actorId: string;
     actorOrgId: string;
@@ -1063,43 +999,39 @@ async function writeAssertionAuditBatch(
   }]);
 }
 
-async function findTargetTokensByTokenId(storage: SqlBackedStorage, tokenId: string): Promise<TokenRow[]> {
+async function findTargetTokensByTokenId(storage: AuthStorage, tokenId: string): Promise<StoredTokenRecord[]> {
   const row = await findStoredTokenById(storage, tokenId);
   return row ? [row] : [];
 }
 
-async function findTargetTokensByIdentityId(storage: SqlBackedStorage, identityId: string): Promise<TokenRow[]> {
+async function findTargetTokensByIdentityId(storage: AuthStorage, identityId: string): Promise<StoredTokenRecord[]> {
   const normalizedIdentityId = normalizeOptionalString(identityId);
   if (!normalizedIdentityId) {
     return [];
   }
 
-  const result = await storage.DB.prepare(SELECT_TOKENS_BY_IDENTITY_SQL).bind(normalizedIdentityId).all<TokenRow>();
-  return result.results;
+  return storage.tokens.listActiveByIdentityId(normalizedIdentityId);
 }
 
-async function findTargetTokensBySessionId(storage: SqlBackedStorage, sessionId: string): Promise<TokenRow[]> {
+async function findTargetTokensBySessionId(storage: AuthStorage, sessionId: string): Promise<StoredTokenRecord[]> {
   const normalizedSessionId = normalizeOptionalString(sessionId);
   if (!normalizedSessionId) {
     return [];
   }
 
-  const result = await storage.DB.prepare(SELECT_TOKENS_BY_SESSION_SQL).bind(normalizedSessionId).all<TokenRow>();
-  return result.results;
+  return storage.tokens.listActiveBySessionId(normalizedSessionId);
 }
 
-async function findStoredTokenById(storage: SqlBackedStorage, tokenId: string): Promise<TokenRow | null> {
+async function findStoredTokenById(storage: AuthStorage, tokenId: string): Promise<StoredTokenRecord | null> {
   const normalizedTokenId = normalizeOptionalString(tokenId);
   if (!normalizedTokenId) {
     return null;
   }
 
-  return storage.DB.prepare(SELECT_TOKEN_BY_ID_SQL)
-    .bind(normalizedTokenId, normalizedTokenId, normalizedTokenId)
-    .first<TokenRow>();
+  return storage.tokens.getById(normalizedTokenId);
 }
 
-async function isTokenRevoked(storage: SqlBackedStorage, jti: string): Promise<boolean> {
+async function isTokenRevoked(storage: AuthStorage, jti: string): Promise<boolean> {
   if (typeof storage.revocations.isRevoked === "function") {
     return storage.revocations.isRevoked(jti);
   }
@@ -1108,7 +1040,7 @@ async function isTokenRevoked(storage: SqlBackedStorage, jti: string): Promise<b
 }
 
 async function revokePreviousRefreshJti(
-  storage: SqlBackedStorage,
+  storage: AuthStorage,
   identity: StoredIdentity,
   previousJti: string,
   previousExp: number,
@@ -1135,7 +1067,7 @@ async function revokePreviousRefreshJti(
 }
 
 async function cascadeRevokeSession(
-  storage: SqlBackedStorage,
+  storage: AuthStorage,
   identity: StoredIdentity,
   sessionId: string | undefined,
   presentedJti: string,
@@ -1625,14 +1557,10 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-function getSqlStorage(storage: AuthStorage): SqlBackedStorage {
-  return storage as SqlBackedStorage;
-}
-
-function getTokenIdentifier(row: TokenRow): string | undefined {
+function getTokenIdentifier(row: StoredTokenRecord): string | undefined {
   return normalizeOptionalString(row.id)
     ?? normalizeOptionalString(row.jti)
-    ?? normalizeOptionalString(row.token_id);
+    ?? normalizeOptionalString(row.tokenId);
 }
 
 function createTokenId(prefix = "tok_"): string {
