@@ -131,6 +131,27 @@ export type DuplicateIdentityRecord = {
   orgId: string;
 };
 
+export type IssuedTokenRecord = {
+  id: string;
+  tokenId: string;
+  jti: string;
+  identityId: string;
+  sessionId?: string | null;
+  issuedAt: number;
+  expiresAt: number;
+  createdAt: string;
+};
+
+export type StoredTokenRecord = {
+  id?: string | null;
+  tokenId?: string | null;
+  jti?: string | null;
+  identityId?: string | null;
+  status?: string | null;
+  sessionId?: string | null;
+  expiresAt?: number | string | null;
+};
+
 export interface IdentityStorage {
   list(orgId: string, options?: ListIdentitiesOptions): Promise<AgentIdentity[]>;
   get(id: string): Promise<StoredIdentity | null>;
@@ -148,11 +169,17 @@ export interface IdentityStorage {
 }
 
 export interface TokenStorage {
+  persistIssued(token: IssuedTokenRecord): Promise<void>;
+  getById(tokenId: string): Promise<StoredTokenRecord | null>;
+  listActiveByIdentityId(identityId: string): Promise<StoredTokenRecord[]>;
+  listActiveBySessionId(sessionId: string): Promise<StoredTokenRecord[]>;
   listActiveIds(identityId: string): Promise<string[]>;
 }
 
 export interface RevocationStorage {
   revokeIdentityTokens(identityId: string, tokenIds: string[], revokedAt: string): Promise<void>;
+  isRevoked?(tokenId: string): Promise<boolean>;
+  revoke?(tokenId: string, expiresAt: number): Promise<void>;
 }
 
 export interface RoleStorage {
