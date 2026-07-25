@@ -15,6 +15,7 @@ import type {
   StoredIdentity,
 } from "./identity-types.js";
 import type {
+  ApiKeyKind,
   CreateApiKeyInput,
   ListApiKeysOptions,
   StoredApiKey,
@@ -228,6 +229,7 @@ export function isStorageError(error: unknown): error is StorageError {
 }
 
 export type {
+  ApiKeyKind,
   CreateApiKeyInput,
   IdentityBudget,
   IdentityBudgetUsage,
