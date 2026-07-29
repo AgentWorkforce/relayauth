@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isStorageCapacityExhausted,
   isTransientStorageOverload,
+  StorageCapacityExhaustedError,
   StorageOverloadedError,
   withStorageRetry,
 } from "../lib/storage-retry.js";
@@ -77,4 +79,59 @@ test("isTransientStorageOverload recognizes SQLite busy codes and lock messages"
   assert.equal(isTransientStorageOverload(busy), true);
   assert.equal(isTransientStorageOverload(new Error("database is locked")), true);
   assert.equal(isTransientStorageOverload(new Error("SQLITE_CONSTRAINT")), false);
+});
+
+test("isStorageCapacityExhausted recognizes this runtime's SQLite size-limit rejections", () => {
+  assert.equal(isStorageCapacityExhausted(new Error("database or disk is full")), true);
+  assert.equal(
+    isStorageCapacityExhausted(Object.assign(new Error("write failed"), { code: "SQLITE_FULL" })),
+    true,
+  );
+  assert.equal(
+    isStorageCapacityExhausted(new Error("mint failed", {
+      cause: new Error("database or disk is full"),
+    })),
+    true,
+  );
+
+  assert.equal(isStorageCapacityExhausted(new Error("database is locked")), false);
+  assert.equal(isStorageCapacityExhausted(new Error("SQLITE_CONSTRAINT")), false);
+  assert.equal(isStorageCapacityExhausted(new Error("identity_already_exists")), false);
+});
+
+test("isStorageCapacityExhausted carries a hosted adapter's translated error", () => {
+  assert.equal(
+    isStorageCapacityExhausted(new StorageCapacityExhaustedError("tokens.persist")),
+    true,
+  );
+
+  // Provider wording is the adapter's to recognize — this package stays
+  // platform-agnostic (AGENTS.md "No Cloudflare dependencies in @relayauth/*").
+  assert.equal(
+    isStorageCapacityExhausted(new Error("PROVIDER_ERROR: Exceeded maximum DB size")),
+    false,
+  );
+});
+
+test("withStorageRetry surfaces capacity exhaustion immediately instead of retrying", async () => {
+  let attempts = 0;
+
+  await assert.rejects(
+    withStorageRetry(async () => {
+      attempts += 1;
+      throw new Error("database or disk is full");
+    }, {
+      operation: "test.capacity",
+      sleep: async () => undefined,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof StorageCapacityExhaustedError);
+      assert.equal(error.operation, "test.capacity");
+      assert.equal(error.code, "storage_capacity_exhausted");
+      assert.equal(error.status, 503);
+      return true;
+    },
+  );
+
+  assert.equal(attempts, 1, "space cannot come back within a retry window");
 });
