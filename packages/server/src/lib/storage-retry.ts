@@ -9,6 +9,10 @@ const DEFAULT_JITTER_RATIO = 0.2;
 
 export const STORAGE_OVERLOAD_RETRY_AFTER_SECONDS = 1;
 
+// Capacity exhaustion only clears once retention reclaims space, so callers
+// must back off far longer than they do for a transient overload.
+export const STORAGE_CAPACITY_RETRY_AFTER_SECONDS = 30;
+
 export type StorageRetryOptions = {
   operation: string;
   maxAttempts?: number;
@@ -33,6 +37,57 @@ export class StorageOverloadedError extends Error {
     super("Storage is temporarily overloaded", { cause: options.cause });
     this.name = "StorageOverloadedError";
   }
+}
+
+export class StorageCapacityExhaustedError extends Error {
+  readonly code = "storage_capacity_exhausted";
+  readonly retryable = true;
+  readonly status = 503;
+  readonly retryAfterSeconds = STORAGE_CAPACITY_RETRY_AFTER_SECONDS;
+
+  constructor(
+    readonly operation: string,
+    options: { cause?: unknown } = {},
+  ) {
+    super("Storage is at capacity", { cause: options.cause });
+    this.name = "StorageCapacityExhaustedError";
+  }
+}
+
+/**
+ * Matches the write rejection a backing store raises once it can no longer
+ * allocate: D1 past its database size limit, or SQLite's SQLITE_FULL.
+ *
+ * Unlike an overload this is not cleared by retrying in-request — the space
+ * has to come back from retention — so it is classified separately and
+ * surfaced immediately.
+ */
+export function isStorageCapacityExhausted(error: unknown): boolean {
+  if (error instanceof StorageCapacityExhaustedError) {
+    return true;
+  }
+
+  const message = collectErrorMessages(error).join(" ");
+  return (
+    /\bexceeded\s+maximum\s+db\s+size\b/i.test(message)
+    || /\bSQLITE_FULL\b/i.test(message)
+    || /\b(?:database|disk)\b[^.]{0,24}\bis\s+full\b/i.test(message)
+  );
+}
+
+export function isStorageCapacityExhaustedError(
+  error: unknown,
+): error is StorageCapacityExhaustedError {
+  return error instanceof StorageCapacityExhaustedError;
+}
+
+export function toStorageCapacityExhaustedError(
+  error: unknown,
+  operation: string,
+): StorageCapacityExhaustedError {
+  return isStorageCapacityExhaustedError(error)
+    ? error
+    : new StorageCapacityExhaustedError(operation, { cause: error });
 }
 
 export function isTransientStorageOverload(error: unknown): boolean {
@@ -68,6 +123,10 @@ export async function withStorageRetry<T>(
     try {
       return await task();
     } catch (error) {
+      if (isStorageCapacityExhausted(error)) {
+        throw toStorageCapacityExhaustedError(error, options.operation);
+      }
+
       if (!isTransientStorageOverload(error)) {
         throw error;
       }
@@ -104,6 +163,29 @@ export function storageOverloadResponse(
     retryable: true,
     operation: error.operation,
     attempts: error.attempts,
+    requestId,
+  }, 503);
+}
+
+export function storageCapacityResponse(
+  c: Context<AppEnv>,
+  error: StorageCapacityExhaustedError,
+): Response {
+  const requestId = c.get("requestId") || c.req.header("x-request-id") || "unknown";
+  c.header("Retry-After", String(error.retryAfterSeconds));
+  c.header("Cache-Control", "no-store");
+
+  console.error("RelayAuth storage capacity exhausted", {
+    requestId,
+    operation: error.operation,
+    cause: error.cause instanceof Error ? error.cause.message : String(error.cause ?? "unknown"),
+  });
+
+  return c.json({
+    error: "Storage is at capacity",
+    code: error.code,
+    retryable: true,
+    operation: error.operation,
     requestId,
   }, 503);
 }

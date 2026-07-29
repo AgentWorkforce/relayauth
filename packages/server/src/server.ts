@@ -12,7 +12,13 @@ import {
   isRateLimitExceededError,
   type RequestRateLimiter,
 } from "./lib/rate-limit.js";
-import { isStorageOverloadedError, storageOverloadResponse } from "./lib/storage-retry.js";
+import {
+  isStorageCapacityExhausted,
+  isStorageOverloadedError,
+  storageCapacityResponse,
+  storageOverloadResponse,
+  toStorageCapacityExhaustedError,
+} from "./lib/storage-retry.js";
 import { apiKeyAuth } from "./middleware/api-key-auth.js";
 import auditExport from "./routes/audit-export.js";
 import auditQuery from "./routes/audit-query.js";
@@ -103,6 +109,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.onError((error, c) => {
     if (isStorageOverloadedError(error)) {
       return storageOverloadResponse(c, error);
+    }
+    // A backing store that can no longer allocate rejects every write on the
+    // route, including token mints. Callers need to tell that apart from a
+    // defect in the handler, so it gets its own retryable envelope rather
+    // than the opaque internal_error below.
+    if (isStorageCapacityExhausted(error)) {
+      return storageCapacityResponse(c, toStorageCapacityExhaustedError(error, c.req.path));
     }
     if (isRateLimitExceededError(error)) {
       c.header("RateLimit-Limit", String(error.decision.limit));

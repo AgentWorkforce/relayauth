@@ -11,6 +11,10 @@ import type {
   WorkspaceTokenIssueResponse,
 } from "@relayauth/types";
 
+import {
+  pruneExpiredTokensWindow,
+  scanExpiredTokensWindow,
+} from "../engine/retention-gc.js";
 import type { DeferredTask } from "../lib/deferred.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import {
@@ -365,6 +369,59 @@ async function issueApiKey(
   return assertJsonResponse<ApiKeyCreateResponse>(response, 201);
 }
 
+async function withSilencedConsoleError<T>(task: () => Promise<T>): Promise<T> {
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    return await task();
+  } finally {
+    console.error = originalConsoleError;
+  }
+}
+
+/**
+ * Drives the backing database to a hard page ceiling, the small-scale stand-in
+ * for D1 sitting at its size limit: reads keep working and every write that
+ * needs a new page is rejected.
+ *
+ * The rows seeded here are already expired, so the retention GC can reclaim
+ * them — that is what lets a mint succeed again on the next sweep.
+ */
+async function fillDatabaseToCeiling(
+  app: ReturnType<typeof createTestApp>,
+  identityId: string,
+): Promise<void> {
+  const insertToken = async (id: string, expiresAt: number): Promise<void> => {
+    await app.storage.DB.prepare(
+      `INSERT INTO tokens (id, token_id, jti, identity_id, session_id, issued_at, expires_at, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+    )
+      .bind(id, id, id, identityId, `sess_${id}`, expiresAt - 3_600, expiresAt, new Date().toISOString())
+      .run();
+  };
+
+  const expiredAt = Math.floor(Date.now() / 1_000) - 86_400;
+  for (let index = 0; index < 400; index += 1) {
+    await insertToken(`tok_expired_${index}_${crypto.randomUUID().replace(/-/g, "")}`, expiredAt);
+  }
+
+  const pageCountRow = await app.storage.DB
+    .prepare("PRAGMA page_count")
+    .first<{ page_count: number }>();
+  await app.storage.DB.exec(`PRAGMA max_page_count = ${Number(pageCountRow?.page_count ?? 0)}`);
+
+  let full = false;
+  for (let index = 0; index < 5_000 && !full; index += 1) {
+    try {
+      await insertToken(`tok_filler_${index}_${crypto.randomUUID().replace(/-/g, "")}`, expiredAt);
+    } catch {
+      full = true;
+    }
+  }
+
+  assert.ok(full, "database must reach its page ceiling for this scenario");
+}
+
 async function countStoredTokens(app: ReturnType<typeof createTestApp>): Promise<number> {
   const row = await app.storage.DB.prepare("SELECT COUNT(*) AS count FROM tokens").first<{ count: number }>();
   return Number(row?.count ?? 0);
@@ -522,6 +579,81 @@ test("POST /v1/tokens", async (t) => {
 
     await assertJsonResponse<ErrorBody>(response, 403, (body) => {
       assert.equal(body.error, "insufficient_scope");
+    });
+  });
+});
+
+test("POST /v1/tokens when the database cannot allocate", async (t) => {
+  await t.test("returns a typed capacity envelope instead of an unhandled 500", async () => {
+    const { app, identity, authHeaders } = await createHarness();
+    await fillDatabaseToCeiling(app, identity.id);
+
+    const response = await withSilencedConsoleError(() => requestRoute(app, "POST", "/v1/tokens", {
+      body: { identityId: identity.id },
+      headers: authHeaders,
+    }));
+
+    assert.equal(response.headers.get("Retry-After"), "30");
+    await assertJsonResponse<ErrorBody & { retryable?: boolean }>(response, 503, (body) => {
+      assert.equal(body.code, "storage_capacity_exhausted");
+      assert.equal(body.error, "Storage is at capacity");
+      assert.equal(body.retryable, true);
+    });
+  });
+
+  await t.test("mints again once retention reclaims space", async () => {
+    const { app, identity, authHeaders } = await createHarness();
+    await fillDatabaseToCeiling(app, identity.id);
+
+    const blocked = await withSilencedConsoleError(() => requestRoute(app, "POST", "/v1/tokens", {
+      body: { identityId: identity.id },
+      headers: authHeaders,
+    }));
+    assert.equal(blocked.status, 503);
+
+    const window = await scanExpiredTokensWindow(app.storage.DB as never, { cursor: 0, limit: 1_000 });
+    const pruned = await pruneExpiredTokensWindow(app.storage.DB as never, window);
+    assert.ok(pruned.deletedCount > 0, "retention must reclaim the expired rows");
+
+    const recovered = await requestRoute(app, "POST", "/v1/tokens", {
+      body: { identityId: identity.id },
+      headers: authHeaders,
+    });
+
+    await assertJsonResponse<TokenPair>(recovered, 201, (body) => {
+      assert.equal(body.tokenType, "Bearer");
+    });
+  });
+
+  await t.test("classifies D1's size-limit rejection", async () => {
+    const { app, identity, authHeaders } = await createHarness();
+    app.storage.DB.prepare = () => {
+      throw new Error("D1_ERROR: Exceeded maximum DB size");
+    };
+
+    const response = await withSilencedConsoleError(() => requestRoute(app, "POST", "/v1/tokens", {
+      body: { identityId: identity.id },
+      headers: authHeaders,
+    }));
+
+    await assertJsonResponse<ErrorBody>(response, 503, (body) => {
+      assert.equal(body.code, "storage_capacity_exhausted");
+    });
+  });
+
+  await t.test("leaves unrelated internal failures on the generic error envelope", async () => {
+    const { app, identity, authHeaders } = await createHarness();
+    app.storage.DB.prepare = () => {
+      throw new Error("unexpected mint failure");
+    };
+
+    const response = await withSilencedConsoleError(() => requestRoute(app, "POST", "/v1/tokens", {
+      body: { identityId: identity.id },
+      headers: authHeaders,
+    }));
+
+    await assertJsonResponse<ErrorBody>(response, 500, (body) => {
+      assert.equal(body.code, "internal_error");
     });
   });
 });
