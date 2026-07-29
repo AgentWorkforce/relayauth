@@ -81,11 +81,7 @@ test("isTransientStorageOverload recognizes SQLite busy codes and lock messages"
   assert.equal(isTransientStorageOverload(new Error("SQLITE_CONSTRAINT")), false);
 });
 
-test("isStorageCapacityExhausted recognizes size-limit rejections from D1 and SQLite", () => {
-  assert.equal(
-    isStorageCapacityExhausted(new Error("D1_ERROR: Exceeded maximum DB size")),
-    true,
-  );
+test("isStorageCapacityExhausted recognizes this runtime's SQLite size-limit rejections", () => {
   assert.equal(isStorageCapacityExhausted(new Error("database or disk is full")), true);
   assert.equal(
     isStorageCapacityExhausted(Object.assign(new Error("write failed"), { code: "SQLITE_FULL" })),
@@ -93,7 +89,7 @@ test("isStorageCapacityExhausted recognizes size-limit rejections from D1 and SQ
   );
   assert.equal(
     isStorageCapacityExhausted(new Error("mint failed", {
-      cause: new Error("D1_ERROR: Exceeded maximum DB size"),
+      cause: new Error("database or disk is full"),
     })),
     true,
   );
@@ -103,13 +99,27 @@ test("isStorageCapacityExhausted recognizes size-limit rejections from D1 and SQ
   assert.equal(isStorageCapacityExhausted(new Error("identity_already_exists")), false);
 });
 
+test("isStorageCapacityExhausted carries a hosted adapter's translated error", () => {
+  assert.equal(
+    isStorageCapacityExhausted(new StorageCapacityExhaustedError("tokens.persist")),
+    true,
+  );
+
+  // Provider wording is the adapter's to recognize — this package stays
+  // platform-agnostic (AGENTS.md "No Cloudflare dependencies in @relayauth/*").
+  assert.equal(
+    isStorageCapacityExhausted(new Error("PROVIDER_ERROR: Exceeded maximum DB size")),
+    false,
+  );
+});
+
 test("withStorageRetry surfaces capacity exhaustion immediately instead of retrying", async () => {
   let attempts = 0;
 
   await assert.rejects(
     withStorageRetry(async () => {
       attempts += 1;
-      throw new Error("D1_ERROR: Exceeded maximum DB size");
+      throw new Error("database or disk is full");
     }, {
       operation: "test.capacity",
       sleep: async () => undefined,

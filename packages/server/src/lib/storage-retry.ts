@@ -55,12 +55,16 @@ export class StorageCapacityExhaustedError extends Error {
 }
 
 /**
- * Matches the write rejection a backing store raises once it can no longer
- * allocate: D1 past its database size limit, or SQLite's SQLITE_FULL.
+ * Matches the write rejection this runtime's store raises once it can no
+ * longer allocate: SQLite's SQLITE_FULL / "database or disk is full".
  *
  * Unlike an overload this is not cleared by retrying in-request — the space
  * has to come back from retention — so it is classified separately and
  * surfaced immediately.
+ *
+ * Hosted adapters own their provider's wording: translate it into a thrown
+ * StorageCapacityExhaustedError and every route answers with the same
+ * envelope.
  */
 export function isStorageCapacityExhausted(error: unknown): boolean {
   if (error instanceof StorageCapacityExhaustedError) {
@@ -69,8 +73,7 @@ export function isStorageCapacityExhausted(error: unknown): boolean {
 
   const message = collectErrorMessages(error).join(" ");
   return (
-    /\bexceeded\s+maximum\s+db\s+size\b/i.test(message)
-    || /\bSQLITE_FULL\b/i.test(message)
+    /\bSQLITE_FULL\b/i.test(message)
     || /\b(?:database|disk)\b[^.]{0,24}\bis\s+full\b/i.test(message)
   );
 }

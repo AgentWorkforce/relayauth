@@ -16,6 +16,10 @@ import {
   scanExpiredTokensWindow,
 } from "../engine/retention-gc.js";
 import type { DeferredTask } from "../lib/deferred.js";
+import {
+  isStorageCapacityExhausted,
+  StorageCapacityExhaustedError,
+} from "../lib/storage-retry.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import {
   assertJsonResponse,
@@ -414,7 +418,10 @@ async function fillDatabaseToCeiling(
   for (let index = 0; index < 5_000 && !full; index += 1) {
     try {
       await insertToken(`tok_filler_${index}_${crypto.randomUUID().replace(/-/g, "")}`, expiredAt);
-    } catch {
+    } catch (error) {
+      if (!isStorageCapacityExhausted(error)) {
+        throw error;
+      }
       full = true;
     }
   }
@@ -625,10 +632,10 @@ test("POST /v1/tokens when the database cannot allocate", async (t) => {
     });
   });
 
-  await t.test("classifies D1's size-limit rejection", async () => {
+  await t.test("carries a hosted adapter's translated capacity error", async () => {
     const { app, identity, authHeaders } = await createHarness();
     app.storage.DB.prepare = () => {
-      throw new Error("D1_ERROR: Exceeded maximum DB size");
+      throw new StorageCapacityExhaustedError("tokens.persist");
     };
 
     const response = await withSilencedConsoleError(() => requestRoute(app, "POST", "/v1/tokens", {
