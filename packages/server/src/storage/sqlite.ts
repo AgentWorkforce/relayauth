@@ -51,6 +51,7 @@ import type {
   OrganizationContextRecord,
   PolicyStorage,
   PolicyUpdate,
+  RevokedTokenAudit,
   RevocationStorage,
   RoleStorage,
   StoredTokenRecord,
@@ -1653,6 +1654,65 @@ class SqliteRevocationStorage implements RevocationStorage {
     for (const tokenId of normalizedTokenIds) {
       backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL).run(tokenId, MAX_REVOCATION_EXPIRY);
       backend.db.prepare(UPDATE_TOKEN_STATUS_SQL).run(normalizedIdentityId, tokenId, tokenId, tokenId);
+    }
+  }
+
+  async revokeIdentityTokensWithAudit(input: RevokedTokenAudit): Promise<void> {
+    const normalizedIdentityId = requireString(input.identityId, "identityId is required");
+    const normalizedTokenIds = normalizeStringArray(input.tokenIds);
+    if (normalizedTokenIds.length === 0) {
+      return;
+    }
+
+    const timestamp = normalizeTimestamp(input.revokedAt);
+    const auditEntry = normalizeAuditWriteEntry(input.auditEntry);
+    const backend = await this.provider.getBackend();
+    pruneExpiredRevocations(backend);
+
+    if (backend.kind === "memory") {
+      // Check every failure condition before changing memory state, preserving
+      // the same all-or-nothing contract as the SQLite transaction below.
+      if (backend.state.auditLogs.some((entry) => entry.id === auditEntry.id)) {
+        throw new StorageError("audit_entry_already_exists", 409, "audit_entry_already_exists");
+      }
+
+      for (const tokenId of normalizedTokenIds) {
+        backend.state.revokedTokens.set(tokenId, {
+          expiresAt: MAX_REVOCATION_EXPIRY,
+          identityId: normalizedIdentityId,
+          revokedAt: timestamp,
+        });
+        for (const token of backend.state.tokens.values()) {
+          if (
+            token.identityId === normalizedIdentityId
+            && (token.id === tokenId || token.jti === tokenId || token.tokenId === tokenId)
+          ) {
+            token.status = "revoked";
+          }
+        }
+      }
+      backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return;
+    }
+
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      const upsertRevokedToken = backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL);
+      const updateTokenStatus = backend.db.prepare(UPDATE_TOKEN_STATUS_SQL);
+      for (const tokenId of normalizedTokenIds) {
+        upsertRevokedToken.run(tokenId, MAX_REVOCATION_EXPIRY);
+        updateTokenStatus.run(normalizedIdentityId, tokenId, tokenId, tokenId);
+      }
+      backend.db.prepare(INSERT_AUDIT_LOG_SQL).run(...toAuditParams(auditEntry));
+      backend.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the originating audit or storage failure.
+      }
+      throw error;
     }
   }
 

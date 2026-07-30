@@ -154,6 +154,51 @@ test("sqlite token storage owns issued-token persistence and hot-path lookups", 
   }
 });
 
+test("sqlite revoke with audit rolls all durable state back when the audit insert fails", async () => {
+  const { storage, cleanup } = createHarness();
+
+  try {
+    await storage.tokens.persistIssued({
+      id: "tok_revoke_atomic",
+      tokenId: "tok_revoke_atomic",
+      jti: "tok_revoke_atomic",
+      identityId: "agent_revoke_atomic",
+      sessionId: "sess_revoke_atomic",
+      issuedAt: 1_774_608_000,
+      expiresAt: 1_800_000_000,
+      createdAt: "2026-03-27T12:00:00.000Z",
+    });
+    const conflictingAudit = createAuditEntry({
+      id: "aud_revoke_conflict",
+      action: "token.revoked",
+      identityId: "agent_revoke_atomic",
+    });
+    await storage.audit.write(conflictingAudit);
+
+    await assert.rejects(
+      () => storage.revocations.revokeIdentityTokensWithAudit({
+        identityId: "agent_revoke_atomic",
+        tokenIds: ["tok_revoke_atomic"],
+        revokedAt: "2026-03-27T12:01:00.000Z",
+        auditEntry: conflictingAudit,
+      }),
+    );
+
+    assert.equal((await storage.tokens.getById("tok_revoke_atomic"))?.status, "active");
+    assert.equal(await storage.revocations.isRevoked("tok_revoke_atomic"), false);
+    assert.deepEqual(
+      (await storage.audit.query({
+        orgId: "org_test",
+        action: "token.revoked",
+        limit: 10,
+      }, { includeOverflowRow: false })).map((entry) => entry.id),
+      ["aud_revoke_conflict"],
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("sqlite token pair and audit entry commit atomically and retries do not duplicate", async () => {
   const { storage, cleanup } = createHarness();
   const pair = {

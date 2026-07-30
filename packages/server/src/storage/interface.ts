@@ -313,6 +313,18 @@ export type IssuedTokenRotationAudit = {
   revokedAuditEntry: AuditLogWriteEntry;
 };
 
+/**
+ * Durable revoke boundary. Implementations must update the affected token
+ * rows, record the revoked JTIs, and persist the audit entry as one
+ * transaction. A failed audit write must leave every token active.
+ */
+export type RevokedTokenAudit = {
+  identityId: string;
+  tokenIds: string[];
+  revokedAt: string;
+  auditEntry: AuditLogWriteEntry;
+};
+
 export interface IdentityStorage {
   list(orgId: string, options?: ListIdentitiesOptions): Promise<AgentIdentity[]>;
   get(id: string): Promise<StoredIdentity | null>;
@@ -342,6 +354,17 @@ export interface TokenStorage {
 
 export interface RevocationStorage {
   revokeIdentityTokens(identityId: string, tokenIds: string[], revokedAt: string): Promise<void>;
+  revokeIdentityTokensWithAudit(input: RevokedTokenAudit): Promise<void>;
+  /**
+   * Optionally populate a low-latency cache after the durable transaction
+   * commits. Cache failure must not change the durable revoke result.
+   */
+  cacheRevokedTokens?(
+    identityId: string,
+    tokenIds: string[],
+    revokedAt: string,
+    expiresAt?: number,
+  ): Promise<void>;
   isRevoked?(tokenId: string): Promise<boolean>;
   revoke?(tokenId: string, expiresAt: number): Promise<void>;
 }

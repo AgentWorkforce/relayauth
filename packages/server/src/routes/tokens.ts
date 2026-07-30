@@ -634,16 +634,13 @@ tokens.post("/refresh", async (c) => {
     },
   });
 
-  // The durable storage transaction above is the source of truth. Hosted
-  // adapters may also maintain a low-latency revocation cache; a cache write
-  // cannot roll back or split the already-atomic token rotation.
-  if (typeof storage.revocations.revoke === "function") {
-    try {
-      await storage.revocations.revoke(presentedJti, verification.claims.exp);
-    } catch (error) {
-      console.error("Failed to refresh revocation cache after atomic rotation", error);
-    }
-  }
+  await populateRevocationCache(
+    storage,
+    identity.id,
+    [presentedJti],
+    new Date().toISOString(),
+    verification.claims.exp,
+  );
 
   return c.json(tokenPair, 200);
 });
@@ -691,14 +688,19 @@ tokens.post("/revoke", async (c) => {
   const revocableIds = targetTokens
     .map((row) => getTokenIdentifier(row))
     .filter((value): value is string => Boolean(value));
-  await storage.revocations.revokeIdentityTokens(identity.id, revocableIds, revokedAt);
-
-  await writeTokenAudit(storage, {
+  const auditEntry = createTokenAuditEntry({
     action: "token.revoked",
     identity,
     tokenId: revocableIds[0] ?? tokenId ?? sessionId ?? identityId ?? identity.id,
     actorId: auth.claims.sub,
   });
+  await storage.revocations.revokeIdentityTokensWithAudit({
+    identityId: identity.id,
+    tokenIds: revocableIds,
+    revokedAt,
+    auditEntry,
+  });
+  await populateRevocationCache(storage, identity.id, revocableIds, revokedAt);
 
   return c.body(null, 204);
 });
@@ -938,18 +940,6 @@ function toIssuedTokenRecord(
   };
 }
 
-async function writeTokenAudit(
-  storage: AuthStorage,
-  options: {
-    action: "token.issued" | "token.refreshed" | "token.revoked";
-    identity: StoredIdentity;
-    tokenId: string;
-    actorId?: string;
-  },
-): Promise<void> {
-  await storage.audit.write(createTokenAuditEntry(options));
-}
-
 function createTokenAuditEntry(
   options: {
     action: "token.issued" | "token.refreshed" | "token.revoked";
@@ -1074,20 +1064,39 @@ async function cascadeRevokeSession(
   }
 
   const tokenIds = [...jtis];
-  await storage.revocations.revokeIdentityTokens(identity.id, tokenIds, revokedAt);
-  if (typeof storage.revocations.revoke === "function") {
-    const farFuture = Math.floor(Date.now() / 1000) + (365 * 24 * 3600);
-    for (const tokenId of tokenIds) {
-      await storage.revocations.revoke(tokenId, farFuture);
-    }
-  }
-
-  await writeTokenAudit(storage, {
+  const auditEntry = createTokenAuditEntry({
     action: "token.revoked",
     identity,
     tokenId: normalizedPresentedJti ?? tokenIds[0] ?? identity.id,
     actorId: "refresh_reuse_detected",
   });
+  await storage.revocations.revokeIdentityTokensWithAudit({
+    identityId: identity.id,
+    tokenIds,
+    revokedAt,
+    auditEntry,
+  });
+  await populateRevocationCache(storage, identity.id, tokenIds, revokedAt);
+}
+
+async function populateRevocationCache(
+  storage: AuthStorage,
+  identityId: string,
+  tokenIds: string[],
+  revokedAt: string,
+  expiresAt?: number,
+): Promise<void> {
+  if (typeof storage.revocations.cacheRevokedTokens !== "function") {
+    return;
+  }
+
+  try {
+    await storage.revocations.cacheRevokedTokens(identityId, tokenIds, revokedAt, expiresAt);
+  } catch (error) {
+    // Revocation and audit are already durable. A cache outage must never
+    // turn a successful revoke into a partial-failure response.
+    console.error("Failed to populate revocation cache after durable revoke", error);
+  }
 }
 
 async function verifyToken(
