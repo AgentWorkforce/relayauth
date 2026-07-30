@@ -43,6 +43,7 @@ import type {
   IdentityChildSummary,
   IdentityStorage,
   IdentityStatusCounts,
+  IssuedTokenPairAudit,
   IssuedTokenRecord,
   ListIdentitiesOptions,
   OrganizationContextRecord,
@@ -1309,6 +1310,60 @@ class SqliteTokenStorage implements TokenStorage {
       token.expiresAt,
       token.createdAt,
     );
+  }
+
+  async persistIssuedPairWithAudit(input: IssuedTokenPairAudit): Promise<void> {
+    const backend = await this.provider.getBackend();
+    const auditEntry = normalizeAuditWriteEntry(input.auditEntry);
+
+    if (backend.kind === "memory") {
+      if (
+        backend.state.tokens.has(input.accessToken.id)
+        || backend.state.tokens.has(input.refreshToken.id)
+        || backend.state.auditLogs.some((entry) => entry.id === auditEntry.id)
+      ) {
+        throw new StorageError("token_pair_already_exists", 409, "token_pair_already_exists");
+      }
+
+      backend.state.tokens.set(input.accessToken.id, {
+        ...input.accessToken,
+        status: "active",
+      });
+      backend.state.tokens.set(input.refreshToken.id, {
+        ...input.refreshToken,
+        status: "active",
+      });
+      backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return;
+    }
+
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      const insertToken = backend.db.prepare(INSERT_TOKEN_SQL);
+      for (const token of [input.accessToken, input.refreshToken]) {
+        insertToken.run(
+          token.id,
+          token.tokenId,
+          token.jti,
+          token.identityId,
+          token.sessionId ?? null,
+          token.issuedAt,
+          token.expiresAt,
+          token.createdAt,
+        );
+      }
+      backend.db.prepare(INSERT_AUDIT_LOG_SQL).run(...toAuditParams(auditEntry));
+      backend.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the originating storage error (for example SQLITE_FULL);
+        // rollback errors must not hide the retry/capacity classification.
+      }
+      throw error;
+    }
   }
 
   async getById(tokenId: string): Promise<StoredTokenRecord | null> {

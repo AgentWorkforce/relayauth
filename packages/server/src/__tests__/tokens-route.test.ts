@@ -478,38 +478,28 @@ test("POST /v1/tokens", async (t) => {
     await assertRs256Algorithm(body.refreshToken, ["relayauth"]);
   });
 
-  await t.test("returns the minted pair when a deferred batched audit insert fails", async () => {
+  await t.test("fails closed without token rows when the atomic audit commit fails", async () => {
     const deferred: DeferredTask[] = [];
     const { app, identity, authHeaders } = await createHarness({
       deferTask: (task) => deferred.push(task),
     });
-    let auditBatchAttempts = 0;
-    app.storage.audit.writeBatch = async () => {
-      auditBatchAttempts += 1;
+    let atomicCommitAttempts = 0;
+    app.storage.tokens.persistIssuedPairWithAudit = async () => {
+      atomicCommitAttempts += 1;
       throw new Error("audit insert failed");
     };
-    const logged: unknown[][] = [];
-    const originalConsoleError = console.error;
-    console.error = (...args: unknown[]) => {
-      logged.push(args);
-    };
 
-    try {
-      const response = await requestRoute(app, "POST", "/v1/tokens", {
+    const response = await withSilencedConsoleError(() => requestRoute(app, "POST", "/v1/tokens", {
         body: { identityId: identity.id },
         headers: authHeaders,
-      });
+      }));
 
-      const body = await assertJsonResponse<TokenPair>(response, 201);
-      assert.equal(typeof body.accessToken, "string");
-      assert.equal(deferred.length, 1, "audit work should be registered with the request lifecycle");
-      assert.equal(await countStoredTokens(app), 2, "essential token records must be committed before responding");
-      await Promise.all(deferred.map((task) => task()));
-      assert.equal(auditBatchAttempts, 1);
-      assert.ok(logged.some((args) => String(args[0]).includes("Deferred RelayAuth task failed")));
-    } finally {
-      console.error = originalConsoleError;
-    }
+    await assertJsonResponse<ErrorBody>(response, 500, (body) => {
+      assert.equal(body.code, "internal_error");
+    });
+    assert.equal(deferred.length, 0, "token mint audit must not be deferred");
+    assert.equal(atomicCommitAttempts, 1);
+    assert.equal(await countStoredTokens(app), 0);
   });
 
   await t.test("returns 401 when Authorization is missing", async () => {
@@ -634,7 +624,7 @@ test("POST /v1/tokens when the database cannot allocate", async (t) => {
 
   await t.test("carries a hosted adapter's translated capacity error", async () => {
     const { app, identity, authHeaders } = await createHarness();
-    app.storage.DB.prepare = () => {
+    app.storage.tokens.persistIssuedPairWithAudit = async () => {
       throw new StorageCapacityExhaustedError("tokens.persist");
     };
 
@@ -650,7 +640,7 @@ test("POST /v1/tokens when the database cannot allocate", async (t) => {
 
   await t.test("leaves unrelated internal failures on the generic error envelope", async () => {
     const { app, identity, authHeaders } = await createHarness();
-    app.storage.DB.prepare = () => {
+    app.storage.tokens.persistIssuedPairWithAudit = async () => {
       throw new Error("unexpected mint failure");
     };
 

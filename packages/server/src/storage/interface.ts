@@ -152,6 +152,19 @@ export type StoredTokenRecord = {
   expiresAt?: number | string | null;
 };
 
+/**
+ * Durable mint boundary. Implementations must commit both token rows and the
+ * audit entry atomically before callers return the signed token pair.
+ *
+ * A platform adapter may additionally materialize the audit entry in an
+ * outbox, but it must never acknowledge a partial commit.
+ */
+export type IssuedTokenPairAudit = {
+  accessToken: IssuedTokenRecord;
+  refreshToken: IssuedTokenRecord;
+  auditEntry: AuditLogWriteEntry;
+};
+
 export interface IdentityStorage {
   list(orgId: string, options?: ListIdentitiesOptions): Promise<AgentIdentity[]>;
   get(id: string): Promise<StoredIdentity | null>;
@@ -170,6 +183,7 @@ export interface IdentityStorage {
 
 export interface TokenStorage {
   persistIssued(token: IssuedTokenRecord): Promise<void>;
+  persistIssuedPairWithAudit(input: IssuedTokenPairAudit): Promise<void>;
   getById(tokenId: string): Promise<StoredTokenRecord | null>;
   listActiveByIdentityId(identityId: string): Promise<StoredTokenRecord[]>;
   listActiveBySessionId(sessionId: string): Promise<StoredTokenRecord[]>;

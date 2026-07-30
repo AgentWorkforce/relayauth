@@ -817,17 +817,15 @@ async function issueTokenPair(
     ? wrapRelayToken(signedRefreshToken, relayTokenPrefix(options.tokenIdPrefix))
     : signedRefreshToken;
 
-  await persistIssuedToken(storage, identity.id, accessClaims);
-  await persistIssuedToken(storage, identity.id, refreshClaims);
-  scheduleDeferredTask(
-    options.deferTask,
-    "audit.token_mint",
-    () => writeTokenAuditBatch(storage, {
+  await storage.tokens.persistIssuedPairWithAudit({
+    accessToken: toIssuedTokenRecord(identity.id, accessClaims),
+    refreshToken: toIssuedTokenRecord(identity.id, refreshClaims),
+    auditEntry: createTokenAuditEntry({
       action: options.action,
       identity,
       tokenId: accessClaims.jti,
     }),
-  );
+  });
 
   return {
     accessToken,
@@ -906,8 +904,14 @@ async function persistIssuedToken(
   identityId: string,
   claims: RelayAuthTokenClaims,
 ): Promise<void> {
-  const createdAt = new Date(claims.iat * 1000).toISOString();
-  await storage.tokens.persistIssued({
+  await storage.tokens.persistIssued(toIssuedTokenRecord(identityId, claims));
+}
+
+function toIssuedTokenRecord(
+  identityId: string,
+  claims: RelayAuthTokenClaims,
+) {
+  return {
     id: claims.jti,
     tokenId: claims.jti,
     jti: claims.jti,
@@ -915,8 +919,8 @@ async function persistIssuedToken(
     sessionId: claims.sid ?? null,
     issuedAt: claims.iat,
     expiresAt: claims.exp,
-    createdAt,
-  });
+    createdAt: new Date(claims.iat * 1000).toISOString(),
+  };
 }
 
 async function writeTokenAudit(
@@ -929,18 +933,6 @@ async function writeTokenAudit(
   },
 ): Promise<void> {
   await storage.audit.write(createTokenAuditEntry(options));
-}
-
-async function writeTokenAuditBatch(
-  storage: AuthStorage,
-  options: {
-    action: "token.issued" | "token.refreshed" | "token.revoked";
-    identity: StoredIdentity;
-    tokenId: string;
-    actorId?: string;
-  },
-): Promise<void> {
-  await storage.audit.writeBatch([createTokenAuditEntry(options)]);
 }
 
 function createTokenAuditEntry(

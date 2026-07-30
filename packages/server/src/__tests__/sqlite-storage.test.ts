@@ -154,6 +154,108 @@ test("sqlite token storage owns issued-token persistence and hot-path lookups", 
   }
 });
 
+test("sqlite token pair and audit entry commit atomically and retries do not duplicate", async () => {
+  const { storage, cleanup } = createHarness();
+  const pair = {
+    accessToken: {
+      id: "tok_pair_access",
+      tokenId: "tok_pair_access",
+      jti: "tok_pair_access",
+      identityId: "agent_pair",
+      sessionId: "sess_pair",
+      issuedAt: 1_774_608_000,
+      expiresAt: 1_774_611_600,
+      createdAt: "2026-03-27T12:00:00.000Z",
+    },
+    refreshToken: {
+      id: "tok_pair_refresh",
+      tokenId: "tok_pair_refresh",
+      jti: "tok_pair_refresh",
+      identityId: "agent_pair",
+      sessionId: "sess_pair",
+      issuedAt: 1_774_608_000,
+      expiresAt: 1_774_694_400,
+      createdAt: "2026-03-27T12:00:00.000Z",
+    },
+    auditEntry: createAuditEntry({
+      id: "aud_pair",
+      action: "token.issued",
+      identityId: "agent_pair",
+      metadata: { tokenId: "tok_pair_access" },
+    }),
+  };
+
+  try {
+    await storage.tokens.persistIssuedPairWithAudit(pair);
+    assert.equal((await storage.tokens.listActiveBySessionId("sess_pair")).length, 2);
+    assert.deepEqual(
+      (await storage.audit.query({
+        orgId: "org_test",
+        action: "token.issued",
+        limit: 10,
+      }, { includeOverflowRow: false })).map((entry) => entry.id),
+      ["aud_pair"],
+    );
+
+    await assert.rejects(
+      () => storage.tokens.persistIssuedPairWithAudit(pair),
+    );
+    assert.equal((await storage.tokens.listActiveBySessionId("sess_pair")).length, 2);
+    assert.equal((await storage.audit.query({
+      orgId: "org_test",
+      action: "token.issued",
+      limit: 10,
+    }, { includeOverflowRow: false })).length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("sqlite token pair rolls back both token rows when the audit insert fails", async () => {
+  const { storage, cleanup } = createHarness();
+
+  try {
+    await storage.audit.write(createAuditEntry({
+      id: "aud_conflict",
+      action: "token.issued",
+    }));
+
+    await assert.rejects(() => storage.tokens.persistIssuedPairWithAudit({
+      accessToken: {
+        id: "tok_rollback_access",
+        tokenId: "tok_rollback_access",
+        jti: "tok_rollback_access",
+        identityId: "agent_rollback",
+        sessionId: "sess_rollback",
+        issuedAt: 1_774_608_000,
+        expiresAt: 1_774_611_600,
+        createdAt: "2026-03-27T12:00:00.000Z",
+      },
+      refreshToken: {
+        id: "tok_rollback_refresh",
+        tokenId: "tok_rollback_refresh",
+        jti: "tok_rollback_refresh",
+        identityId: "agent_rollback",
+        sessionId: "sess_rollback",
+        issuedAt: 1_774_608_000,
+        expiresAt: 1_774_694_400,
+        createdAt: "2026-03-27T12:00:00.000Z",
+      },
+      auditEntry: createAuditEntry({
+        id: "aud_conflict",
+        action: "token.issued",
+        identityId: "agent_rollback",
+      }),
+    }));
+
+    assert.deepEqual(await storage.tokens.listActiveBySessionId("sess_rollback"), []);
+    assert.equal(await storage.tokens.getById("tok_rollback_access"), null);
+    assert.equal(await storage.tokens.getById("tok_rollback_refresh"), null);
+  } finally {
+    cleanup();
+  }
+});
+
 test("sqlite identity storage supports CRUD, hierarchy, and budget auto-suspend", async () => {
   const { storage, cleanup } = createHarness();
 
