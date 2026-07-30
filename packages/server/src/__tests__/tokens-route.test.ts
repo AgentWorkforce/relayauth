@@ -1505,6 +1505,15 @@ test("POST /v1/tokens/refresh", async (t) => {
     const { app, identity } = await createHarness();
     const { pair, accessClaims, refreshClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti, refreshClaims.jti]);
+    const atomicRevocations = app.storage.revocations.revokeIdentityTokensWithAudit.bind(app.storage.revocations);
+    let atomicCascadeCalls = 0;
+    app.storage.revocations.revokeIdentityTokensWithAudit = async (input) => {
+      atomicCascadeCalls += 1;
+      await atomicRevocations(input);
+    };
+    app.storage.revocations.revokeIdentityTokens = async () => {
+      throw new Error("refresh-reuse cascade must use revokeIdentityTokensWithAudit");
+    };
 
     const firstResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
       body: { refreshToken: pair.refreshToken },
@@ -1533,6 +1542,7 @@ test("POST /v1/tokens/refresh", async (t) => {
       revoked.includes(secondRefreshClaims.jti),
       `second refresh JTI ${secondRefreshClaims.jti} must be revoked after re-use detection (got ${JSON.stringify(revoked)})`,
     );
+    assert.equal(atomicCascadeCalls, 1);
   });
 
   await t.test("rejects a refresh token signed with the wrong issuer", async () => {
@@ -1865,6 +1875,15 @@ test("POST /v1/tokens/revoke", async (t) => {
     const { app, identity, authHeaders } = await createHarness();
     const { accessClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti]);
+    const atomicRevocations = app.storage.revocations.revokeIdentityTokensWithAudit.bind(app.storage.revocations);
+    let atomicRevokeCalls = 0;
+    app.storage.revocations.revokeIdentityTokensWithAudit = async (input) => {
+      atomicRevokeCalls += 1;
+      await atomicRevocations(input);
+    };
+    app.storage.revocations.revokeIdentityTokens = async () => {
+      throw new Error("public revoke must use revokeIdentityTokensWithAudit");
+    };
 
     const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
       body: {
@@ -1875,6 +1894,7 @@ test("POST /v1/tokens/revoke", async (t) => {
 
     assert.equal(response.status, 204);
     assert.deepEqual(await listRevokedTokenIds(app), [accessClaims.jti]);
+    assert.equal(atomicRevokeCalls, 1);
   });
 
   await t.test("returns 401 when Authorization is missing", async () => {
