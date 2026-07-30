@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS audit_outbox (
   id TEXT PRIMARY KEY,
   payload_json TEXT NOT NULL,
   payload_sha256 TEXT NOT NULL,
+  archive_key TEXT NOT NULL,
   created_at TEXT NOT NULL,
   available_at TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
