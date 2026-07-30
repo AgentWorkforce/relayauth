@@ -40,9 +40,47 @@ CREATE TABLE IF NOT EXISTS audit_outbox (
   created_at TEXT NOT NULL,
   available_at TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
+  lease_token TEXT,
+  lease_until TEXT,
+  poisoned_at TEXT,
   archived_at TEXT,
   last_error TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_outbox_pending
-  ON audit_outbox (archived_at, available_at, created_at, id);
+  ON audit_outbox (
+    archived_at,
+    poisoned_at,
+    available_at,
+    lease_until,
+    created_at,
+    id
+  );
+
+-- Compact, bounded historical read index. The immutable event bodies remain
+-- in R2 under v1/. Each row points at a minute partition manifest under
+-- indexes/v1/ and retains only aggregate/filter metadata in D1.
+CREATE TABLE IF NOT EXISTS audit_archive_partitions (
+  org_id TEXT NOT NULL,
+  partition_minute TEXT NOT NULL,
+  index_key TEXT NOT NULL,
+  index_sha256 TEXT NOT NULL,
+  entry_count INTEGER NOT NULL,
+  min_timestamp TEXT NOT NULL,
+  max_timestamp TEXT NOT NULL,
+  actions_json TEXT NOT NULL,
+  identity_ids_json TEXT NOT NULL,
+  workspace_ids_json TEXT NOT NULL,
+  planes_json TEXT NOT NULL,
+  results_json TEXT NOT NULL,
+  tokens_issued INTEGER NOT NULL DEFAULT 0,
+  tokens_revoked INTEGER NOT NULL DEFAULT 0,
+  tokens_refreshed INTEGER NOT NULL DEFAULT 0,
+  scope_checks INTEGER NOT NULL DEFAULT 0,
+  scope_denials INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (org_id, partition_minute)
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_archive_partitions_org_minute
+  ON audit_archive_partitions (org_id, partition_minute DESC);

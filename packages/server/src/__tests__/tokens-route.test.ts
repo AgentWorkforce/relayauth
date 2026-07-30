@@ -1219,7 +1219,6 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
       grantedScopes: JSON.stringify(["rth:read", "rth:sync"]),
     });
     assert.equal(await countStoredTokens(app), 1, "only the access assertion should be persisted");
-    await Promise.all(deferred.map((task) => task()));
 
     const auditRow = await app.storage.DB.prepare(`
       SELECT action, identity_id, org_id, workspace_id, resource, metadata_json
@@ -1244,6 +1243,37 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
       sponsorId: "user_cloud_login",
       grantedScopes: JSON.stringify(["rth:read", "rth:sync"]),
     });
+  });
+
+  await t.test("fails closed without an assertion token when its audit cannot commit", async () => {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: assertionKeyIssuerScopes,
+      },
+    });
+    const assertionKey = await issueAssertionKey(app, authHeaders);
+    app.storage.tokens.persistIssuedWithAudit = async () => {
+      throw new Error("fault: assertion audit");
+    };
+
+    const response = await withSilencedConsoleError(() => requestRoute(
+      app,
+      "POST",
+      "/v1/tokens/relayhistory-assertion",
+      {
+        body: {
+          orgId: "org_relayhistory_target",
+          workspaceId: "ws_relayhistory_target",
+          sponsorId: "user_cloud_login",
+          scopes: ["rth:read"],
+        },
+        headers: { "x-api-key": assertionKey.key },
+      },
+    ));
+    await assertJsonResponse<ErrorBody>(response, 500, (body) => {
+      assert.equal(body.code, "internal_error");
+    });
+    assert.equal(await countStoredTokens(app), 0);
   });
 
   await t.test("requires the dedicated api-key path even when a bearer has the assertion scope", async () => {
@@ -1356,6 +1386,32 @@ test("POST /v1/tokens/refresh", async (t) => {
 
     await assertRs256Algorithm(body.accessToken, ["specialist"]);
     await assertRs256Algorithm(body.refreshToken, ["relayauth"]);
+  });
+
+  await t.test("rolls back the new pair and leaves the old JTI active when rotation audit fails", async () => {
+    const { app, identity } = await createHarness();
+    const { pair, accessClaims, refreshClaims } = createRs256TokenPair(identity);
+    await seedActiveTokens(app, identity.id, [accessClaims.jti, refreshClaims.jti]);
+    const beforeCount = await countStoredTokens(app);
+    app.storage.tokens.rotateIssuedPairWithAudit = async () => {
+      throw new Error("fault: rotation audit");
+    };
+
+    const response = await withSilencedConsoleError(() => requestRoute(
+      app,
+      "POST",
+      "/v1/tokens/refresh",
+      { body: { refreshToken: pair.refreshToken } },
+    ));
+    await assertJsonResponse<ErrorBody>(response, 500, (body) => {
+      assert.equal(body.code, "internal_error");
+    });
+    assert.equal(await countStoredTokens(app), beforeCount);
+    assert.equal(
+      (await app.storage.tokens.getById(refreshClaims.jti))?.status,
+      "active",
+    );
+    assert.deepEqual(await listRevokedTokenIds(app), []);
   });
 
   await t.test("returns 400 when refreshToken is missing", async () => {

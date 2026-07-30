@@ -256,6 +256,129 @@ test("sqlite token pair rolls back both token rows when the audit insert fails",
   }
 });
 
+test("sqlite refresh rotation atomically mints, revokes, and audits", async () => {
+  const { storage, cleanup } = createHarness();
+  const previous = {
+    id: "tok_previous_refresh",
+    tokenId: "tok_previous_refresh",
+    jti: "tok_previous_refresh",
+    identityId: "agent_rotation",
+    sessionId: "sess_rotation",
+    issuedAt: 1_774_608_000,
+    expiresAt: 1_800_000_000,
+    createdAt: "2026-03-27T12:00:00.000Z",
+  };
+  const accessToken = {
+    ...previous,
+    id: "tok_rotation_access",
+    tokenId: "tok_rotation_access",
+    jti: "tok_rotation_access",
+    expiresAt: 1_774_611_600,
+  };
+  const refreshToken = {
+    ...previous,
+    id: "tok_rotation_refresh",
+    tokenId: "tok_rotation_refresh",
+    jti: "tok_rotation_refresh",
+  };
+
+  try {
+    await storage.tokens.persistIssued(previous);
+    await storage.tokens.rotateIssuedPairWithAudit({
+      accessToken,
+      refreshToken,
+      previousRefreshToken: {
+        id: previous.id,
+        identityId: previous.identityId,
+        expiresAt: previous.expiresAt,
+      },
+      refreshedAuditEntry: createAuditEntry({
+        id: "aud_rotation_refreshed",
+        action: "token.refreshed",
+        identityId: previous.identityId,
+      }),
+      revokedAuditEntry: createAuditEntry({
+        id: "aud_rotation_revoked",
+        action: "token.revoked",
+        identityId: previous.identityId,
+      }),
+    });
+
+    assert.equal((await storage.tokens.getById(previous.id))?.status, "revoked");
+    assert.equal((await storage.tokens.getById(accessToken.id))?.status, "active");
+    assert.equal((await storage.tokens.getById(refreshToken.id))?.status, "active");
+    assert.equal(await storage.revocations.isRevoked?.(previous.id), true);
+    assert.deepEqual(
+      (await storage.audit.query({
+        orgId: "org_test",
+        limit: 10,
+      }, { includeOverflowRow: false })).map((entry) => entry.id).sort(),
+      ["aud_rotation_refreshed", "aud_rotation_revoked"],
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("sqlite refresh rotation audit conflict rolls back new tokens and old-JTI revocation", async () => {
+  const { storage, cleanup } = createHarness();
+  const previous = {
+    id: "tok_previous_rollback",
+    tokenId: "tok_previous_rollback",
+    jti: "tok_previous_rollback",
+    identityId: "agent_rotation_rollback",
+    sessionId: "sess_rotation_rollback",
+    issuedAt: 1_774_608_000,
+    expiresAt: 1_774_694_400,
+    createdAt: "2026-03-27T12:00:00.000Z",
+  };
+
+  try {
+    await storage.tokens.persistIssued(previous);
+    await storage.audit.write(createAuditEntry({
+      id: "aud_rotation_conflict",
+      action: "token.revoked",
+      identityId: previous.identityId,
+    }));
+    await assert.rejects(() => storage.tokens.rotateIssuedPairWithAudit({
+      accessToken: {
+        ...previous,
+        id: "tok_rollback_rotation_access",
+        tokenId: "tok_rollback_rotation_access",
+        jti: "tok_rollback_rotation_access",
+      },
+      refreshToken: {
+        ...previous,
+        id: "tok_rollback_rotation_refresh",
+        tokenId: "tok_rollback_rotation_refresh",
+        jti: "tok_rollback_rotation_refresh",
+      },
+      previousRefreshToken: {
+        id: previous.id,
+        identityId: previous.identityId,
+        expiresAt: previous.expiresAt,
+      },
+      refreshedAuditEntry: createAuditEntry({
+        id: "aud_rotation_first",
+        action: "token.refreshed",
+        identityId: previous.identityId,
+      }),
+      revokedAuditEntry: createAuditEntry({
+        id: "aud_rotation_conflict",
+        action: "token.revoked",
+        identityId: previous.identityId,
+      }),
+    }));
+
+    assert.equal((await storage.tokens.getById(previous.id))?.status, "active");
+    assert.equal(await storage.tokens.getById("tok_rollback_rotation_access"), null);
+    assert.equal(await storage.tokens.getById("tok_rollback_rotation_refresh"), null);
+    assert.equal(await storage.revocations.isRevoked?.(previous.id), false);
+  } finally {
+    cleanup();
+  }
+});
+
 test("sqlite identity storage supports CRUD, hierarchy, and budget auto-suspend", async () => {
   const { storage, cleanup } = createHarness();
 

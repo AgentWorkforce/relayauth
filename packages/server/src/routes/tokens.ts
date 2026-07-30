@@ -527,7 +527,6 @@ tokens.post("/relayhistory-assertion", async (c) => {
 
   const storage = c.get("storage");
   const assertion = await issueRelayhistoryAssertion(storage, c.env, {
-    deferTask: c.get("deferTask"),
     orgId: request.orgId,
     workspaceId: request.workspaceId,
     sponsorId: request.sponsorId,
@@ -628,17 +627,22 @@ tokens.post("/refresh", async (c) => {
     wrapAccessToken: isDerivedClaims(verification.claims),
     wrapRefreshToken: isDerivedClaims(verification.claims),
     tokenIdPrefix: tokenPrefixForClaims(verification.claims),
+    previousRefreshToken: {
+      id: presentedJti,
+      identityId: identity.id,
+      expiresAt: verification.claims.exp,
+    },
   });
 
-  // Single-use enforcement: revoke the previous refresh JTI after we have
-  // successfully issued and persisted the new pair. If this revoke fails the
-  // new pair is already persisted — we log the audit and still surface the
-  // error so callers don't see a successful rotation that left the old JTI
-  // active.
-  try {
-    await revokePreviousRefreshJti(storage, identity, presentedJti, verification.claims.exp);
-  } catch (error) {
-    return c.json({ error: "refresh_rotation_failed" }, 500);
+  // The durable storage transaction above is the source of truth. Hosted
+  // adapters may also maintain a low-latency revocation cache; a cache write
+  // cannot roll back or split the already-atomic token rotation.
+  if (typeof storage.revocations.revoke === "function") {
+    try {
+      await storage.revocations.revoke(presentedJti, verification.claims.exp);
+    } catch (error) {
+      console.error("Failed to refresh revocation cache after atomic rotation", error);
+    }
   }
 
   return c.json(tokenPair, 200);
@@ -760,6 +764,11 @@ async function issueTokenPair(
     wrapAccessToken?: boolean;
     wrapRefreshToken?: boolean;
     tokenIdPrefix?: string;
+    previousRefreshToken?: {
+      id: string;
+      identityId: string;
+      expiresAt: number;
+    };
   },
 ): Promise<TokenPair> {
   const issuedAtSeconds = Math.floor(Date.now() / 1000);
@@ -817,15 +826,32 @@ async function issueTokenPair(
     ? wrapRelayToken(signedRefreshToken, relayTokenPrefix(options.tokenIdPrefix))
     : signedRefreshToken;
 
-  await storage.tokens.persistIssuedPairWithAudit({
-    accessToken: toIssuedTokenRecord(identity.id, accessClaims),
-    refreshToken: toIssuedTokenRecord(identity.id, refreshClaims),
-    auditEntry: createTokenAuditEntry({
-      action: options.action,
-      identity,
-      tokenId: accessClaims.jti,
-    }),
+  const accessTokenRecord = toIssuedTokenRecord(identity.id, accessClaims);
+  const refreshTokenRecord = toIssuedTokenRecord(identity.id, refreshClaims);
+  const issueAuditEntry = createTokenAuditEntry({
+    action: options.action,
+    identity,
+    tokenId: accessClaims.jti,
   });
+  if (options.previousRefreshToken) {
+    await storage.tokens.rotateIssuedPairWithAudit({
+      accessToken: accessTokenRecord,
+      refreshToken: refreshTokenRecord,
+      previousRefreshToken: options.previousRefreshToken,
+      refreshedAuditEntry: issueAuditEntry,
+      revokedAuditEntry: createTokenAuditEntry({
+        action: "token.revoked",
+        identity,
+        tokenId: options.previousRefreshToken.id,
+      }),
+    });
+  } else {
+    await storage.tokens.persistIssuedPairWithAudit({
+      accessToken: accessTokenRecord,
+      refreshToken: refreshTokenRecord,
+      auditEntry: issueAuditEntry,
+    });
+  }
 
   return {
     accessToken,
@@ -840,7 +866,6 @@ async function issueRelayhistoryAssertion(
   storage: AuthStorage,
   env: AppEnv["Bindings"],
   options: {
-    deferTask: DeferredTaskScheduler;
     orgId: string;
     workspaceId: string;
     sponsorId: string;
@@ -877,11 +902,9 @@ async function issueRelayhistoryAssertion(
   };
 
   const accessToken = await signToken(claims, env);
-  await persistIssuedToken(storage, claims.sub, claims);
-  scheduleDeferredTask(
-    options.deferTask,
-    "audit.relayhistory_assertion_mint",
-    () => writeAssertionAuditBatch(storage, {
+  await storage.tokens.persistIssuedWithAudit({
+    token: toIssuedTokenRecord(claims.sub, claims),
+    auditEntry: createAssertionAuditEntry({
       actorId: options.actorId,
       actorOrgId: options.actorOrgId,
       orgId: options.orgId,
@@ -890,21 +913,13 @@ async function issueRelayhistoryAssertion(
       tokenId: claims.jti,
       scopes: options.scopes,
     }),
-  );
+  });
 
   return {
     accessToken,
     accessTokenExpiresAt: new Date(claims.exp * 1000).toISOString(),
     tokenType: "Bearer",
   };
-}
-
-async function persistIssuedToken(
-  storage: AuthStorage,
-  identityId: string,
-  claims: RelayAuthTokenClaims,
-): Promise<void> {
-  await storage.tokens.persistIssued(toIssuedTokenRecord(identityId, claims));
 }
 
 function toIssuedTokenRecord(
@@ -960,8 +975,7 @@ function createTokenAuditEntry(
   };
 }
 
-async function writeAssertionAuditBatch(
-  storage: AuthStorage,
+function createAssertionAuditEntry(
   options: {
     actorId: string;
     actorOrgId: string;
@@ -971,8 +985,8 @@ async function writeAssertionAuditBatch(
     tokenId: string;
     scopes: string[];
   },
-): Promise<void> {
-  await storage.audit.writeBatch([{
+): AuditLogWriteEntry {
+  return {
     id: crypto.randomUUID(),
     action: "token.issued",
     identityId: options.actorId,
@@ -988,7 +1002,7 @@ async function writeAssertionAuditBatch(
       grantedScopes: JSON.stringify(options.scopes),
     },
     timestamp: new Date().toISOString(),
-  }]);
+  };
 }
 
 async function findTargetTokensByTokenId(storage: AuthStorage, tokenId: string): Promise<StoredTokenRecord[]> {
@@ -1029,33 +1043,6 @@ async function isTokenRevoked(storage: AuthStorage, jti: string): Promise<boolea
   }
 
   return false;
-}
-
-async function revokePreviousRefreshJti(
-  storage: AuthStorage,
-  identity: StoredIdentity,
-  previousJti: string,
-  previousExp: number,
-): Promise<void> {
-  const jti = normalizeOptionalString(previousJti);
-  if (!jti) {
-    return;
-  }
-
-  const revokedAt = new Date().toISOString();
-  await storage.revocations.revokeIdentityTokens(identity.id, [jti], revokedAt);
-  if (typeof storage.revocations.revoke === "function") {
-    const expiresAt = Number.isFinite(previousExp) && previousExp > 0
-      ? previousExp
-      : Math.floor(Date.now() / 1000) + DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
-    await storage.revocations.revoke(jti, expiresAt);
-  }
-
-  await writeTokenAudit(storage, {
-    action: "token.revoked",
-    identity,
-    tokenId: jti,
-  });
 }
 
 async function cascadeRevokeSession(

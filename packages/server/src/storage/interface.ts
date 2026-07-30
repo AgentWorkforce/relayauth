@@ -165,6 +165,28 @@ export type IssuedTokenPairAudit = {
   auditEntry: AuditLogWriteEntry;
 };
 
+export type IssuedTokenAudit = {
+  token: IssuedTokenRecord;
+  auditEntry: AuditLogWriteEntry;
+};
+
+/**
+ * Atomic single-use refresh boundary. A successful commit creates the new
+ * pair, revokes the presented refresh JTI, and persists both audit entries.
+ * A failed commit must leave the old refresh token active and create nothing.
+ */
+export type IssuedTokenRotationAudit = {
+  accessToken: IssuedTokenRecord;
+  refreshToken: IssuedTokenRecord;
+  previousRefreshToken: {
+    id: string;
+    identityId: string;
+    expiresAt: number;
+  };
+  refreshedAuditEntry: AuditLogWriteEntry;
+  revokedAuditEntry: AuditLogWriteEntry;
+};
+
 export interface IdentityStorage {
   list(orgId: string, options?: ListIdentitiesOptions): Promise<AgentIdentity[]>;
   get(id: string): Promise<StoredIdentity | null>;
@@ -183,7 +205,9 @@ export interface IdentityStorage {
 
 export interface TokenStorage {
   persistIssued(token: IssuedTokenRecord): Promise<void>;
+  persistIssuedWithAudit(input: IssuedTokenAudit): Promise<void>;
   persistIssuedPairWithAudit(input: IssuedTokenPairAudit): Promise<void>;
+  rotateIssuedPairWithAudit(input: IssuedTokenRotationAudit): Promise<void>;
   getById(tokenId: string): Promise<StoredTokenRecord | null>;
   listActiveByIdentityId(identityId: string): Promise<StoredTokenRecord[]>;
   listActiveBySessionId(sessionId: string): Promise<StoredTokenRecord[]>;

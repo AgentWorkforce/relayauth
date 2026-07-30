@@ -43,7 +43,9 @@ import type {
   IdentityChildSummary,
   IdentityStorage,
   IdentityStatusCounts,
+  IssuedTokenAudit,
   IssuedTokenPairAudit,
+  IssuedTokenRotationAudit,
   IssuedTokenRecord,
   ListIdentitiesOptions,
   OrganizationContextRecord,
@@ -1312,6 +1314,50 @@ class SqliteTokenStorage implements TokenStorage {
     );
   }
 
+  async persistIssuedWithAudit(input: IssuedTokenAudit): Promise<void> {
+    const backend = await this.provider.getBackend();
+    const auditEntry = normalizeAuditWriteEntry(input.auditEntry);
+
+    if (backend.kind === "memory") {
+      if (
+        backend.state.tokens.has(input.token.id)
+        || backend.state.auditLogs.some((entry) => entry.id === auditEntry.id)
+      ) {
+        throw new StorageError("token_already_exists", 409, "token_already_exists");
+      }
+      backend.state.tokens.set(input.token.id, {
+        ...input.token,
+        status: "active",
+      });
+      backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return;
+    }
+
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      backend.db.prepare(INSERT_TOKEN_SQL).run(
+        input.token.id,
+        input.token.tokenId,
+        input.token.jti,
+        input.token.identityId,
+        input.token.sessionId ?? null,
+        input.token.issuedAt,
+        input.token.expiresAt,
+        input.token.createdAt,
+      );
+      backend.db.prepare(INSERT_AUDIT_LOG_SQL).run(...toAuditParams(auditEntry));
+      backend.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the originating storage error.
+      }
+      throw error;
+    }
+  }
+
   async persistIssuedPairWithAudit(input: IssuedTokenPairAudit): Promise<void> {
     const backend = await this.provider.getBackend();
     const auditEntry = normalizeAuditWriteEntry(input.auditEntry);
@@ -1361,6 +1407,106 @@ class SqliteTokenStorage implements TokenStorage {
       } catch {
         // Preserve the originating storage error (for example SQLITE_FULL);
         // rollback errors must not hide the retry/capacity classification.
+      }
+      throw error;
+    }
+  }
+
+  async rotateIssuedPairWithAudit(input: IssuedTokenRotationAudit): Promise<void> {
+    const backend = await this.provider.getBackend();
+    const refreshedAudit = normalizeAuditWriteEntry(input.refreshedAuditEntry);
+    const revokedAudit = normalizeAuditWriteEntry(input.revokedAuditEntry);
+    const previous = input.previousRefreshToken;
+
+    if (backend.kind === "memory") {
+      const previousToken = backend.state.tokens.get(previous.id);
+      if (
+        !previousToken
+        || previousToken.identityId !== previous.identityId
+        || previousToken.status !== "active"
+      ) {
+        throw new StorageError(
+          "refresh_token_not_active",
+          409,
+          "refresh_token_not_active",
+        );
+      }
+      if (
+        backend.state.tokens.has(input.accessToken.id)
+        || backend.state.tokens.has(input.refreshToken.id)
+        || backend.state.auditLogs.some((entry) =>
+          entry.id === refreshedAudit.id || entry.id === revokedAudit.id)
+      ) {
+        throw new StorageError("token_rotation_conflict", 409, "token_rotation_conflict");
+      }
+      backend.state.tokens.set(input.accessToken.id, {
+        ...input.accessToken,
+        status: "active",
+      });
+      backend.state.tokens.set(input.refreshToken.id, {
+        ...input.refreshToken,
+        status: "active",
+      });
+      previousToken.status = "revoked";
+      backend.state.revokedTokens.set(previous.id, {
+        expiresAt: previous.expiresAt,
+        identityId: previous.identityId,
+        revokedAt: revokedAudit.timestamp,
+      });
+      backend.state.auditLogs.push(
+        cloneAuditEntryRecord(refreshedAudit),
+        cloneAuditEntryRecord(revokedAudit),
+      );
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return;
+    }
+
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      const insertToken = backend.db.prepare(INSERT_TOKEN_SQL);
+      for (const token of [input.accessToken, input.refreshToken]) {
+        insertToken.run(
+          token.id,
+          token.tokenId,
+          token.jti,
+          token.identityId,
+          token.sessionId ?? null,
+          token.issuedAt,
+          token.expiresAt,
+          token.createdAt,
+        );
+      }
+      const revoked = backend.db.prepare(`
+        UPDATE tokens
+        SET status = 'revoked'
+        WHERE identity_id = ?
+          AND status = 'active'
+          AND (id = ? OR token_id = ? OR jti = ?)
+      `).run(
+        previous.identityId,
+        previous.id,
+        previous.id,
+        previous.id,
+      );
+      if (Number(revoked.changes ?? 0) !== 1) {
+        throw new StorageError(
+          "refresh_token_not_active",
+          409,
+          "refresh_token_not_active",
+        );
+      }
+      backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL).run(
+        previous.id,
+        previous.expiresAt,
+      );
+      backend.db.prepare(INSERT_AUDIT_LOG_SQL).run(...toAuditParams(refreshedAudit));
+      backend.db.prepare(INSERT_AUDIT_LOG_SQL).run(...toAuditParams(revokedAudit));
+      backend.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the originating storage error.
       }
       throw error;
     }

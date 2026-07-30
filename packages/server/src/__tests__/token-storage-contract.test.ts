@@ -17,6 +17,14 @@ test("TokenStorage owns the complete issued-token hot-path contract", () => {
     storageInterfaceSource,
     /\bpersistIssuedPairWithAudit\(input: IssuedTokenPairAudit\): Promise<void>/,
   );
+  assert.match(
+    storageInterfaceSource,
+    /\bpersistIssuedWithAudit\(input: IssuedTokenAudit\): Promise<void>/,
+  );
+  assert.match(
+    storageInterfaceSource,
+    /\brotateIssuedPairWithAudit\(input: IssuedTokenRotationAudit\): Promise<void>/,
+  );
   assert.match(storageInterfaceSource, /\bgetById\(tokenId: string\): Promise<StoredTokenRecord \| null>/);
   assert.match(storageInterfaceSource, /\blistActiveByIdentityId\(identityId: string\): Promise<StoredTokenRecord\[]>/);
   assert.match(storageInterfaceSource, /\blistActiveBySessionId\(sessionId: string\): Promise<StoredTokenRecord\[]>/);
