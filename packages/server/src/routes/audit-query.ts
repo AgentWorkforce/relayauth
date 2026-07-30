@@ -2,6 +2,7 @@ import type { AuditAction, AuditEntry } from "@relayauth/types";
 import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
+import type { AuditQueryCursor } from "../storage/interface.js";
 import { requireScope } from "../middleware/scope.js";
 
 export type ScopeContextVars = {
@@ -39,10 +40,7 @@ export type AuditQueryParams = {
   result?: "allowed" | "denied";
   from?: string;
   to?: string;
-  cursor?: {
-    timestamp: string;
-    id: string;
-  };
+  cursor?: AuditQueryCursor;
   limit: number;
 };
 
@@ -87,10 +85,29 @@ auditQuery.get("/", requireScope("relayauth:audit:read"), async (c) => {
     return c.json({ error: parsed.error }, 400);
   }
 
-  const entries = await c.get("storage").audit.query(parsed.value);
+  const result = await c.get("storage").audit.query(parsed.value);
+  if (result.kind === "budget_exhausted") {
+    return c.json(
+      {
+        entries: result.entries,
+        nextCursor: encodeAuditCursor(result.continuation),
+        hasMore: true,
+        partial: true,
+        workBudget: result.workBudget,
+      },
+      200,
+    );
+  }
+
+  const entries = result.entries;
   const hasMore = entries.length > parsed.value.limit;
   const page = hasMore ? entries.slice(0, parsed.value.limit) : entries;
-  const nextCursor = hasMore ? encodeCursor(page[page.length - 1]?.timestamp, page[page.length - 1]?.id) : null;
+  const nextCursor = hasMore
+    ? encodeAuditCursor({
+        timestamp: page[page.length - 1]?.timestamp ?? "",
+        id: page[page.length - 1]?.id ?? "",
+      })
+    : null;
 
   return c.json(
     {
@@ -137,8 +154,11 @@ export function parseAuditQuery(
   }
 
   const cursor = normalizeQueryValue(query.cursor);
-  const decodedCursor = cursor ? decodeCursor(cursor) : null;
+  const decodedCursor = cursor ? decodeAuditCursor(cursor) : null;
   if (cursor && !decodedCursor) {
+    return { ok: false, error: "invalid cursor" };
+  }
+  if (decodedCursor?.kind === "archive_partition" && decodedCursor.orgId !== orgId) {
     return { ok: false, error: "invalid cursor" };
   }
 
@@ -206,7 +226,10 @@ export function buildAuditQuery(
     values.push(params.to);
   }
 
-  if (params.cursor) {
+  if (params.cursor?.kind === "archive_partition") {
+    clauses.push("timestamp < ?");
+    values.push(params.cursor.timestamp);
+  } else if (params.cursor) {
     clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
     values.push(params.cursor.timestamp, params.cursor.timestamp, params.cursor.id);
   }
@@ -299,17 +322,34 @@ function isIsoTimestamp(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value);
 }
 
-function encodeCursor(timestamp: string | undefined, id: string | undefined): string | null {
-  if (!timestamp || !id) {
+export function encodeAuditCursor(cursor: AuditQueryCursor | undefined): string | null {
+  if (!cursor?.timestamp) {
     return null;
   }
 
-  return toBase64Url(`${timestamp}|${id}`);
+  if (cursor.kind === "archive_partition") {
+    return toBase64Url(`archive_partition|${cursor.orgId}|${cursor.timestamp}`);
+  }
+
+  if (!cursor.id) {
+    return null;
+  }
+
+  return toBase64Url(`${cursor.timestamp}|${cursor.id}`);
 }
 
-function decodeCursor(value: string): { timestamp: string; id: string } | null {
+export function decodeAuditCursor(value: string): AuditQueryCursor | null {
   try {
     const decoded = fromBase64Url(value);
+    if (decoded.startsWith("archive_partition|")) {
+      const payload = decoded.slice("archive_partition|".length);
+      const separator = payload.lastIndexOf("|");
+      const orgId = payload.slice(0, separator);
+      const timestamp = payload.slice(separator + 1);
+      return orgId && timestamp && isIsoTimestamp(timestamp)
+        ? { kind: "archive_partition", orgId, timestamp }
+        : null;
+    }
     const separator = decoded.lastIndexOf("|");
     if (separator <= 0 || separator === decoded.length - 1) {
       return null;
@@ -321,7 +361,7 @@ function decodeCursor(value: string): { timestamp: string; id: string } | null {
       return null;
     }
 
-    return { timestamp, id };
+    return { kind: "entry", timestamp, id };
   } catch {
     return null;
   }

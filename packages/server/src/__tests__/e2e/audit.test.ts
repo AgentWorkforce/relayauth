@@ -287,7 +287,7 @@ test("Audit & Observability E2E", async (t) => {
       action: "budget.alert" as AuditAction,
       limit: 10,
     });
-    const alertEntry = alertEntries.find((entry) => entry.action === "budget.alert");
+    const alertEntry = alertEntries.entries.find((entry) => entry.action === "budget.alert");
     assert.ok(alertEntry, "expected a budget.alert audit row");
 
     const requests: Array<{ request: Request; body: string }> = [];
@@ -399,7 +399,7 @@ test("Audit & Observability E2E", async (t) => {
     const afterPurge = await countExpiredEntries(scenario.harness.db, 90);
     assert.deepEqual(afterPurge, { expiredCount: 0 });
     assert.equal(
-      (await scenario.harness.db.audit.query({ orgId: ORG_ID, limit: 100 })).some(
+      (await scenario.harness.db.audit.query({ orgId: ORG_ID, limit: 100 })).entries.some(
         (row) => row.id === "aud_retention_old",
       ),
       false,

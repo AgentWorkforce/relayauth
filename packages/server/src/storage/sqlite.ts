@@ -2078,51 +2078,63 @@ class SqliteAuditStorage implements AuditStorage {
     }
   }
 
-  async query(query: AuditQueryInput, options: AuditQueryOptions = {}): Promise<AuditEntryRecord[]> {
+  async query(query: AuditQueryInput, options: AuditQueryOptions = {}) {
     const normalized = normalizeAuditQuery(query);
     const backend = await this.provider.getBackend();
     const limitWithOverflow = normalized.limit + (options.includeOverflowRow ?? true ? 1 : 0);
 
     if (backend.kind === "memory") {
-      return backend.state.auditLogs
-        .filter((entry) => matchesAuditQuery(entry, normalized))
-        .sort(compareAuditRecordDesc)
-        .slice(0, limitWithOverflow)
-        .map((entry) => cloneAuditEntryRecord(entry));
+      return {
+        kind: "complete" as const,
+        entries: backend.state.auditLogs
+          .filter((entry) => matchesAuditQuery(entry, normalized))
+          .sort(compareAuditRecordDesc)
+          .slice(0, limitWithOverflow)
+          .map((entry) => cloneAuditEntryRecord(entry)),
+      };
     }
 
     const statement = buildAuditQuerySql(normalized, limitWithOverflow);
-    return backend.db
-      .prepare<AuditRow>(statement.sql)
-      .all(...statement.params)
-      .map((row) => hydrateAuditEntryRecord(row))
-      .filter((entry): entry is AuditEntryRecord => entry !== null);
+    return {
+      kind: "complete" as const,
+      entries: backend.db
+        .prepare<AuditRow>(statement.sql)
+        .all(...statement.params)
+        .map((row) => hydrateAuditEntryRecord(row))
+        .filter((entry): entry is AuditEntryRecord => entry !== null),
+    };
   }
 
-  async getActionCounts(orgId: string, query: DashboardAuditQuery): Promise<DashboardAuditCounts> {
+  async getActionCounts(orgId: string, query: DashboardAuditQuery) {
     const normalizedOrgId = requireString(orgId, "orgId is required");
     const from = normalizeOptionalString(query.from);
     const to = normalizeOptionalString(query.to);
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
-      return summarizeAuditCounts(
-        backend.state.auditLogs.filter((entry) =>
-          entry.orgId === normalizedOrgId
-          && (!from || entry.timestamp >= from)
-          && (!to || entry.timestamp < to),
+      return {
+        kind: "complete" as const,
+        counts: summarizeAuditCounts(
+          backend.state.auditLogs.filter((entry) =>
+            entry.orgId === normalizedOrgId
+            && (!from || entry.timestamp >= from)
+            && (!to || entry.timestamp < to),
+          ),
         ),
-      );
+      };
     }
 
     const statement = buildAuditCountsSql(normalizedOrgId, { from, to });
     const row = backend.db.prepare<AuditCountRow>(statement.sql).get(...statement.params);
     return {
-      tokensIssued: normalizeNumber(row?.tokensIssued),
-      tokensRevoked: normalizeNumber(row?.tokensRevoked),
-      tokensRefreshed: normalizeNumber(row?.tokensRefreshed),
-      scopeChecks: normalizeNumber(row?.scopeChecks),
-      scopeDenials: normalizeNumber(row?.scopeDenials),
+      kind: "complete" as const,
+      counts: {
+        tokensIssued: normalizeNumber(row?.tokensIssued),
+        tokensRevoked: normalizeNumber(row?.tokensRevoked),
+        tokensRefreshed: normalizeNumber(row?.tokensRefreshed),
+        scopeChecks: normalizeNumber(row?.scopeChecks),
+        scopeDenials: normalizeNumber(row?.scopeDenials),
+      },
     };
   }
 
@@ -3091,7 +3103,10 @@ function buildAuditQuerySql(query: AuditQueryInput, limit: number): { sql: strin
     clauses.push("(timestamp < ?)");
     params.push(query.to);
   }
-  if (query.cursor) {
+  if (query.cursor?.kind === "archive_partition") {
+    clauses.push("timestamp < ?");
+    params.push(query.cursor.timestamp);
+  } else if (query.cursor) {
     clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
     params.push(query.cursor.timestamp, query.cursor.timestamp, query.cursor.id);
   }
@@ -3206,7 +3221,11 @@ function matchesAuditQuery(entry: AuditEntryRecord, query: AuditQueryInput): boo
   if (query.to && entry.timestamp >= query.to) {
     return false;
   }
-  if (query.cursor) {
+  if (query.cursor?.kind === "archive_partition") {
+    if (entry.timestamp >= query.cursor.timestamp) {
+      return false;
+    }
+  } else if (query.cursor) {
     if (entry.timestamp > query.cursor.timestamp) {
       return false;
     }

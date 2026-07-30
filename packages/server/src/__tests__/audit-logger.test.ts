@@ -486,7 +486,7 @@ test("createAuditMiddleware() logs token validation events automatically", async
 
   // Query audit log from SQLite storage instead of D1 recording
   const auditEntries = await sqliteStorage.audit.query({ orgId: "org_middleware_1" });
-  const entries = auditEntries.items ?? auditEntries;
+  const entries = auditEntries.entries;
   assert.ok(entries.length >= 1, "expected a token validation audit write");
 
   const tokenValidated = entries.find((e: any) => e.action === "token.validated");

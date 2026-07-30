@@ -60,6 +60,32 @@ export type PolicyUpdate = Partial<
   Pick<Policy, "name" | "effect" | "scopes" | "conditions" | "priority">
 >;
 
+export type AuditEntryCursor = {
+  /** Existing entry-position cursor. `kind` is omitted by legacy callers. */
+  kind?: "entry";
+  timestamp: string;
+  id: string;
+};
+
+/**
+ * A durable scan boundary between immutable archive partitions. It is not an
+ * audit entry id: resuming starts strictly before this minute.
+ */
+export type AuditArchivePartitionCursor = {
+  kind: "archive_partition";
+  orgId: string;
+  timestamp: string;
+};
+
+export type AuditQueryCursor = AuditEntryCursor | AuditArchivePartitionCursor;
+
+export type AuditQueryWorkBudget = {
+  d1Pages: number;
+  d1Rows: number;
+  partitions: number;
+  r2Reads: number;
+};
+
 export type AuditQueryInput = {
   orgId: string;
   identityId?: string;
@@ -69,10 +95,7 @@ export type AuditQueryInput = {
   result?: "allowed" | "denied";
   from?: string;
   to?: string;
-  cursor?: {
-    timestamp: string;
-    id: string;
-  };
+  cursor?: AuditQueryCursor;
   limit: number;
 };
 
@@ -80,9 +103,22 @@ export type AuditQueryOptions = {
   includeOverflowRow?: boolean;
 };
 
+export type AuditQueryResult =
+  | {
+      kind: "complete";
+      entries: AuditEntryRecord[];
+    }
+  | {
+      kind: "budget_exhausted";
+      entries: AuditEntryRecord[];
+      continuation: AuditArchivePartitionCursor;
+      workBudget: AuditQueryWorkBudget;
+    };
+
 export type DashboardAuditQuery = {
   from?: string;
   to?: string;
+  cursor?: AuditArchivePartitionCursor;
 };
 
 export type DashboardAuditCounts = {
@@ -92,6 +128,18 @@ export type DashboardAuditCounts = {
   scopeChecks: number;
   scopeDenials: number;
 };
+
+export type DashboardAuditCountsResult =
+  | {
+      kind: "complete";
+      counts: DashboardAuditCounts;
+    }
+  | {
+      kind: "budget_exhausted";
+      counts: DashboardAuditCounts;
+      continuation: AuditArchivePartitionCursor;
+      workBudget: AuditQueryWorkBudget;
+    };
 
 export type CreateAuditWebhookInput = {
   orgId: string;
@@ -240,8 +288,8 @@ export interface PolicyStorage {
 export interface AuditStorage {
   write(entry: AuditLogWriteEntry): Promise<void>;
   writeBatch(entries: AuditLogWriteEntry[]): Promise<void>;
-  query(query: AuditQueryInput, options?: AuditQueryOptions): Promise<AuditEntryRecord[]>;
-  getActionCounts(orgId: string, query: DashboardAuditQuery): Promise<DashboardAuditCounts>;
+  query(query: AuditQueryInput, options?: AuditQueryOptions): Promise<AuditQueryResult>;
+  getActionCounts(orgId: string, query: DashboardAuditQuery): Promise<DashboardAuditCountsResult>;
   writeIdentitySuspendedEvent(identity: StoredIdentity, reason: string, actorId: string): Promise<void>;
 }
 

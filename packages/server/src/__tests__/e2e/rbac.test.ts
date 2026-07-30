@@ -399,7 +399,7 @@ test("Scopes & RBAC E2E", async (t) => {
       action: "budget.exceeded" as AuditAction,
       limit: 10,
     });
-    const audit = auditEntries.find(
+    const audit = auditEntries.entries.find(
       (entry) =>
         entry.action === "budget.exceeded"
         && entry.resource === READ_GENERAL_SCOPE,
@@ -447,7 +447,7 @@ test("Scopes & RBAC E2E", async (t) => {
       action: "scope.escalation_denied" as AuditAction,
       limit: 10,
     });
-    const audit = auditEntries.find(
+    const audit = auditEntries.entries.find(
       (entry) =>
         entry.action === "scope.escalation_denied"
         && entry.resource === FILE_WRITE_SCOPE,

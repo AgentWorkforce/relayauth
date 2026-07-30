@@ -6,6 +6,7 @@ import type { StoredIdentity } from "../storage/identity-types.js";
 import type { AuthStorage } from "../storage/index.js";
 import {
   buildAuditQuery,
+  encodeAuditCursor,
   parseAuditQuery,
   toAuditEntry,
   type AuditLogRow,
@@ -79,7 +80,23 @@ identityActivity.get("/:id/activity", requireScope("relayauth:audit:read"), asyn
     return c.json({ error: parsed.error }, 400);
   }
 
-  const entries = await storage.audit.query(parsed.value);
+  const result = await storage.audit.query(parsed.value);
+  if (result.kind === "budget_exhausted") {
+    return c.json(
+      {
+        entries: result.entries,
+        nextCursor: encodeAuditCursor(result.continuation),
+        hasMore: true,
+        partial: true,
+        workBudget: result.workBudget,
+        sponsorChain: storedIdentity.identity.sponsorChain,
+        budgetUsage: summarizeBudgetUsage(storedIdentity.identity),
+        subAgents: await listSubAgentTree(storage, storedIdentity.identity.orgId, storedIdentity.identity.id),
+      },
+      200,
+    );
+  }
+  const entries = result.entries;
   const hasMore = entries.length > parsed.value.limit;
   const page = hasMore ? entries.slice(0, parsed.value.limit) : entries;
 

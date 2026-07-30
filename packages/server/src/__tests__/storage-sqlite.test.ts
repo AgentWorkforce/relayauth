@@ -219,9 +219,9 @@ test("TestSqliteAuditLog", async (t) => {
   }
 
   const byOrg = await storage.audit.query({ orgId: "org_audit", limit: 10 });
-  assert.equal(byOrg.length, 2);
-  assert.equal(byOrg[0]?.action, "identity.updated");
-  assert.equal(byOrg[1]?.action, "identity.created");
+  assert.equal(byOrg.entries.length, 2);
+  assert.equal(byOrg.entries[0]?.action, "identity.updated");
+  assert.equal(byOrg.entries[1]?.action, "identity.created");
 
   const byTimeRange = await storage.audit.query({
     orgId: "org_audit",
@@ -229,8 +229,8 @@ test("TestSqliteAuditLog", async (t) => {
     to: "2026-03-27T12:45:00.000Z",
     limit: 10,
   });
-  assert.equal(byTimeRange.length, 1);
-  assert.equal(byTimeRange[0]?.action, "identity.updated");
+  assert.equal(byTimeRange.entries.length, 1);
+  assert.equal(byTimeRange.entries[0]?.action, "identity.updated");
 });
 
 test("TestSqliteAutoCreateTables", async (t) => {

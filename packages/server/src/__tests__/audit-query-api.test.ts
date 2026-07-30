@@ -5,6 +5,7 @@ import {
   assertJsonResponse,
   createTestApp,
   createTestRequest,
+  createTestStorage,
   generateTestToken,
   seedAuditEntries,
 } from "./test-helpers.js";
@@ -12,6 +13,14 @@ import {
 type AuditQueryResponse = {
   entries: Array<AuditEntry & { createdAt?: string }>;
   nextCursor: string | null;
+  hasMore?: boolean;
+  partial?: boolean;
+  workBudget?: {
+    d1Pages: number;
+    d1Rows: number;
+    partitions: number;
+    r2Reads: number;
+  };
 };
 
 function createAuditEntry(
@@ -367,6 +376,82 @@ test("GET /v1/audit supports cursor-based pagination with limit", async () => {
 
   assert.deepEqual(secondPage.entries.map((entry) => entry.id), ["aud_page_001"]);
   assert.equal(secondPage.nextCursor, null);
+});
+
+test("GET /v1/audit returns a typed archive budget continuation that resumes without gaps or duplicates", async () => {
+  const storage = createTestStorage();
+  const entries = [
+    createAuditEntry(3, { id: "aud_archive_003", orgId: "org_archive", timestamp: "2026-03-24T12:00:03.000Z" }),
+    createAuditEntry(2, { id: "aud_archive_002", orgId: "org_archive", timestamp: "2026-03-24T12:00:02.000Z" }),
+    createAuditEntry(1, { id: "aud_archive_001", orgId: "org_archive", timestamp: "2026-03-24T12:00:01.000Z" }),
+  ];
+  storage.audit.query = async (query) => {
+    assert.equal(query.orgId, "org_archive");
+    if (query.cursor?.kind === "archive_partition") {
+      assert.equal(query.cursor.timestamp, "2026-03-24T12:00:02.000Z");
+      return { kind: "complete", entries: [entries[2]!] };
+    }
+    return {
+      kind: "budget_exhausted",
+      entries: entries.slice(0, 2),
+      continuation: {
+        kind: "archive_partition",
+        orgId: "org_archive",
+        timestamp: "2026-03-24T12:00:02.000Z",
+      },
+      workBudget: { d1Pages: 4, d1Rows: 129, partitions: 128, r2Reads: 128 },
+    };
+  };
+  const app = createTestApp({ storage });
+  const token = `Bearer ${generateTestToken({
+    org: "org_archive",
+    scopes: ["relayauth:audit:read"],
+  })}`;
+
+  const first = await app.request(
+    createTestRequest("GET", "/v1/audit?orgId=org_archive", undefined, { Authorization: token }),
+    undefined,
+    app.bindings,
+  );
+  const firstPage = await assertJsonResponse<AuditQueryResponse>(first, 200);
+  assert.equal(firstPage.partial, true);
+  assert.equal(firstPage.hasMore, true);
+  assert.equal(typeof firstPage.nextCursor, "string");
+  assert.deepEqual(firstPage.workBudget, { d1Pages: 4, d1Rows: 129, partitions: 128, r2Reads: 128 });
+
+  const crossOrg = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/audit?orgId=org_other&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      undefined,
+      {
+        Authorization: `Bearer ${generateTestToken({
+          org: "org_other",
+          scopes: ["relayauth:audit:read"],
+        })}`,
+      },
+    ),
+    undefined,
+    app.bindings,
+  );
+  await assertJsonResponse<{ error: string }>(crossOrg, 400, (body) => {
+    assert.equal(body.error, "invalid cursor");
+  });
+
+  const second = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/audit?orgId=org_archive&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      undefined,
+      { Authorization: token },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const secondPage = await assertJsonResponse<AuditQueryResponse>(second, 200);
+  const received = [...firstPage.entries, ...secondPage.entries].map((entry) => entry.id);
+  assert.deepEqual(received, entries.map((entry) => entry.id));
+  assert.equal(new Set(received).size, received.length);
 });
 
 test("GET /v1/audit returns 400 when orgId is missing", async () => {
