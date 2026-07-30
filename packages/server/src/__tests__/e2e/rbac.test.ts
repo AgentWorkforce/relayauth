@@ -5,7 +5,10 @@ import { Hono } from "hono";
 
 import type { StoredIdentity } from "../../storage/identity-types.js";
 import { writeAuditEntry } from "../../engine/audit-logger.js";
-import { checkAccess, evaluatePermissions } from "../../engine/policy-evaluation.js";
+import {
+  checkAccess,
+  evaluatePermissions,
+} from "../../engine/policy-evaluation.js";
 import { getInheritanceChain } from "../../engine/scope-inheritance.js";
 import type { AppEnv } from "../../env.js";
 import { requireScope } from "../../middleware/scope.js";
@@ -18,8 +21,14 @@ import {
   generateTestToken,
 } from "../test-helpers.js";
 import { RelayAuthError } from "../../../../sdk/typescript/src/errors.js";
-import { matchesAny, validateSubset } from "../../../../sdk/typescript/src/scope-matcher.js";
-import { parseScope, validateScope } from "../../../../sdk/typescript/src/scope-parser.js";
+import {
+  matchesAny,
+  validateSubset,
+} from "../../../../sdk/typescript/src/scope-matcher.js";
+import {
+  parseScope,
+  validateScope,
+} from "../../../../sdk/typescript/src/scope-parser.js";
 import { authenticate } from "../../lib/auth.js";
 
 type StoredPolicy = Policy & { deletedAt?: string };
@@ -142,321 +151,393 @@ test("Scopes & RBAC E2E", async (t) => {
     );
   });
 
-  await t.test("2. creates a role with relaycast read and write scopes", async () => {
-    const response = await harness.request("POST", "/v1/roles", {
-      body: {
-        name: "channel-operator",
-        description: "Can read and write relaycast channels",
-        scopes: [READ_SCOPE, WRITE_SCOPE],
-      },
-    });
+  await t.test(
+    "2. creates a role with relaycast read and write scopes",
+    async () => {
+      const response = await harness.request("POST", "/v1/roles", {
+        body: {
+          name: "channel-operator",
+          description: "Can read and write relaycast channels",
+          scopes: [READ_SCOPE, WRITE_SCOPE],
+        },
+      });
 
-    createdRole = await assertJsonResponse<Role>(response, 201);
-    assert.deepEqual(sortStrings(createdRole.scopes), sortStrings([READ_SCOPE, WRITE_SCOPE]));
-  });
+      createdRole = await assertJsonResponse<Role>(response, 201);
+      assert.deepEqual(
+        sortStrings(createdRole.scopes),
+        sortStrings([READ_SCOPE, WRITE_SCOPE]),
+      );
+    },
+  );
 
   await t.test("3. creates an identity and assigns the role", async () => {
     assert.ok(createdRole, "expected role to exist before assignment");
 
-    const response = await harness.request("POST", `/v1/identities/${primaryIdentity.id}/roles`, {
-      body: { roleId: createdRole.id },
-    });
+    const response = await harness.request(
+      "POST",
+      `/v1/identities/${primaryIdentity.id}/roles`,
+      {
+        body: { roleId: createdRole.id },
+      },
+    );
 
     const assigned = await assertJsonResponse<StoredIdentity>(response, 201);
     assert.deepEqual(assigned.roles, [createdRole.id]);
   });
 
-  await t.test("4. token with the role scopes can access relaycast:channel:read:general", async () => {
-    const token = await harness.issueEffectiveToken(primaryIdentity.id);
-    const response = await requestProtectedScope(
-      harness.app.bindings,
-      READ_SCOPE,
-      token,
-      "/channels/general",
-    );
+  await t.test(
+    "4. token with the role scopes can access relaycast:channel:read:general",
+    async () => {
+      const token = await harness.issueEffectiveToken(primaryIdentity.id);
+      const response = await requestProtectedScope(
+        harness.app.bindings,
+        READ_SCOPE,
+        token,
+        "/channels/general",
+      );
 
-    await assertJsonResponse<{ ok: boolean }>(response, 200, (body) => {
-      assert.equal(body.ok, true);
-    });
-  });
+      await assertJsonResponse<{ ok: boolean }>(response, 200, (body) => {
+        assert.equal(body.ok, true);
+      });
+    },
+  );
 
-  await t.test("5. token with the role scopes cannot access relayfile:fs:write:*", async () => {
-    const token = await harness.issueEffectiveToken(primaryIdentity.id);
-    const response = await requestProtectedScope(
-      harness.app.bindings,
-      FILE_WRITE_SCOPE,
-      token,
-      "/files/write",
-    );
+  await t.test(
+    "5. token with the role scopes cannot access relayfile:fs:write:*",
+    async () => {
+      const token = await harness.issueEffectiveToken(primaryIdentity.id);
+      const response = await requestProtectedScope(
+        harness.app.bindings,
+        FILE_WRITE_SCOPE,
+        token,
+        "/files/write",
+      );
 
-    await assertJsonResponse<{ error: string; code?: string }>(response, 403, (body) => {
-      assert.equal(body.code, "insufficient_scope");
-      assert.match(body.error, /insufficient scope/i);
-    });
-  });
-
-  await t.test("6. creates a deny policy that blocks relaycast:channel:write:* for the identity", async () => {
-    const response = await harness.request("POST", "/v1/policies", {
-      body: {
-        name: "deny-primary-write",
-        effect: "deny",
-        scopes: [WRITE_SCOPE],
-        conditions: [
-          {
-            type: "identity",
-            operator: "eq",
-            value: primaryIdentity.id,
-          },
-        ],
-        priority: 800,
-      },
-    });
-
-    denyPolicy = await assertJsonResponse<Policy>(response, 201);
-    assert.equal(denyPolicy.effect, "deny");
-  });
-
-  await t.test("7. identity can still read but cannot write after the deny policy", async () => {
-    const readDecision = await checkAccess(
-      harness.db,
-      primaryIdentity.id,
-      ORG_ID,
-      READ_GENERAL_SCOPE,
-    );
-    const writeDecision = await checkAccess(
-      harness.db,
-      primaryIdentity.id,
-      ORG_ID,
-      WRITE_GENERAL_SCOPE,
-    );
-
-    assert.deepEqual(readDecision, {
-      allowed: true,
-      reason: "scope_allowed",
-    });
-    assert.equal(writeDecision.allowed, false);
-    assert.equal(writeDecision.reason, "policy_denied");
-    assert.equal(writeDecision.matchedPolicy, denyPolicy?.id);
-
-    const effective = await evaluatePermissions(harness.db, primaryIdentity.id, ORG_ID);
-    assert.deepEqual(
-      sortStrings(effective.effectiveScopes),
-      sortStrings([READ_SCOPE]),
-    );
-  });
-
-  await t.test("8. scope inheritance narrows a child request to the parent boundary", async () => {
-    const narrowed = matchesAny(
-      [READ_SCOPE, WRITE_SCOPE, FILE_WRITE_SCOPE],
-      [READ_SCOPE, WRITE_SCOPE],
-    );
-    assert.deepEqual(sortStrings(narrowed.matched), sortStrings([READ_SCOPE, WRITE_SCOPE]));
-    assert.deepEqual(narrowed.denied, [FILE_WRITE_SCOPE]);
-
-    const chain = await getInheritanceChain(harness.db, childIdentity.id);
-
-    assert.deepEqual(chain.org.scopes, ["relaycast:*:*:*"]);
-    assert.deepEqual(chain.workspace.scopes, ["relaycast:channel:*:*"]);
-    assert.deepEqual(
-      sortStrings(chain.agent.scopes),
-      sortStrings([READ_SCOPE, WRITE_SCOPE]),
-    );
-    assert.equal(chain.agent.scopes.includes(FILE_WRITE_SCOPE), false);
-  });
-
-  await t.test("9. higher-priority allow overrides a lower-priority deny", async () => {
-    const lowerDeny = await harness.request("POST", "/v1/policies", {
-      body: {
-        name: "priority-lower-deny",
-        effect: "deny",
-        scopes: [PRIORITY_SCOPE],
-        conditions: [
-          {
-            type: "identity",
-            operator: "eq",
-            value: priorityIdentity.id,
-          },
-        ],
-        priority: 100,
-      },
-    });
-    const lowerDenyPolicy = await assertJsonResponse<Policy>(lowerDeny, 201);
-
-    const higherAllow = await harness.request("POST", "/v1/policies", {
-      body: {
-        name: "priority-higher-allow",
-        effect: "allow",
-        scopes: [PRIORITY_SCOPE],
-        conditions: [
-          {
-            type: "identity",
-            operator: "eq",
-            value: priorityIdentity.id,
-          },
-        ],
-        priority: 900,
-      },
-    });
-    const higherAllowPolicy = await assertJsonResponse<Policy>(higherAllow, 201);
-
-    const decision = await checkAccess(
-      harness.db,
-      priorityIdentity.id,
-      ORG_ID,
-      PRIORITY_SCOPE,
-    );
-    const evaluation = await evaluatePermissions(harness.db, priorityIdentity.id, ORG_ID);
-
-    assert.deepEqual(decision, {
-      allowed: true,
-      reason: "scope_allowed",
-    });
-    assert.equal(evaluation.effectiveScopes.includes(PRIORITY_SCOPE), true);
-    assert.deepEqual(
-      evaluation.appliedPolicies.map((policy) => policy.id),
-      [higherAllowPolicy.id],
-    );
-  });
-
-  await t.test("10. scope middleware returns 403 for insufficient scope", async () => {
-    const token = generateTestToken({
-      sub: primaryIdentity.id,
-      org: ORG_ID,
-      wks: WORKSPACE_ID,
-      scopes: [READ_SCOPE],
-      sponsorId: primaryIdentity.sponsorId,
-      sponsorChain: primaryIdentity.sponsorChain,
-    });
-
-    const response = await requestProtectedScope(
-      harness.app.bindings,
-      WRITE_SCOPE,
-      token,
-      "/channels/write",
-    );
-
-    await assertJsonResponse<{ error: string; code?: string }>(response, 403, (body) => {
-      assert.equal(body.code, "insufficient_scope");
-      assert.match(body.error, /requires all of/i);
-    });
-  });
-
-  await t.test("11. deleting the deny policy restores write access, then removing the role revokes inherited access", async () => {
-    assert.ok(denyPolicy, "expected deny policy to exist before cleanup");
-    assert.ok(createdRole, "expected role to exist before cleanup");
-
-    const deletePolicyResponse = await harness.request("DELETE", `/v1/policies/${denyPolicy.id}`);
-    assert.equal(deletePolicyResponse.status, 204);
-
-    const restoredWrite = await checkAccess(
-      harness.db,
-      primaryIdentity.id,
-      ORG_ID,
-      WRITE_GENERAL_SCOPE,
-    );
-    assert.deepEqual(restoredWrite, {
-      allowed: true,
-      reason: "scope_allowed",
-    });
-
-    const removeRoleResponse = await harness.request(
-      "DELETE",
-      `/v1/identities/${primaryIdentity.id}/roles/${createdRole.id}`,
-    );
-    assert.equal(removeRoleResponse.status, 204);
-
-    const afterRoleRemoval = await checkAccess(
-      harness.db,
-      primaryIdentity.id,
-      ORG_ID,
-      READ_GENERAL_SCOPE,
-    );
-    assert.deepEqual(afterRoleRemoval, {
-      allowed: false,
-      reason: "implicit_deny",
-    });
-
-    const deleteRoleResponse = await harness.request("DELETE", `/v1/roles/${createdRole.id}`);
-    assert.equal(deleteRoleResponse.status, 204);
-  });
-
-  await t.test("budget exceeded denies access with a clear reason and records an audit event", async () => {
-    const decision = await checkAccess(
-      harness.db,
-      budgetIdentity.id,
-      ORG_ID,
-      READ_GENERAL_SCOPE,
-    );
-
-    assert.deepEqual(decision, {
-      allowed: false,
-      reason: "budget_exceeded",
-    });
-
-    const auditEntries = await harness.db.audit.query({
-      orgId: ORG_ID,
-      identityId: budgetIdentity.id,
-      action: "budget.exceeded" as AuditAction,
-      limit: 10,
-    });
-    const audit = auditEntries.entries.find(
-      (entry) =>
-        entry.action === "budget.exceeded"
-        && entry.resource === READ_GENERAL_SCOPE,
-    );
-
-    assert.ok(audit, "expected a budget.exceeded audit log");
-    assert.equal(audit?.result, "denied");
-    assert.equal(audit?.metadata.actionAttempted, READ_GENERAL_SCOPE);
-  });
-
-  await t.test("scope escalation attempt returns 403 and writes a scope.escalation_denied audit event", async () => {
-    const escalationApp = createScopeIssuanceApp(harness.app.storage);
-    const parentToken = generateTestToken({
-      sub: primaryIdentity.id,
-      org: ORG_ID,
-      wks: WORKSPACE_ID,
-      scopes: [READ_SCOPE, WRITE_SCOPE],
-      sponsorId: primaryIdentity.sponsorId,
-      sponsorChain: primaryIdentity.sponsorChain,
-    });
-
-    const response = await escalationApp.request(
-      createTestRequest(
-        "POST",
-        "/subagents",
-        {
-          scopes: [READ_SCOPE, WRITE_SCOPE, FILE_WRITE_SCOPE],
+      await assertJsonResponse<{ error: string; code?: string }>(
+        response,
+        403,
+        (body) => {
+          assert.equal(body.code, "insufficient_scope");
+          assert.match(body.error, /insufficient scope/i);
         },
-        {
-          Authorization: `Bearer ${parentToken}`,
+      );
+    },
+  );
+
+  await t.test(
+    "6. creates a deny policy that blocks relaycast:channel:write:* for the identity",
+    async () => {
+      const response = await harness.request("POST", "/v1/policies", {
+        body: {
+          name: "deny-primary-write",
+          effect: "deny",
+          scopes: [WRITE_SCOPE],
+          conditions: [
+            {
+              type: "identity",
+              operator: "eq",
+              value: primaryIdentity.id,
+            },
+          ],
+          priority: 800,
         },
-      ),
-      undefined,
-      harness.app.bindings,
-    );
+      });
 
-    await assertJsonResponse<{ error: string; code?: string }>(response, 403, (body) => {
-      assert.equal(body.code, "scope_escalation");
-      assert.match(body.error, /broader than the parent scope set/i);
-    });
+      denyPolicy = await assertJsonResponse<Policy>(response, 201);
+      assert.equal(denyPolicy.effect, "deny");
+    },
+  );
 
-    const auditEntries = await harness.db.audit.query({
-      orgId: ORG_ID,
-      identityId: primaryIdentity.id,
-      action: "scope.escalation_denied" as AuditAction,
-      limit: 10,
-    });
-    const audit = auditEntries.entries.find(
-      (entry) =>
-        entry.action === "scope.escalation_denied"
-        && entry.resource === FILE_WRITE_SCOPE,
-    );
+  await t.test(
+    "7. identity can still read but cannot write after the deny policy",
+    async () => {
+      const readDecision = await checkAccess(
+        harness.db,
+        primaryIdentity.id,
+        ORG_ID,
+        READ_GENERAL_SCOPE,
+      );
+      const writeDecision = await checkAccess(
+        harness.db,
+        primaryIdentity.id,
+        ORG_ID,
+        WRITE_GENERAL_SCOPE,
+      );
 
-    assert.ok(audit, "expected a scope.escalation_denied audit log");
-    assert.equal(audit?.result, "denied");
-    assert.equal(audit?.metadata.actionAttempted, FILE_WRITE_SCOPE);
-  });
+      assert.deepEqual(readDecision, {
+        allowed: true,
+        reason: "scope_allowed",
+      });
+      assert.equal(writeDecision.allowed, false);
+      assert.equal(writeDecision.reason, "policy_denied");
+      assert.equal(writeDecision.matchedPolicy, denyPolicy?.id);
+
+      const effective = await evaluatePermissions(
+        harness.db,
+        primaryIdentity.id,
+        ORG_ID,
+      );
+      assert.deepEqual(
+        sortStrings(effective.effectiveScopes),
+        sortStrings([READ_SCOPE]),
+      );
+    },
+  );
+
+  await t.test(
+    "8. scope inheritance narrows a child request to the parent boundary",
+    async () => {
+      const narrowed = matchesAny(
+        [READ_SCOPE, WRITE_SCOPE, FILE_WRITE_SCOPE],
+        [READ_SCOPE, WRITE_SCOPE],
+      );
+      assert.deepEqual(
+        sortStrings(narrowed.matched),
+        sortStrings([READ_SCOPE, WRITE_SCOPE]),
+      );
+      assert.deepEqual(narrowed.denied, [FILE_WRITE_SCOPE]);
+
+      const chain = await getInheritanceChain(harness.db, childIdentity.id);
+
+      assert.deepEqual(chain.org.scopes, ["relaycast:*:*:*"]);
+      assert.deepEqual(chain.workspace.scopes, ["relaycast:channel:*:*"]);
+      assert.deepEqual(
+        sortStrings(chain.agent.scopes),
+        sortStrings([READ_SCOPE, WRITE_SCOPE]),
+      );
+      assert.equal(chain.agent.scopes.includes(FILE_WRITE_SCOPE), false);
+    },
+  );
+
+  await t.test(
+    "9. higher-priority allow overrides a lower-priority deny",
+    async () => {
+      const lowerDeny = await harness.request("POST", "/v1/policies", {
+        body: {
+          name: "priority-lower-deny",
+          effect: "deny",
+          scopes: [PRIORITY_SCOPE],
+          conditions: [
+            {
+              type: "identity",
+              operator: "eq",
+              value: priorityIdentity.id,
+            },
+          ],
+          priority: 100,
+        },
+      });
+      const lowerDenyPolicy = await assertJsonResponse<Policy>(lowerDeny, 201);
+
+      const higherAllow = await harness.request("POST", "/v1/policies", {
+        body: {
+          name: "priority-higher-allow",
+          effect: "allow",
+          scopes: [PRIORITY_SCOPE],
+          conditions: [
+            {
+              type: "identity",
+              operator: "eq",
+              value: priorityIdentity.id,
+            },
+          ],
+          priority: 900,
+        },
+      });
+      const higherAllowPolicy = await assertJsonResponse<Policy>(
+        higherAllow,
+        201,
+      );
+
+      const decision = await checkAccess(
+        harness.db,
+        priorityIdentity.id,
+        ORG_ID,
+        PRIORITY_SCOPE,
+      );
+      const evaluation = await evaluatePermissions(
+        harness.db,
+        priorityIdentity.id,
+        ORG_ID,
+      );
+
+      assert.deepEqual(decision, {
+        allowed: true,
+        reason: "scope_allowed",
+      });
+      assert.equal(evaluation.effectiveScopes.includes(PRIORITY_SCOPE), true);
+      assert.deepEqual(
+        evaluation.appliedPolicies.map((policy) => policy.id),
+        [higherAllowPolicy.id],
+      );
+    },
+  );
+
+  await t.test(
+    "10. scope middleware returns 403 for insufficient scope",
+    async () => {
+      const token = generateTestToken({
+        sub: primaryIdentity.id,
+        org: ORG_ID,
+        wks: WORKSPACE_ID,
+        scopes: [READ_SCOPE],
+        sponsorId: primaryIdentity.sponsorId,
+        sponsorChain: primaryIdentity.sponsorChain,
+      });
+
+      const response = await requestProtectedScope(
+        harness.app.bindings,
+        WRITE_SCOPE,
+        token,
+        "/channels/write",
+      );
+
+      await assertJsonResponse<{ error: string; code?: string }>(
+        response,
+        403,
+        (body) => {
+          assert.equal(body.code, "insufficient_scope");
+          assert.match(body.error, /requires all of/i);
+        },
+      );
+    },
+  );
+
+  await t.test(
+    "11. deleting the deny policy restores write access, then removing the role revokes inherited access",
+    async () => {
+      assert.ok(denyPolicy, "expected deny policy to exist before cleanup");
+      assert.ok(createdRole, "expected role to exist before cleanup");
+
+      const deletePolicyResponse = await harness.request(
+        "DELETE",
+        `/v1/policies/${denyPolicy.id}`,
+      );
+      assert.equal(deletePolicyResponse.status, 204);
+
+      const restoredWrite = await checkAccess(
+        harness.db,
+        primaryIdentity.id,
+        ORG_ID,
+        WRITE_GENERAL_SCOPE,
+      );
+      assert.deepEqual(restoredWrite, {
+        allowed: true,
+        reason: "scope_allowed",
+      });
+
+      const removeRoleResponse = await harness.request(
+        "DELETE",
+        `/v1/identities/${primaryIdentity.id}/roles/${createdRole.id}`,
+      );
+      assert.equal(removeRoleResponse.status, 204);
+
+      const afterRoleRemoval = await checkAccess(
+        harness.db,
+        primaryIdentity.id,
+        ORG_ID,
+        READ_GENERAL_SCOPE,
+      );
+      assert.deepEqual(afterRoleRemoval, {
+        allowed: false,
+        reason: "implicit_deny",
+      });
+
+      const deleteRoleResponse = await harness.request(
+        "DELETE",
+        `/v1/roles/${createdRole.id}`,
+      );
+      assert.equal(deleteRoleResponse.status, 204);
+    },
+  );
+
+  await t.test(
+    "budget exceeded denies access with a clear reason and records an audit event",
+    async () => {
+      const decision = await checkAccess(
+        harness.db,
+        budgetIdentity.id,
+        ORG_ID,
+        READ_GENERAL_SCOPE,
+      );
+
+      assert.deepEqual(decision, {
+        allowed: false,
+        reason: "budget_exceeded",
+      });
+
+      const auditEntries = await harness.db.audit.query({
+        orgId: ORG_ID,
+        identityId: budgetIdentity.id,
+        action: "budget.exceeded" as AuditAction,
+        limit: 10,
+      });
+      const audit = auditEntries.entries.find(
+        (entry) =>
+          entry.action === "budget.exceeded" &&
+          entry.resource === READ_GENERAL_SCOPE,
+      );
+
+      assert.ok(audit, "expected a budget.exceeded audit log");
+      assert.equal(audit?.result, "denied");
+      assert.equal(audit?.metadata.actionAttempted, READ_GENERAL_SCOPE);
+    },
+  );
+
+  await t.test(
+    "scope escalation attempt returns 403 and writes a scope.escalation_denied audit event",
+    async () => {
+      const escalationApp = createScopeIssuanceApp(harness.app.storage);
+      const parentToken = generateTestToken({
+        sub: primaryIdentity.id,
+        org: ORG_ID,
+        wks: WORKSPACE_ID,
+        scopes: [READ_SCOPE, WRITE_SCOPE],
+        sponsorId: primaryIdentity.sponsorId,
+        sponsorChain: primaryIdentity.sponsorChain,
+      });
+
+      const response = await escalationApp.request(
+        createTestRequest(
+          "POST",
+          "/subagents",
+          {
+            scopes: [READ_SCOPE, WRITE_SCOPE, FILE_WRITE_SCOPE],
+          },
+          {
+            Authorization: `Bearer ${parentToken}`,
+          },
+        ),
+        undefined,
+        harness.app.bindings,
+      );
+
+      await assertJsonResponse<{ error: string; code?: string }>(
+        response,
+        403,
+        (body) => {
+          assert.equal(body.code, "scope_escalation");
+          assert.match(body.error, /broader than the parent scope set/i);
+        },
+      );
+
+      const auditEntries = await harness.db.audit.query({
+        orgId: ORG_ID,
+        identityId: primaryIdentity.id,
+        action: "scope.escalation_denied" as AuditAction,
+        limit: 10,
+      });
+      const audit = auditEntries.entries.find(
+        (entry) =>
+          entry.action === "scope.escalation_denied" &&
+          entry.resource === FILE_WRITE_SCOPE,
+      );
+
+      assert.ok(audit, "expected a scope.escalation_denied audit log");
+      assert.equal(audit?.result, "denied");
+      assert.equal(audit?.metadata.actionAttempted, FILE_WRITE_SCOPE);
+    },
+  );
 });
 
 async function createRbacHarness() {
@@ -501,7 +582,8 @@ async function createRbacHarness() {
     prepare(query: string) {
       return {
         bind: (...params: unknown[]) => ({
-          first: async <T>() => (resolveAll(state, query, params)[0] as T | null) ?? null,
+          first: async <T>() =>
+            (resolveAll(state, query, params)[0] as T | null) ?? null,
           all: async <T>() => ({
             results: resolveAll(state, query, params) as T[],
             success: true,
@@ -510,7 +592,8 @@ async function createRbacHarness() {
           raw: async <T>() => resolveAll(state, query, params) as T[],
           run: async () => runMutation(state, query, params),
         }),
-        first: async <T>() => (resolveAll(state, query, [])[0] as T | null) ?? null,
+        first: async <T>() =>
+          (resolveAll(state, query, [])[0] as T | null) ?? null,
         all: async <T>() => ({
           results: resolveAll(state, query, []) as T[],
           success: true,
@@ -532,7 +615,8 @@ async function createRbacHarness() {
     },
     get(identityId: string) {
       return {
-        fetch: async (request: Request) => handleIdentityDoRequest(state, identityId, request),
+        fetch: async (request: Request) =>
+          handleIdentityDoRequest(state, identityId, request),
       };
     },
   } as unknown as DurableObjectNamespace;
@@ -544,12 +628,23 @@ async function createRbacHarness() {
   await app.storage.DB.prepare(
     "INSERT INTO organizations (id, org_id, scopes_json, roles_json) VALUES (?, ?, ?, ?)",
   )
-    .bind(ORG_ID, ORG_ID, JSON.stringify(["relaycast:*:*:*"]), JSON.stringify([]))
+    .bind(
+      ORG_ID,
+      ORG_ID,
+      JSON.stringify(["relaycast:*:*:*"]),
+      JSON.stringify([]),
+    )
     .run();
   await app.storage.DB.prepare(
     "INSERT INTO workspaces (id, workspace_id, org_id, scopes_json, roles_json) VALUES (?, ?, ?, ?, ?)",
   )
-    .bind(WORKSPACE_ID, WORKSPACE_ID, ORG_ID, JSON.stringify(["relaycast:channel:*:*"]), JSON.stringify([]))
+    .bind(
+      WORKSPACE_ID,
+      WORKSPACE_ID,
+      ORG_ID,
+      JSON.stringify(["relaycast:channel:*:*"]),
+      JSON.stringify([]),
+    )
     .run();
 
   const storageDb = Object.assign(app.storage, {
@@ -560,7 +655,11 @@ async function createRbacHarness() {
     dump: async () => new ArrayBuffer(0),
   }) as AuthStorage & D1Database;
 
-  async function request(method: string, path: string, options: RequestOptions = {}): Promise<Response> {
+  async function request(
+    method: string,
+    path: string,
+    options: RequestOptions = {},
+  ): Promise<Response> {
     const headers = new Headers(options.headers);
     if (!headers.has("Authorization")) {
       headers.set(
@@ -581,7 +680,9 @@ async function createRbacHarness() {
     return app.request(request, undefined, app.bindings);
   }
 
-  async function seedIdentity(identity: StoredIdentity): Promise<StoredIdentity> {
+  async function seedIdentity(
+    identity: StoredIdentity,
+  ): Promise<StoredIdentity> {
     const cloned = clone(identity);
     state.identities.set(cloned.id, cloned);
     await app.storage.identities.create(cloned);
@@ -592,10 +693,15 @@ async function createRbacHarness() {
     const identity = state.identities.get(identityId);
     assert.ok(identity, `expected seeded identity '${identityId}'`);
 
-    const evaluation = await evaluatePermissions(storageDb, identity.id, identity.orgId, {
-      workspaceId: identity.workspaceId,
-      identityId: identity.id,
-    });
+    const evaluation = await evaluatePermissions(
+      storageDb,
+      identity.id,
+      identity.orgId,
+      {
+        workspaceId: identity.workspaceId,
+        identityId: identity.id,
+      },
+    );
 
     return generateTestToken({
       sub: identity.id,
@@ -617,7 +723,9 @@ async function createRbacHarness() {
   };
 }
 
-function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredIdentity {
+function createStoredIdentity(
+  overrides: Partial<StoredIdentity> = {},
+): StoredIdentity {
   const base = generateTestIdentity(overrides);
   const sponsorId = overrides.sponsorId ?? "user_rbac_owner";
 
@@ -630,7 +738,9 @@ function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredId
     sponsorChain: overrides.sponsorChain ?? [sponsorId, base.id],
     workspaceId: overrides.workspaceId ?? WORKSPACE_ID,
     ...(overrides.budget !== undefined ? { budget: overrides.budget } : {}),
-    ...(overrides.budgetUsage !== undefined ? { budgetUsage: overrides.budgetUsage } : {}),
+    ...(overrides.budgetUsage !== undefined
+      ? { budgetUsage: overrides.budgetUsage }
+      : {}),
   };
 }
 
@@ -645,7 +755,10 @@ function createScopeIssuanceApp(storage: AuthStorage): Hono<AppEnv> {
   app.post("/subagents", async (c) => {
     const auth = await authenticate(c.req.header("Authorization"), c.env);
     if (!auth.ok) {
-      return c.json({ error: auth.error, code: "invalid_authorization" }, auth.status);
+      return c.json(
+        { error: auth.error, code: "invalid_authorization" },
+        auth.status,
+      );
     }
 
     const claims = auth.claims;
@@ -657,7 +770,10 @@ function createScopeIssuanceApp(storage: AuthStorage): Hono<AppEnv> {
       const narrowed = matchesAny(requestedScopes, claims.scopes).matched;
       return c.json({ scopes: narrowed }, 201);
     } catch (error) {
-      const deniedScope = matchesAny(requestedScopes, claims.scopes).denied[0] ?? requestedScopes[0] ?? "*";
+      const deniedScope =
+        matchesAny(requestedScopes, claims.scopes).denied[0] ??
+        requestedScopes[0] ??
+        "*";
       await writeAuditEntry(c.get("storage"), {
         action: "scope.escalation_denied",
         identityId: claims.sub,
@@ -673,11 +789,10 @@ function createScopeIssuanceApp(storage: AuthStorage): Hono<AppEnv> {
         },
       });
 
-      const relayError = error instanceof RelayAuthError ? error : new RelayAuthError(
-        String(error),
-        "scope_escalation",
-        403,
-      );
+      const relayError =
+        error instanceof RelayAuthError
+          ? error
+          : new RelayAuthError(String(error), "scope_escalation", 403);
 
       return c.json(
         {
@@ -703,12 +818,9 @@ async function requestProtectedScope(
   app.get(path, (c) => c.json({ ok: true }));
 
   return app.request(
-    createTestRequest(
-      "GET",
-      path,
-      undefined,
-      { Authorization: `Bearer ${token}` },
-    ),
+    createTestRequest("GET", path, undefined, {
+      Authorization: `Bearer ${token}`,
+    }),
     undefined,
     bindings,
   );
@@ -744,7 +856,9 @@ async function handleIdentityDoRequest(
       return jsonResponse({ error: "identity_not_found" }, 404);
     }
 
-    const patch = await request.json<Partial<StoredIdentity>>().catch(() => null);
+    const patch = await request
+      .json<Partial<StoredIdentity>>()
+      .catch(() => null);
     if (!patch) {
       return jsonResponse({ error: "invalid_identity_patch" }, 400);
     }
@@ -752,7 +866,10 @@ async function handleIdentityDoRequest(
     return jsonResponse(mergeIdentity(state, current, patch), 200);
   }
 
-  return jsonResponse({ error: `unexpected_do_request:${request.method}:${pathname}` }, 500);
+  return jsonResponse(
+    { error: `unexpected_do_request:${request.method}:${pathname}` },
+    500,
+  );
 }
 
 function mergeIdentity(
@@ -774,7 +891,11 @@ function mergeIdentity(
   return next;
 }
 
-function resolveAll(state: HarnessState, query: string, params: unknown[]): unknown[] {
+function resolveAll(
+  state: HarnessState,
+  query: string,
+  params: unknown[],
+): unknown[] {
   const sql = normalizeSql(query);
   state.executed.push({ query: sql, params: [...params] });
 
@@ -801,11 +922,17 @@ function resolveAll(state: HarnessState, query: string, params: unknown[]): unkn
   return [];
 }
 
-function selectRoles(state: HarnessState, sql: string, params: unknown[]): unknown[] {
+function selectRoles(
+  state: HarnessState,
+  sql: string,
+  params: unknown[],
+): unknown[] {
   let roles = [...state.roles.values()];
 
   if (/\bwhere id in \(/.test(sql)) {
-    const ids = new Set(params.filter((value): value is string => typeof value === "string"));
+    const ids = new Set(
+      params.filter((value): value is string => typeof value === "string"),
+    );
     roles = roles.filter((role) => ids.has(role.id));
   } else if (/\bwhere id = \?/.test(sql)) {
     const [id] = params;
@@ -813,10 +940,16 @@ function selectRoles(state: HarnessState, sql: string, params: unknown[]): unkno
   } else if (/\bwhere org_id = \? and name = \?/.test(sql)) {
     const [orgId, name] = params;
     roles = roles.filter((role) => role.orgId === orgId && role.name === name);
-  } else if (/\bwhere org_id = \? and \(workspace_id = \? or workspace_id is null\)/.test(sql)) {
+  } else if (
+    /\bwhere org_id = \? and \(workspace_id = \? or workspace_id is null\)/.test(
+      sql,
+    )
+  ) {
     const [orgId, workspaceId] = params;
     roles = roles.filter(
-      (role) => role.orgId === orgId && (role.workspaceId === workspaceId || role.workspaceId === undefined),
+      (role) =>
+        role.orgId === orgId &&
+        (role.workspaceId === workspaceId || role.workspaceId === undefined),
     );
   } else if (/\bwhere org_id = \?/.test(sql)) {
     const [orgId] = params;
@@ -824,7 +957,10 @@ function selectRoles(state: HarnessState, sql: string, params: unknown[]): unkno
   }
 
   if (/\border by name asc, id asc\b/.test(sql)) {
-    roles.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+    roles.sort(
+      (left, right) =>
+        left.name.localeCompare(right.name) || left.id.localeCompare(right.id),
+    );
   } else {
     roles.sort((left, right) => left.id.localeCompare(right.id));
   }
@@ -832,19 +968,36 @@ function selectRoles(state: HarnessState, sql: string, params: unknown[]): unkno
   return roles.map(toRoleRow);
 }
 
-function selectPolicies(state: HarnessState, sql: string, params: unknown[]): unknown[] {
-  let policies = [...state.policies.values()].filter((policy) => policy.deletedAt === undefined);
+function selectPolicies(
+  state: HarnessState,
+  sql: string,
+  params: unknown[],
+): unknown[] {
+  let policies = [...state.policies.values()].filter(
+    (policy) => policy.deletedAt === undefined,
+  );
 
   if (/\bwhere id = \? and deleted_at is null\b/.test(sql)) {
     const [id] = params;
     policies = policies.filter((policy) => policy.id === id);
-  } else if (/\bwhere org_id = \? and name = \? and deleted_at is null\b/.test(sql)) {
+  } else if (
+    /\bwhere org_id = \? and name = \? and deleted_at is null\b/.test(sql)
+  ) {
     const [orgId, name] = params;
-    policies = policies.filter((policy) => policy.orgId === orgId && policy.name === name);
-  } else if (/\bwhere org_id = \? and deleted_at is null and \(workspace_id = \? or workspace_id is null\)/.test(sql)) {
+    policies = policies.filter(
+      (policy) => policy.orgId === orgId && policy.name === name,
+    );
+  } else if (
+    /\bwhere org_id = \? and deleted_at is null and \(workspace_id = \? or workspace_id is null\)/.test(
+      sql,
+    )
+  ) {
     const [orgId, workspaceId] = params;
     policies = policies.filter(
-      (policy) => policy.orgId === orgId && (policy.workspaceId === workspaceId || policy.workspaceId === undefined),
+      (policy) =>
+        policy.orgId === orgId &&
+        (policy.workspaceId === workspaceId ||
+          policy.workspaceId === undefined),
     );
   } else if (/\bwhere org_id = \? and deleted_at is null\b/.test(sql)) {
     const [orgId] = params;
@@ -852,7 +1005,10 @@ function selectPolicies(state: HarnessState, sql: string, params: unknown[]): un
   }
 
   if (/\border by priority desc, id asc\b/.test(sql)) {
-    policies.sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id));
+    policies.sort(
+      (left, right) =>
+        right.priority - left.priority || left.id.localeCompare(right.id),
+    );
   } else {
     policies.sort((left, right) => left.id.localeCompare(right.id));
   }
@@ -860,34 +1016,45 @@ function selectPolicies(state: HarnessState, sql: string, params: unknown[]): un
   return policies.map(toPolicyRow);
 }
 
-function selectIdentities(state: HarnessState, sql: string, params: unknown[]): unknown[] {
+function selectIdentities(
+  state: HarnessState,
+  sql: string,
+  params: unknown[],
+): unknown[] {
   if (/\bselect roles, roles_json\b/.test(sql)) {
     const [id] = params;
-    const identity = typeof id === "string" ? state.identities.get(id) : undefined;
+    const identity =
+      typeof id === "string" ? state.identities.get(id) : undefined;
     if (!identity) {
       return [];
     }
-    return [{
-      roles: [...identity.roles],
-      roles_json: JSON.stringify(identity.roles),
-    }];
+    return [
+      {
+        roles: [...identity.roles],
+        roles_json: JSON.stringify(identity.roles),
+      },
+    ];
   }
 
   if (/\bselect org_id as orgid\b/.test(sql) && /\bwhere id = \?/.test(sql)) {
     const [id] = params;
-    const identity = typeof id === "string" ? state.identities.get(id) : undefined;
+    const identity =
+      typeof id === "string" ? state.identities.get(id) : undefined;
     if (!identity) {
       return [];
     }
-    return [{
-      orgId: identity.orgId,
-      org_id: identity.orgId,
-    }];
+    return [
+      {
+        orgId: identity.orgId,
+        org_id: identity.orgId,
+      },
+    ];
   }
 
   if (/\bwhere org_id = \? and id = \?/.test(sql)) {
     const [orgId, id] = params;
-    const identity = typeof id === "string" ? state.identities.get(id) : undefined;
+    const identity =
+      typeof id === "string" ? state.identities.get(id) : undefined;
     if (!identity || identity.orgId !== orgId) {
       return [];
     }
@@ -896,49 +1063,59 @@ function selectIdentities(state: HarnessState, sql: string, params: unknown[]): 
 
   if (/\bwhere id = \? limit 1\b/.test(sql)) {
     const [id] = params;
-    const identity = typeof id === "string" ? state.identities.get(id) : undefined;
+    const identity =
+      typeof id === "string" ? state.identities.get(id) : undefined;
     return identity ? [toIdentityRow(identity)] : [];
   }
 
   return [];
 }
 
-function selectOrganizations(state: HarnessState, params: unknown[]): unknown[] {
+function selectOrganizations(
+  state: HarnessState,
+  params: unknown[],
+): unknown[] {
   const [id] = params;
-  const organization = typeof id === "string" ? state.organizations.get(id) : undefined;
+  const organization =
+    typeof id === "string" ? state.organizations.get(id) : undefined;
   if (!organization) {
     return [];
   }
 
-  return [{
-    id: organization.id,
-    orgId: organization.id,
-    org_id: organization.id,
-    scopes: [...organization.scopes],
-    scopes_json: JSON.stringify(organization.scopes),
-    roles: [...organization.roles],
-    roles_json: JSON.stringify(organization.roles),
-  }];
+  return [
+    {
+      id: organization.id,
+      orgId: organization.id,
+      org_id: organization.id,
+      scopes: [...organization.scopes],
+      scopes_json: JSON.stringify(organization.scopes),
+      roles: [...organization.roles],
+      roles_json: JSON.stringify(organization.roles),
+    },
+  ];
 }
 
 function selectWorkspaces(state: HarnessState, params: unknown[]): unknown[] {
   const [id] = params;
-  const workspace = typeof id === "string" ? state.workspaces.get(id) : undefined;
+  const workspace =
+    typeof id === "string" ? state.workspaces.get(id) : undefined;
   if (!workspace) {
     return [];
   }
 
-  return [{
-    id: workspace.id,
-    workspaceId: workspace.id,
-    workspace_id: workspace.id,
-    orgId: workspace.orgId,
-    org_id: workspace.orgId,
-    scopes: [...workspace.scopes],
-    scopes_json: JSON.stringify(workspace.scopes),
-    roles: [...workspace.roles],
-    roles_json: JSON.stringify(workspace.roles),
-  }];
+  return [
+    {
+      id: workspace.id,
+      workspaceId: workspace.id,
+      workspace_id: workspace.id,
+      orgId: workspace.orgId,
+      org_id: workspace.orgId,
+      scopes: [...workspace.scopes],
+      scopes_json: JSON.stringify(workspace.scopes),
+      roles: [...workspace.roles],
+      roles_json: JSON.stringify(workspace.roles),
+    },
+  ];
 }
 
 function runMutation(state: HarnessState, query: string, params: unknown[]) {
@@ -946,14 +1123,26 @@ function runMutation(state: HarnessState, query: string, params: unknown[]) {
   state.executed.push({ query: sql, params: [...params] });
 
   if (/^insert into roles\b/.test(sql)) {
-    const [id, name, description, scopes, _scopesJson, orgId, workspaceId, builtIn, createdAt] = params;
+    const [
+      id,
+      name,
+      description,
+      scopes,
+      _scopesJson,
+      orgId,
+      workspaceId,
+      builtIn,
+      createdAt,
+    ] = params;
     state.roles.set(String(id), {
       id: String(id),
       name: String(name),
       description: String(description),
       scopes: parseStringArray(scopes),
       orgId: String(orgId),
-      ...(typeof workspaceId === "string" && workspaceId.length > 0 ? { workspaceId } : {}),
+      ...(typeof workspaceId === "string" && workspaceId.length > 0
+        ? { workspaceId }
+        : {}),
       builtIn: builtIn === 1 || builtIn === true,
       createdAt: String(createdAt),
     });
@@ -1007,17 +1196,38 @@ function runMutation(state: HarnessState, query: string, params: unknown[]) {
       conditions: parseConditions(conditions),
       priority: Number(priority),
       orgId: String(orgId),
-      ...(typeof workspaceId === "string" && workspaceId.length > 0 ? { workspaceId } : {}),
+      ...(typeof workspaceId === "string" && workspaceId.length > 0
+        ? { workspaceId }
+        : {}),
       createdAt: String(createdAt),
-      ...(typeof deletedAt === "string" && deletedAt.length > 0 ? { deletedAt } : {}),
+      ...(typeof deletedAt === "string" && deletedAt.length > 0
+        ? { deletedAt }
+        : {}),
     });
     return successResult();
   }
 
-  if (/^update policies\b/.test(sql) && /\bset name = \?, effect = \?/.test(sql)) {
-    const [name, effect, scopes, _scopesJson, conditions, _conditionsJson, priority, id, orgId] = params;
+  if (
+    /^update policies\b/.test(sql) &&
+    /\bset name = \?, effect = \?/.test(sql)
+  ) {
+    const [
+      name,
+      effect,
+      scopes,
+      _scopesJson,
+      conditions,
+      _conditionsJson,
+      priority,
+      id,
+      orgId,
+    ] = params;
     const existing = state.policies.get(String(id));
-    if (existing && existing.orgId === orgId && existing.deletedAt === undefined) {
+    if (
+      existing &&
+      existing.orgId === orgId &&
+      existing.deletedAt === undefined
+    ) {
       state.policies.set(existing.id, {
         ...existing,
         name: String(name),
@@ -1033,7 +1243,11 @@ function runMutation(state: HarnessState, query: string, params: unknown[]) {
   if (/^update policies\b/.test(sql) && /\bset deleted_at = \?/.test(sql)) {
     const [deletedAt, id, orgId] = params;
     const existing = state.policies.get(String(id));
-    if (existing && existing.orgId === orgId && existing.deletedAt === undefined) {
+    if (
+      existing &&
+      existing.orgId === orgId &&
+      existing.deletedAt === undefined
+    ) {
       state.policies.set(existing.id, {
         ...existing,
         deletedAt: String(deletedAt),
@@ -1085,7 +1299,9 @@ function toRoleRow(role: Role) {
     scopes_json: JSON.stringify(role.scopes),
     orgId: role.orgId,
     org_id: role.orgId,
-    ...(role.workspaceId ? { workspaceId: role.workspaceId, workspace_id: role.workspaceId } : {}),
+    ...(role.workspaceId
+      ? { workspaceId: role.workspaceId, workspace_id: role.workspaceId }
+      : {}),
     builtIn: role.builtIn,
     built_in: role.builtIn ? 1 : 0,
     createdAt: role.createdAt,
@@ -1105,7 +1321,9 @@ function toPolicyRow(policy: StoredPolicy) {
     priority: policy.priority,
     orgId: policy.orgId,
     org_id: policy.orgId,
-    ...(policy.workspaceId ? { workspaceId: policy.workspaceId, workspace_id: policy.workspaceId } : {}),
+    ...(policy.workspaceId
+      ? { workspaceId: policy.workspaceId, workspace_id: policy.workspaceId }
+      : {}),
     createdAt: policy.createdAt,
     created_at: policy.createdAt,
     deletedAt: policy.deletedAt ?? null,
@@ -1141,8 +1359,12 @@ function toIdentityRow(identity: StoredIdentity) {
     budget: identity.budget ?? null,
     budget_json: identity.budget ? JSON.stringify(identity.budget) : null,
     budgetUsage: identity.budgetUsage ?? null,
-    budget_usage: identity.budgetUsage ? JSON.stringify(identity.budgetUsage) : null,
-    budget_usage_json: identity.budgetUsage ? JSON.stringify(identity.budgetUsage) : null,
+    budget_usage: identity.budgetUsage
+      ? JSON.stringify(identity.budgetUsage)
+      : null,
+    budget_usage_json: identity.budgetUsage
+      ? JSON.stringify(identity.budgetUsage)
+      : null,
   };
 }
 
@@ -1168,7 +1390,10 @@ function parseStringArray(value: unknown): string[] {
 function parseConditions(value: unknown): StoredPolicy["conditions"] {
   if (Array.isArray(value)) {
     return value
-      .filter((entry): entry is StoredPolicy["conditions"][number] => typeof entry === "object" && entry !== null)
+      .filter(
+        (entry): entry is StoredPolicy["conditions"][number] =>
+          typeof entry === "object" && entry !== null,
+      )
       .map((entry) => ({ ...entry }));
   }
 
@@ -1180,7 +1405,10 @@ function parseConditions(value: unknown): StoredPolicy["conditions"] {
     const parsed = JSON.parse(value) as unknown;
     return Array.isArray(parsed)
       ? parsed
-          .filter((entry): entry is StoredPolicy["conditions"][number] => typeof entry === "object" && entry !== null)
+          .filter(
+            (entry): entry is StoredPolicy["conditions"][number] =>
+              typeof entry === "object" && entry !== null,
+          )
           .map((entry) => ({ ...entry }))
       : [];
   } catch {
@@ -1191,7 +1419,9 @@ function parseConditions(value: unknown): StoredPolicy["conditions"] {
 function parseRecord(value: unknown): Record<string, string> {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return Object.fromEntries(
-      Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      Object.entries(value).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
     );
   }
 
@@ -1206,7 +1436,9 @@ function parseRecord(value: unknown): Record<string, string> {
     }
 
     return Object.fromEntries(
-      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
     );
   } catch {
     return {};

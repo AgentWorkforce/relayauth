@@ -161,7 +161,11 @@ export function parseAuditQuery(
   if (cursor && !decodedCursor) {
     return { ok: false, error: "invalid cursor" };
   }
-  const limit = parseLimit(query.limit, options.defaultLimit ?? 50, options.maxLimit ?? 200);
+  const limit = parseLimit(
+    query.limit,
+    options.defaultLimit ?? 50,
+    options.maxLimit ?? 200,
+  );
   if (limit === null) {
     return { ok: false, error: "limit must be a positive integer" };
   }
@@ -239,7 +243,9 @@ export function buildAuditQuery(
     clauses.push("timestamp < ?");
     values.push(
       params.cursor.inclusive && !params.cursor.chunk
-        ? new Date(new Date(params.cursor.timestamp).getTime() + 60_000).toISOString()
+        ? new Date(
+            new Date(params.cursor.timestamp).getTime() + 60_000,
+          ).toISOString()
         : params.cursor.timestamp,
     );
     if (params.cursor.entryCursor) {
@@ -252,10 +258,14 @@ export function buildAuditQuery(
     }
   } else if (params.cursor) {
     clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
-    values.push(params.cursor.timestamp, params.cursor.timestamp, params.cursor.id);
+    values.push(
+      params.cursor.timestamp,
+      params.cursor.timestamp,
+      params.cursor.id,
+    );
   }
 
-  values.push(params.limit + (options.includeOverflowRow ?? true ? 1 : 0));
+  values.push(params.limit + ((options.includeOverflowRow ?? true) ? 1 : 0));
 
   return {
     sql: `
@@ -280,7 +290,9 @@ export function toAuditEntry(row: AuditLogRow): AuditEntryResponse {
     ...(row.plane ? { plane: row.plane } : {}),
     ...(row.resource ? { resource: row.resource } : {}),
     result: row.result,
-    ...(row.metadata_json ? { metadata: parseMetadata(row.metadata_json) } : {}),
+    ...(row.metadata_json
+      ? { metadata: parseMetadata(row.metadata_json) }
+      : {}),
     ...(row.ip ? { ip: row.ip } : {}),
     ...(row.user_agent ? { userAgent: row.user_agent } : {}),
     timestamp: row.timestamp,
@@ -314,7 +326,11 @@ function normalizeQueryValue(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function parseLimit(value: unknown, defaultLimit: number, maxLimit: number): number | null {
+function parseLimit(
+  value: unknown,
+  defaultLimit: number,
+  maxLimit: number,
+): number | null {
   if (value === undefined) {
     return defaultLimit;
   }
@@ -340,10 +356,14 @@ function parseLimit(value: unknown, defaultLimit: number, maxLimit: number): num
 }
 
 function isIsoTimestamp(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value);
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
+    value,
+  );
 }
 
-export function encodeAuditCursor(cursor: AuditQueryCursor | undefined): string | null {
+export function encodeAuditCursor(
+  cursor: AuditQueryCursor | undefined,
+): string | null {
   if (!cursor?.timestamp) {
     return null;
   }
@@ -394,13 +414,24 @@ export function decodeAuditCursor(value: string): AuditQueryCursor | null {
   }
 }
 
-function parseArchiveCursor(value: string): Extract<AuditQueryCursor, { kind: "archive_partition" }> | null {
+function parseArchiveCursor(
+  value: string,
+): Extract<AuditQueryCursor, { kind: "archive_partition" }> | null {
   try {
     const parsed: unknown = JSON.parse(value);
     if (!isRecord(parsed)) {
       return null;
     }
-    const { version, kind, orgId, timestamp, inclusive, chunk, entryCursor, filterKey } = parsed;
+    const {
+      version,
+      kind,
+      orgId,
+      timestamp,
+      inclusive,
+      chunk,
+      entryCursor,
+      filterKey,
+    } = parsed;
     return version === 1 &&
       kind === "archive_partition" &&
       typeof orgId === "string" &&
@@ -427,7 +458,14 @@ function parseArchiveCursor(value: string): Extract<AuditQueryCursor, { kind: "a
           orgId,
           timestamp,
           ...(inclusive === true ? { inclusive } : {}),
-          ...(chunk ? { chunk: { key: chunk.key as string, sha256: chunk.sha256 as string } } : {}),
+          ...(chunk
+            ? {
+                chunk: {
+                  key: chunk.key as string,
+                  sha256: chunk.sha256 as string,
+                },
+              }
+            : {}),
           ...(entryCursor
             ? {
                 entryCursor: {
@@ -449,12 +487,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function toBase64Url(value: string): string {
-  return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return btoa(value)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 function fromBase64Url(value: string): string {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    "=",
+  );
   return atob(padded);
 }
 

@@ -25,7 +25,9 @@ function createHarness(): { storage: AuthStorage; cleanup: () => void } {
   };
 }
 
-function createIdentity(overrides: Partial<StoredIdentity> = {}): StoredIdentity {
+function createIdentity(
+  overrides: Partial<StoredIdentity> = {},
+): StoredIdentity {
   const id = overrides.id ?? `agent_${Math.random().toString(36).slice(2)}`;
   const createdAt = overrides.createdAt ?? "2026-03-27T10:00:00.000Z";
   const updatedAt = overrides.updatedAt ?? createdAt;
@@ -46,7 +48,9 @@ function createIdentity(overrides: Partial<StoredIdentity> = {}): StoredIdentity
     updatedAt,
     ...(overrides.lastActiveAt ? { lastActiveAt: overrides.lastActiveAt } : {}),
     ...(overrides.suspendedAt ? { suspendedAt: overrides.suspendedAt } : {}),
-    ...(overrides.suspendReason ? { suspendReason: overrides.suspendReason } : {}),
+    ...(overrides.suspendReason
+      ? { suspendReason: overrides.suspendReason }
+      : {}),
     ...(overrides.budget ? { budget: overrides.budget } : {}),
     ...(overrides.budgetUsage ? { budgetUsage: overrides.budgetUsage } : {}),
   };
@@ -81,7 +85,9 @@ function createPolicy(overrides: Partial<Policy> = {}): Policy {
   };
 }
 
-function createAuditEntry(overrides: Partial<AuditEntry> = {}): Omit<AuditEntry, "id"> & { id: string } {
+function createAuditEntry(
+  overrides: Partial<AuditEntry> = {},
+): Omit<AuditEntry, "id"> & { id: string } {
   return {
     id: overrides.id ?? `aud_${Math.random().toString(36).slice(2)}`,
     action: overrides.action ?? "scope.checked",
@@ -137,18 +143,28 @@ test("sqlite token storage owns issued-token persistence and hot-path lookups", 
       [await storage.tokens.getById("jti_1")],
     );
     assert.deepEqual(
-      (await storage.tokens.listActiveBySessionId("sess_shared")).map((token) => token.id),
+      (await storage.tokens.listActiveBySessionId("sess_shared")).map(
+        (token) => token.id,
+      ),
       ["tok_row_1", "tok_row_2"],
     );
-    assert.deepEqual(await storage.tokens.listActiveIds("agent_token_1"), ["tok_row_1"]);
+    assert.deepEqual(await storage.tokens.listActiveIds("agent_token_1"), [
+      "tok_row_1",
+    ]);
 
     await storage.revocations.revokeIdentityTokens(
       "agent_token_1",
       ["tok_row_1"],
       "2026-03-27T12:01:00.000Z",
     );
-    assert.deepEqual(await storage.tokens.listActiveByIdentityId("agent_token_1"), []);
-    assert.equal((await storage.tokens.getById("tok_row_1"))?.status, "revoked");
+    assert.deepEqual(
+      await storage.tokens.listActiveByIdentityId("agent_token_1"),
+      [],
+    );
+    assert.equal(
+      (await storage.tokens.getById("tok_row_1"))?.status,
+      "revoked",
+    );
   } finally {
     cleanup();
   }
@@ -175,8 +191,8 @@ test("sqlite revoke with audit rolls all durable state back when the audit inser
     });
     await storage.audit.write(conflictingAudit);
 
-    await assert.rejects(
-      () => storage.revocations.revokeIdentityTokensWithAudit({
+    await assert.rejects(() =>
+      storage.revocations.revokeIdentityTokensWithAudit({
         identityId: "agent_revoke_atomic",
         tokenIds: ["tok_revoke_atomic"],
         revokedAt: "2026-03-27T12:01:00.000Z",
@@ -184,14 +200,25 @@ test("sqlite revoke with audit rolls all durable state back when the audit inser
       }),
     );
 
-    assert.equal((await storage.tokens.getById("tok_revoke_atomic"))?.status, "active");
-    assert.equal(await storage.revocations.isRevoked("tok_revoke_atomic"), false);
-    assert.deepEqual(
-      (await storage.audit.query({
+    assert.equal(
+      (await storage.tokens.getById("tok_revoke_atomic"))?.status,
+      "active",
+    );
+    assert.equal(
+      await storage.revocations.isRevoked("tok_revoke_atomic"),
+      false,
+    );
+    const auditResult = await storage.audit.query(
+      {
         orgId: "org_test",
         action: "token.revoked",
         limit: 10,
-      }, { includeOverflowRow: false })).map((entry) => entry.id),
+      },
+      { includeOverflowRow: false },
+    );
+    assert.equal(auditResult.kind, "complete");
+    assert.deepEqual(
+      auditResult.entries.map((entry) => entry.id),
       ["aud_revoke_conflict"],
     );
   } finally {
@@ -232,25 +259,42 @@ test("sqlite token pair and audit entry commit atomically and retries do not dup
 
   try {
     await storage.tokens.persistIssuedPairWithAudit(pair);
-    assert.equal((await storage.tokens.listActiveBySessionId("sess_pair")).length, 2);
+    assert.equal(
+      (await storage.tokens.listActiveBySessionId("sess_pair")).length,
+      2,
+    );
     assert.deepEqual(
-      (await storage.audit.query({
-        orgId: "org_test",
-        action: "token.issued",
-        limit: 10,
-      }, { includeOverflowRow: false })).entries.map((entry) => entry.id),
+      (
+        await storage.audit.query(
+          {
+            orgId: "org_test",
+            action: "token.issued",
+            limit: 10,
+          },
+          { includeOverflowRow: false },
+        )
+      ).entries.map((entry) => entry.id),
       ["aud_pair"],
     );
 
-    await assert.rejects(
-      () => storage.tokens.persistIssuedPairWithAudit(pair),
+    await assert.rejects(() => storage.tokens.persistIssuedPairWithAudit(pair));
+    assert.equal(
+      (await storage.tokens.listActiveBySessionId("sess_pair")).length,
+      2,
     );
-    assert.equal((await storage.tokens.listActiveBySessionId("sess_pair")).length, 2);
-    assert.equal((await storage.audit.query({
-      orgId: "org_test",
-      action: "token.issued",
-      limit: 10,
-    }, { includeOverflowRow: false })).entries.length, 1);
+    assert.equal(
+      (
+        await storage.audit.query(
+          {
+            orgId: "org_test",
+            action: "token.issued",
+            limit: 10,
+          },
+          { includeOverflowRow: false },
+        )
+      ).entries.length,
+      1,
+    );
   } finally {
     cleanup();
   }
@@ -260,40 +304,47 @@ test("sqlite token pair rolls back both token rows when the audit insert fails",
   const { storage, cleanup } = createHarness();
 
   try {
-    await storage.audit.write(createAuditEntry({
-      id: "aud_conflict",
-      action: "token.issued",
-    }));
-
-    await assert.rejects(() => storage.tokens.persistIssuedPairWithAudit({
-      accessToken: {
-        id: "tok_rollback_access",
-        tokenId: "tok_rollback_access",
-        jti: "tok_rollback_access",
-        identityId: "agent_rollback",
-        sessionId: "sess_rollback",
-        issuedAt: 1_774_608_000,
-        expiresAt: 1_774_611_600,
-        createdAt: "2026-03-27T12:00:00.000Z",
-      },
-      refreshToken: {
-        id: "tok_rollback_refresh",
-        tokenId: "tok_rollback_refresh",
-        jti: "tok_rollback_refresh",
-        identityId: "agent_rollback",
-        sessionId: "sess_rollback",
-        issuedAt: 1_774_608_000,
-        expiresAt: 1_774_694_400,
-        createdAt: "2026-03-27T12:00:00.000Z",
-      },
-      auditEntry: createAuditEntry({
+    await storage.audit.write(
+      createAuditEntry({
         id: "aud_conflict",
         action: "token.issued",
-        identityId: "agent_rollback",
       }),
-    }));
+    );
 
-    assert.deepEqual(await storage.tokens.listActiveBySessionId("sess_rollback"), []);
+    await assert.rejects(() =>
+      storage.tokens.persistIssuedPairWithAudit({
+        accessToken: {
+          id: "tok_rollback_access",
+          tokenId: "tok_rollback_access",
+          jti: "tok_rollback_access",
+          identityId: "agent_rollback",
+          sessionId: "sess_rollback",
+          issuedAt: 1_774_608_000,
+          expiresAt: 1_774_611_600,
+          createdAt: "2026-03-27T12:00:00.000Z",
+        },
+        refreshToken: {
+          id: "tok_rollback_refresh",
+          tokenId: "tok_rollback_refresh",
+          jti: "tok_rollback_refresh",
+          identityId: "agent_rollback",
+          sessionId: "sess_rollback",
+          issuedAt: 1_774_608_000,
+          expiresAt: 1_774_694_400,
+          createdAt: "2026-03-27T12:00:00.000Z",
+        },
+        auditEntry: createAuditEntry({
+          id: "aud_conflict",
+          action: "token.issued",
+          identityId: "agent_rollback",
+        }),
+      }),
+    );
+
+    assert.deepEqual(
+      await storage.tokens.listActiveBySessionId("sess_rollback"),
+      [],
+    );
     assert.equal(await storage.tokens.getById("tok_rollback_access"), null);
     assert.equal(await storage.tokens.getById("tok_rollback_refresh"), null);
   } finally {
@@ -349,15 +400,31 @@ test("sqlite refresh rotation atomically mints, revokes, and audits", async () =
       }),
     });
 
-    assert.equal((await storage.tokens.getById(previous.id))?.status, "revoked");
-    assert.equal((await storage.tokens.getById(accessToken.id))?.status, "active");
-    assert.equal((await storage.tokens.getById(refreshToken.id))?.status, "active");
+    assert.equal(
+      (await storage.tokens.getById(previous.id))?.status,
+      "revoked",
+    );
+    assert.equal(
+      (await storage.tokens.getById(accessToken.id))?.status,
+      "active",
+    );
+    assert.equal(
+      (await storage.tokens.getById(refreshToken.id))?.status,
+      "active",
+    );
     assert.equal(await storage.revocations.isRevoked?.(previous.id), true);
     assert.deepEqual(
-      (await storage.audit.query({
-        orgId: "org_test",
-        limit: 10,
-      }, { includeOverflowRow: false })).entries.map((entry) => entry.id).sort(),
+      (
+        await storage.audit.query(
+          {
+            orgId: "org_test",
+            limit: 10,
+          },
+          { includeOverflowRow: false },
+        )
+      ).entries
+        .map((entry) => entry.id)
+        .sort(),
       ["aud_rotation_refreshed", "aud_rotation_revoked"],
     );
   } finally {
@@ -380,44 +447,54 @@ test("sqlite refresh rotation audit conflict rolls back new tokens and old-JTI r
 
   try {
     await storage.tokens.persistIssued(previous);
-    await storage.audit.write(createAuditEntry({
-      id: "aud_rotation_conflict",
-      action: "token.revoked",
-      identityId: previous.identityId,
-    }));
-    await assert.rejects(() => storage.tokens.rotateIssuedPairWithAudit({
-      accessToken: {
-        ...previous,
-        id: "tok_rollback_rotation_access",
-        tokenId: "tok_rollback_rotation_access",
-        jti: "tok_rollback_rotation_access",
-      },
-      refreshToken: {
-        ...previous,
-        id: "tok_rollback_rotation_refresh",
-        tokenId: "tok_rollback_rotation_refresh",
-        jti: "tok_rollback_rotation_refresh",
-      },
-      previousRefreshToken: {
-        id: previous.id,
-        identityId: previous.identityId,
-        expiresAt: previous.expiresAt,
-      },
-      refreshedAuditEntry: createAuditEntry({
-        id: "aud_rotation_first",
-        action: "token.refreshed",
-        identityId: previous.identityId,
-      }),
-      revokedAuditEntry: createAuditEntry({
+    await storage.audit.write(
+      createAuditEntry({
         id: "aud_rotation_conflict",
         action: "token.revoked",
         identityId: previous.identityId,
       }),
-    }));
+    );
+    await assert.rejects(() =>
+      storage.tokens.rotateIssuedPairWithAudit({
+        accessToken: {
+          ...previous,
+          id: "tok_rollback_rotation_access",
+          tokenId: "tok_rollback_rotation_access",
+          jti: "tok_rollback_rotation_access",
+        },
+        refreshToken: {
+          ...previous,
+          id: "tok_rollback_rotation_refresh",
+          tokenId: "tok_rollback_rotation_refresh",
+          jti: "tok_rollback_rotation_refresh",
+        },
+        previousRefreshToken: {
+          id: previous.id,
+          identityId: previous.identityId,
+          expiresAt: previous.expiresAt,
+        },
+        refreshedAuditEntry: createAuditEntry({
+          id: "aud_rotation_first",
+          action: "token.refreshed",
+          identityId: previous.identityId,
+        }),
+        revokedAuditEntry: createAuditEntry({
+          id: "aud_rotation_conflict",
+          action: "token.revoked",
+          identityId: previous.identityId,
+        }),
+      }),
+    );
 
     assert.equal((await storage.tokens.getById(previous.id))?.status, "active");
-    assert.equal(await storage.tokens.getById("tok_rollback_rotation_access"), null);
-    assert.equal(await storage.tokens.getById("tok_rollback_rotation_refresh"), null);
+    assert.equal(
+      await storage.tokens.getById("tok_rollback_rotation_access"),
+      null,
+    );
+    assert.equal(
+      await storage.tokens.getById("tok_rollback_rotation_refresh"),
+      null,
+    );
     assert.equal(await storage.revocations.isRevoked?.(previous.id), false);
   } finally {
     cleanup();
@@ -488,17 +565,26 @@ test("sqlite identity storage supports CRUD, hierarchy, and budget auto-suspend"
     assert.equal(afterCursor.length, 1);
     assert.equal(afterCursor[0]?.id, createdParent.id);
 
-    const duplicate = await storage.identities.findDuplicate("org_test", "Parent Agent");
+    const duplicate = await storage.identities.findDuplicate(
+      "org_test",
+      "Parent Agent",
+    );
     assert.deepEqual(duplicate, {
       id: createdParent.id,
       name: "Parent Agent",
       orgId: "org_test",
     });
 
-    const childIds = await storage.identities.listChildIds("org_test", parent.id);
+    const childIds = await storage.identities.listChildIds(
+      "org_test",
+      parent.id,
+    );
     assert.deepEqual(childIds, [createdChild.id]);
 
-    const children = await storage.identities.listChildren("org_test", parent.id);
+    const children = await storage.identities.listChildren(
+      "org_test",
+      parent.id,
+    );
     assert.equal(children.length, 1);
     assert.equal(children[0]?.id, createdChild.id);
     assert.equal(children[0]?.status, "active");
@@ -509,7 +595,10 @@ test("sqlite identity storage supports CRUD, hierarchy, and budget auto-suspend"
       suspendedIdentities: 1,
     });
 
-    const suspended = await storage.identities.suspend(parent.id, "manual_review");
+    const suspended = await storage.identities.suspend(
+      parent.id,
+      "manual_review",
+    );
     assert.equal(suspended.status, "suspended");
     assert.equal(suspended.suspendReason, "manual_review");
 
@@ -518,7 +607,10 @@ test("sqlite identity storage supports CRUD, hierarchy, and budget auto-suspend"
     assert.equal(reactivated.suspendedAt, undefined);
     assert.equal(reactivated.suspendReason, undefined);
 
-    const retired = await storage.identities.retire(parent.id, "decommissioned");
+    const retired = await storage.identities.retire(
+      parent.id,
+      "decommissioned",
+    );
     assert.equal(retired.status, "retired");
     await assert.rejects(
       () => storage.identities.reactivate(parent.id),
@@ -557,13 +649,19 @@ test("sqlite storage supports roles, policies, audit, webhooks, contexts, and re
       ["role_global", "role_workspace"],
     );
 
-    const listedByIds = await storage.roles.listByIds([workspaceRole.id, globalRole.id]);
+    const listedByIds = await storage.roles.listByIds([
+      workspaceRole.id,
+      globalRole.id,
+    ]);
     assert.equal(listedByIds.length, 2);
 
     const updatedRole = await storage.roles.update(globalRole.id, {
       scopes: ["relayauth:identity:read", "relayauth:audit:read"],
     });
-    assert.deepEqual(updatedRole.scopes, ["relayauth:identity:read", "relayauth:audit:read"]);
+    assert.deepEqual(updatedRole.scopes, [
+      "relayauth:identity:read",
+      "relayauth:audit:read",
+    ]);
 
     const lowPriorityPolicy = await storage.policies.create(
       createPolicy({
@@ -596,24 +694,34 @@ test("sqlite storage supports roles, policies, audit, webhooks, contexts, and re
     const deletedPolicy = await storage.policies.get(highPriorityPolicy.id);
     assert.equal(deletedPolicy, null);
 
-    await storage.audit.write(createAuditEntry({
-      id: "aud_newer",
-      action: "scope.checked",
-      identityId: "agent_parent",
-      orgId: "org_test",
-      result: "allowed",
-      timestamp: "2026-03-27T15:00:00.000Z",
-      metadata: { sponsorId: "sponsor_root", sponsorChain: "[\"sponsor_root\"]" },
-    }));
-    await storage.audit.write(createAuditEntry({
-      id: "aud_older",
-      action: "token.revoked",
-      identityId: "agent_parent",
-      orgId: "org_test",
-      result: "allowed",
-      timestamp: "2026-03-27T14:00:00.000Z",
-      metadata: { sponsorId: "sponsor_root", sponsorChain: "[\"sponsor_root\"]" },
-    }));
+    await storage.audit.write(
+      createAuditEntry({
+        id: "aud_newer",
+        action: "scope.checked",
+        identityId: "agent_parent",
+        orgId: "org_test",
+        result: "allowed",
+        timestamp: "2026-03-27T15:00:00.000Z",
+        metadata: {
+          sponsorId: "sponsor_root",
+          sponsorChain: '["sponsor_root"]',
+        },
+      }),
+    );
+    await storage.audit.write(
+      createAuditEntry({
+        id: "aud_older",
+        action: "token.revoked",
+        identityId: "agent_parent",
+        orgId: "org_test",
+        result: "allowed",
+        timestamp: "2026-03-27T14:00:00.000Z",
+        metadata: {
+          sponsorId: "sponsor_root",
+          sponsorChain: '["sponsor_root"]',
+        },
+      }),
+    );
 
     const queriedAudit = await storage.audit.query({
       orgId: "org_test",
@@ -626,11 +734,11 @@ test("sqlite storage supports roles, policies, audit, webhooks, contexts, and re
     assert.deepEqual(actionCounts, {
       kind: "complete",
       counts: {
-      tokensIssued: 0,
-      tokensRevoked: 1,
-      tokensRefreshed: 0,
-      scopeChecks: 1,
-      scopeDenials: 0,
+        tokensIssued: 0,
+        tokensRevoked: 1,
+        tokensRefreshed: 0,
+        scopeChecks: 1,
+        scopeDenials: 0,
       },
     });
 
@@ -639,7 +747,11 @@ test("sqlite storage supports roles, policies, audit, webhooks, contexts, and re
       sponsorChain: ["sponsor_root", "agent_for_audit_event"],
     });
     await storage.identities.create(suspendedIdentity);
-    await storage.audit.writeIdentitySuspendedEvent(suspendedIdentity, "manual_review", "actor_1");
+    await storage.audit.writeIdentitySuspendedEvent(
+      suspendedIdentity,
+      "manual_review",
+      "actor_1",
+    );
 
     const createdWebhook = await storage.auditWebhooks.create({
       orgId: "org_test",
@@ -664,7 +776,11 @@ test("sqlite storage supports roles, policies, audit, webhooks, contexts, and re
     const revocations = storage.revocations as AuthStorage["revocations"] & {
       isRevoked?: (tokenId: string) => Promise<boolean>;
     };
-    await revocations.revokeIdentityTokens("agent_parent", ["tok_1"], "2026-03-27T16:00:00.000Z");
+    await revocations.revokeIdentityTokens(
+      "agent_parent",
+      ["tok_1"],
+      "2026-03-27T16:00:00.000Z",
+    );
     if (typeof revocations.isRevoked === "function") {
       assert.equal(await revocations.isRevoked("tok_1"), true);
     }

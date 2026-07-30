@@ -163,9 +163,10 @@ export function createAuditQueryContinuationFilterKey(
     | "cursor"
   >,
 ): string {
-  const entryCursor = query.cursor?.kind === "archive_partition"
-    ? query.cursor.entryCursor
-    : query.cursor;
+  const entryCursor =
+    query.cursor?.kind === "archive_partition"
+      ? query.cursor.entryCursor
+      : query.cursor;
   return JSON.stringify({
     version: 1,
     resource: "audit",
@@ -326,7 +327,10 @@ export type RevokedTokenAudit = {
 };
 
 export interface IdentityStorage {
-  list(orgId: string, options?: ListIdentitiesOptions): Promise<AgentIdentity[]>;
+  list(
+    orgId: string,
+    options?: ListIdentitiesOptions,
+  ): Promise<AgentIdentity[]>;
   get(id: string): Promise<StoredIdentity | null>;
   create(identity: StoredIdentity): Promise<StoredIdentity>;
   update(id: string, patch: Partial<StoredIdentity>): Promise<StoredIdentity>;
@@ -334,10 +338,16 @@ export interface IdentityStorage {
   suspend(id: string, reason: string): Promise<StoredIdentity>;
   retire(id: string, reason?: string): Promise<StoredIdentity>;
   reactivate(id: string): Promise<StoredIdentity>;
-  findDuplicate(orgId: string, name: string): Promise<DuplicateIdentityRecord | null>;
+  findDuplicate(
+    orgId: string,
+    name: string,
+  ): Promise<DuplicateIdentityRecord | null>;
   loadOrgBudget(orgId: string): Promise<IdentityBudget | undefined>;
   listChildIds(orgId: string, sponsorId: string): Promise<string[]>;
-  listChildren(orgId: string, sponsorId: string): Promise<IdentityChildSummary[]>;
+  listChildren(
+    orgId: string,
+    sponsorId: string,
+  ): Promise<IdentityChildSummary[]>;
   getStatusCounts(orgId: string): Promise<IdentityStatusCounts>;
 }
 
@@ -353,7 +363,11 @@ export interface TokenStorage {
 }
 
 export interface RevocationStorage {
-  revokeIdentityTokens(identityId: string, tokenIds: string[], revokedAt: string): Promise<void>;
+  revokeIdentityTokens(
+    identityId: string,
+    tokenIds: string[],
+    revokedAt: string,
+  ): Promise<void>;
   revokeIdentityTokensWithAudit(input: RevokedTokenAudit): Promise<void>;
   /**
    * Optionally populate a low-latency cache after the durable transaction
@@ -389,9 +403,19 @@ export interface PolicyStorage {
 export interface AuditStorage {
   write(entry: AuditLogWriteEntry): Promise<void>;
   writeBatch(entries: AuditLogWriteEntry[]): Promise<void>;
-  query(query: AuditQueryInput, options?: AuditQueryOptions): Promise<AuditQueryResult>;
-  getActionCounts(orgId: string, query: DashboardAuditQuery): Promise<DashboardAuditCountsResult>;
-  writeIdentitySuspendedEvent(identity: StoredIdentity, reason: string, actorId: string): Promise<void>;
+  query(
+    query: AuditQueryInput,
+    options?: AuditQueryOptions,
+  ): Promise<AuditQueryResult>;
+  getActionCounts(
+    orgId: string,
+    query: DashboardAuditQuery,
+  ): Promise<DashboardAuditCountsResult>;
+  writeIdentitySuspendedEvent(
+    identity: StoredIdentity,
+    reason: string,
+    actorId: string,
+  ): Promise<void>;
 }
 
 export interface AuditWebhookStorage {

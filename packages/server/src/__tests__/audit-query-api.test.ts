@@ -31,26 +31,37 @@ function createAuditEntry(
   return {
     id: overrides.id ?? `aud_${String(index).padStart(3, "0")}`,
     action: overrides.action ?? "token.validated",
-    identityId: overrides.identityId ?? `agent_${String(index).padStart(3, "0")}`,
+    identityId:
+      overrides.identityId ?? `agent_${String(index).padStart(3, "0")}`,
     orgId: overrides.orgId ?? "org_test",
-    ...(overrides.workspaceId !== undefined ? { workspaceId: overrides.workspaceId } : {}),
+    ...(overrides.workspaceId !== undefined
+      ? { workspaceId: overrides.workspaceId }
+      : {}),
     plane: overrides.plane ?? "relayauth",
     resource: overrides.resource ?? `/resources/${index}`,
     result: overrides.result ?? "allowed",
     metadata: overrides.metadata ?? {
       sponsorId: "user_test",
-      sponsorChain: JSON.stringify(["user_test", overrides.identityId ?? `agent_${String(index).padStart(3, "0")}`]),
+      sponsorChain: JSON.stringify([
+        "user_test",
+        overrides.identityId ?? `agent_${String(index).padStart(3, "0")}`,
+      ]),
       requestId: `req_${String(index).padStart(3, "0")}`,
     },
     ip: overrides.ip ?? "203.0.113.10",
     userAgent: overrides.userAgent ?? "audit-query-tests/1.0",
-    timestamp: overrides.timestamp ?? new Date(Date.UTC(2026, 2, 24, 12, 0, index)).toISOString(),
+    timestamp:
+      overrides.timestamp ??
+      new Date(Date.UTC(2026, 2, 24, 12, 0, index)).toISOString(),
     createdAt:
-      overrides.createdAt ?? new Date(Date.UTC(2026, 2, 24, 12, 5, index)).toISOString(),
+      overrides.createdAt ??
+      new Date(Date.UTC(2026, 2, 24, 12, 5, index)).toISOString(),
   };
 }
 
-function createAuditSearch(params: Record<string, string | number | undefined>): string {
+function createAuditSearch(
+  params: Record<string, string | number | undefined>,
+): string {
   const search = new URLSearchParams();
 
   for (const [key, value] of Object.entries(params)) {
@@ -103,13 +114,16 @@ test("GET /v1/audit returns paginated audit entries", async () => {
     }),
   ];
 
-  const response = await queryAudit(createAuditSearch({ orgId: "org_audit_feed" }), {
-    claims: {
-      org: "org_audit_feed",
-      scopes: ["relayauth:audit:read"],
+  const response = await queryAudit(
+    createAuditSearch({ orgId: "org_audit_feed" }),
+    {
+      claims: {
+        org: "org_audit_feed",
+        scopes: ["relayauth:audit:read"],
+      },
+      entries,
     },
-    entries,
-  });
+  );
   const body = await assertJsonResponse<AuditQueryResponse>(response, 200);
 
   assert.deepEqual(body.entries, entries);
@@ -225,16 +239,22 @@ test("GET /v1/audit filters by orgId query param", async () => {
     }),
   ];
 
-  const response = await queryAudit(createAuditSearch({ orgId: "org_target" }), {
-    claims: {
-      org: "org_target",
-      scopes: ["relayauth:audit:read"],
+  const response = await queryAudit(
+    createAuditSearch({ orgId: "org_target" }),
+    {
+      claims: {
+        org: "org_target",
+        scopes: ["relayauth:audit:read"],
+      },
+      entries,
     },
-    entries,
-  });
+  );
   const body = await assertJsonResponse<AuditQueryResponse>(response, 200);
 
-  assert.deepEqual(body.entries.map((entry) => entry.id), ["aud_org_003", "aud_org_001"]);
+  assert.deepEqual(
+    body.entries.map((entry) => entry.id),
+    ["aud_org_003", "aud_org_001"],
+  );
   assert.ok(body.entries.every((entry) => entry.orgId === "org_target"));
 });
 
@@ -278,7 +298,10 @@ test("GET /v1/audit filters by date range using inclusive from and exclusive to"
   );
   const body = await assertJsonResponse<AuditQueryResponse>(response, 200);
 
-  assert.deepEqual(body.entries.map((entry) => entry.id), ["aud_range_003", "aud_range_002"]);
+  assert.deepEqual(
+    body.entries.map((entry) => entry.id),
+    ["aud_range_003", "aud_range_002"],
+  );
 });
 
 test("GET /v1/audit filters by result query param", async () => {
@@ -318,7 +341,10 @@ test("GET /v1/audit filters by result query param", async () => {
   );
   const body = await assertJsonResponse<AuditQueryResponse>(response, 200);
 
-  assert.deepEqual(body.entries.map((entry) => entry.id), ["aud_result_003", "aud_result_001"]);
+  assert.deepEqual(
+    body.entries.map((entry) => entry.id),
+    ["aud_result_003", "aud_result_001"],
+  );
   assert.ok(body.entries.every((entry) => entry.result === "denied"));
 });
 
@@ -354,9 +380,15 @@ test("GET /v1/audit supports cursor-based pagination with limit", async () => {
       entries,
     },
   );
-  const firstPage = await assertJsonResponse<AuditQueryResponse>(firstPageResponse, 200);
+  const firstPage = await assertJsonResponse<AuditQueryResponse>(
+    firstPageResponse,
+    200,
+  );
 
-  assert.deepEqual(firstPage.entries.map((entry) => entry.id), ["aud_page_003", "aud_page_002"]);
+  assert.deepEqual(
+    firstPage.entries.map((entry) => entry.id),
+    ["aud_page_003", "aud_page_002"],
+  );
   assert.equal(typeof firstPage.nextCursor, "string");
 
   const secondPageResponse = await queryAudit(
@@ -373,18 +405,36 @@ test("GET /v1/audit supports cursor-based pagination with limit", async () => {
       entries,
     },
   );
-  const secondPage = await assertJsonResponse<AuditQueryResponse>(secondPageResponse, 200);
+  const secondPage = await assertJsonResponse<AuditQueryResponse>(
+    secondPageResponse,
+    200,
+  );
 
-  assert.deepEqual(secondPage.entries.map((entry) => entry.id), ["aud_page_001"]);
+  assert.deepEqual(
+    secondPage.entries.map((entry) => entry.id),
+    ["aud_page_001"],
+  );
   assert.equal(secondPage.nextCursor, null);
 });
 
 test("GET /v1/audit returns a typed archive budget continuation that resumes without gaps or duplicates", async () => {
   const storage = createTestStorage();
   const entries = [
-    createAuditEntry(3, { id: "aud_archive_003", orgId: "org_archive", timestamp: "2026-03-24T12:00:03.000Z" }),
-    createAuditEntry(2, { id: "aud_archive_002", orgId: "org_archive", timestamp: "2026-03-24T12:00:02.000Z" }),
-    createAuditEntry(1, { id: "aud_archive_001", orgId: "org_archive", timestamp: "2026-03-24T12:00:01.000Z" }),
+    createAuditEntry(3, {
+      id: "aud_archive_003",
+      orgId: "org_archive",
+      timestamp: "2026-03-24T12:00:03.000Z",
+    }),
+    createAuditEntry(2, {
+      id: "aud_archive_002",
+      orgId: "org_archive",
+      timestamp: "2026-03-24T12:00:02.000Z",
+    }),
+    createAuditEntry(1, {
+      id: "aud_archive_001",
+      orgId: "org_archive",
+      timestamp: "2026-03-24T12:00:01.000Z",
+    }),
   ];
   storage.audit.query = async (query) => {
     assert.equal(query.orgId, "org_archive");
@@ -414,7 +464,7 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
       workBudget: { d1Pages: 4, d1Rows: 129, partitions: 128, r2Reads: 128 },
     };
   };
-  const app = createTestApp({ storage });
+  const app = createTestApp({}, { storage });
   const token = `Bearer ${generateTestToken({
     org: "org_archive",
     scopes: ["relayauth:audit:read"],
@@ -434,7 +484,12 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
   assert.equal(firstPage.partial, true);
   assert.equal(firstPage.hasMore, true);
   assert.equal(typeof firstPage.nextCursor, "string");
-  assert.deepEqual(firstPage.workBudget, { d1Pages: 4, d1Rows: 129, partitions: 128, r2Reads: 128 });
+  assert.deepEqual(firstPage.workBudget, {
+    d1Pages: 4,
+    d1Rows: 129,
+    partitions: 128,
+    r2Reads: 128,
+  });
 
   const crossOrg = await app.request(
     createTestRequest(
@@ -480,8 +535,13 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
     app.bindings,
   );
   const secondPage = await assertJsonResponse<AuditQueryResponse>(second, 200);
-  const received = [...firstPage.entries, ...secondPage.entries].map((entry) => entry.id);
-  assert.deepEqual(received, entries.map((entry) => entry.id));
+  const received = [...firstPage.entries, ...secondPage.entries].map(
+    (entry) => entry.id,
+  );
+  assert.deepEqual(
+    received,
+    entries.map((entry) => entry.id),
+  );
   assert.equal(new Set(received).size, received.length);
 });
 
@@ -489,57 +549,72 @@ test("GET /v1/audit returns 400 when orgId is missing", async () => {
   const response = await queryAudit("", {
     claims: { org: "org_test", scopes: ["relayauth:audit:read"] },
   });
-  const body = await response.json() as { error: string };
+  const body = (await response.json()) as { error: string };
 
   assert.equal(response.status, 400);
   assert.equal(body.error, "orgId query param is required");
 });
 
 test("GET /v1/audit returns 400 for invalid action", async () => {
-  const response = await queryAudit(createAuditSearch({ orgId: "org_test", action: "bogus.action" }), {
-    claims: { org: "org_test", scopes: ["relayauth:audit:read"] },
-  });
-  const body = await response.json() as { error: string };
+  const response = await queryAudit(
+    createAuditSearch({ orgId: "org_test", action: "bogus.action" }),
+    {
+      claims: { org: "org_test", scopes: ["relayauth:audit:read"] },
+    },
+  );
+  const body = (await response.json()) as { error: string };
 
   assert.equal(response.status, 400);
   assert.match(body.error, /invalid action/);
 });
 
 test("GET /v1/audit returns 400 for invalid cursor", async () => {
-  const response = await queryAudit(createAuditSearch({ orgId: "org_test", cursor: "not-valid-base64-cursor" }), {
-    claims: { org: "org_test", scopes: ["relayauth:audit:read"] },
-  });
-  const body = await response.json() as { error: string };
+  const response = await queryAudit(
+    createAuditSearch({ orgId: "org_test", cursor: "not-valid-base64-cursor" }),
+    {
+      claims: { org: "org_test", scopes: ["relayauth:audit:read"] },
+    },
+  );
+  const body = (await response.json()) as { error: string };
 
   assert.equal(response.status, 400);
   assert.equal(body.error, "invalid cursor");
 });
 
 test("GET /v1/audit returns 400 for invalid limit", async () => {
-  const response = await queryAudit(createAuditSearch({ orgId: "org_test", limit: "abc" }), {
-    claims: { org: "org_test", scopes: ["relayauth:audit:read"] },
-  });
-  const body = await response.json() as { error: string };
+  const response = await queryAudit(
+    createAuditSearch({ orgId: "org_test", limit: "abc" }),
+    {
+      claims: { org: "org_test", scopes: ["relayauth:audit:read"] },
+    },
+  );
+  const body = (await response.json()) as { error: string };
 
   assert.equal(response.status, 400);
   assert.equal(body.error, "limit must be a positive integer");
 });
 
 test("GET /v1/audit returns 401 without valid auth token", async () => {
-  const response = await queryAudit(createAuditSearch({ orgId: "org_auth_failure" }), {
-    authorization: "Bearer definitely-not-a-valid-token",
-  });
+  const response = await queryAudit(
+    createAuditSearch({ orgId: "org_auth_failure" }),
+    {
+      authorization: "Bearer definitely-not-a-valid-token",
+    },
+  );
 
   assert.equal(response.status, 401);
 });
 
 test("GET /v1/audit returns 403 without relayauth:audit:read scope", async () => {
-  const response = await queryAudit(createAuditSearch({ orgId: "org_scope_failure" }), {
-    claims: {
-      org: "org_scope_failure",
-      scopes: ["relayauth:identity:read:*"],
+  const response = await queryAudit(
+    createAuditSearch({ orgId: "org_scope_failure" }),
+    {
+      claims: {
+        org: "org_scope_failure",
+        scopes: ["relayauth:identity:read:*"],
+      },
     },
-  });
+  );
 
   assert.equal(response.status, 403);
 });

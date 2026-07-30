@@ -51,8 +51,19 @@ type DashboardIdentityCountRow = {
   suspendedIdentities?: number | string | null;
 };
 
-type DashboardAuditCounts = Required<Pick<DashboardStatsResponse, "tokensIssued" | "tokensRevoked" | "tokensRefreshed" | "scopeChecks" | "scopeDenials">>;
-type DashboardIdentityCounts = Required<Pick<DashboardStatsResponse, "activeIdentities" | "suspendedIdentities">>;
+type DashboardAuditCounts = Required<
+  Pick<
+    DashboardStatsResponse,
+    | "tokensIssued"
+    | "tokensRevoked"
+    | "tokensRefreshed"
+    | "scopeChecks"
+    | "scopeDenials"
+  >
+>;
+type DashboardIdentityCounts = Required<
+  Pick<DashboardStatsResponse, "activeIdentities" | "suspendedIdentities">
+>;
 
 type DashboardStatsQuery = {
   from?: string;
@@ -104,7 +115,9 @@ dashboardStats.get("/", async (c) => {
     scopeDenials: auditCounts.scopeDenials,
     activeIdentities: identityCounts.activeIdentities,
     suspendedIdentities: identityCounts.suspendedIdentities,
-    ...(auditCounts.tokensRefreshed > 0 ? { tokensRefreshed: auditCounts.tokensRefreshed } : {}),
+    ...(auditCounts.tokensRefreshed > 0
+      ? { tokensRefreshed: auditCounts.tokensRefreshed }
+      : {}),
     ...(parsedQuery.value.from || parsedQuery.value.to
       ? {
           period: {
@@ -141,7 +154,9 @@ function parseDashboardStatsQuery(
   }
 
   const cursorValue = normalizeQueryValue(query.cursor);
-  const decodedCursor = cursorValue ? decodeAuditCursor(cursorValue) : undefined;
+  const decodedCursor = cursorValue
+    ? decodeAuditCursor(cursorValue)
+    : undefined;
   if (
     cursorValue &&
     (!decodedCursor ||
@@ -164,12 +179,15 @@ function parseDashboardStatsQuery(
     value: {
       from,
       to,
-      cursor: decodedCursor,
+      cursor:
+        decodedCursor?.kind === "archive_partition" ? decodedCursor : undefined,
     },
   };
 }
 
-function summarizeAuditCounts(rows: DashboardAuditCountRow[]): DashboardAuditCounts {
+function summarizeAuditCounts(
+  rows: DashboardAuditCountRow[],
+): DashboardAuditCounts {
   const counts: DashboardAuditCounts = {
     tokensIssued: 0,
     tokensRevoked: 0,
@@ -210,7 +228,9 @@ function summarizeAuditCounts(rows: DashboardAuditCountRow[]): DashboardAuditCou
   return counts;
 }
 
-function summarizeIdentityCounts(rows: DashboardIdentityCountRow[]): DashboardIdentityCounts {
+function summarizeIdentityCounts(
+  rows: DashboardIdentityCountRow[],
+): DashboardIdentityCounts {
   const counts: DashboardIdentityCounts = {
     activeIdentities: 0,
     suspendedIdentities: 0,
@@ -276,7 +296,9 @@ function normalizeQueryValue(value: string | undefined): string | undefined {
 }
 
 function isIsoTimestamp(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value);
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
+    value,
+  );
 }
 
 export default dashboardStats;

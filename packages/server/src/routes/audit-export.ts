@@ -65,7 +65,9 @@ auditExport.post("/export", requireScope("relayauth:audit:read"), async (c) => {
     return c.json({ error: parsed.error }, 400);
   }
 
-  const result = await c.get("storage").audit.query(parsed.value, { includeOverflowRow: false });
+  const result = await c
+    .get("storage")
+    .audit.query(parsed.value, { includeOverflowRow: false });
   if (result.kind === "budget_exhausted") {
     return c.json(
       {
@@ -128,7 +130,7 @@ function escapeCsvValue(value: string): string {
     return sanitized;
   }
 
-  return `"${sanitized.replace(/"/g, "\"\"")}"`;
+  return `"${sanitized.replace(/"/g, '""')}"`;
 }
 
 export default auditExport;

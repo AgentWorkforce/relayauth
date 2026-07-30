@@ -84,7 +84,10 @@ test("TestSqliteIdentitySuspendRetire", async (t) => {
     metadata: {},
   });
 
-  const suspended = await storage.identities.suspend(created.id, "manual_review");
+  const suspended = await storage.identities.suspend(
+    created.id,
+    "manual_review",
+  );
   assert.equal(suspended.status, "suspended");
   assert.equal(suspended.suspendReason, "manual_review");
   assert.equal(typeof suspended.suspendedAt, "string");
@@ -105,7 +108,10 @@ test("TestSqliteRevocation", async (t) => {
 
   assert.equal(await storage.revocations.isRevoked("jti_missing"), false);
 
-  await storage.revocations.revoke("jti_revoked", Math.floor(Date.now() / 1000) + 3600);
+  await storage.revocations.revoke(
+    "jti_revoked",
+    Math.floor(Date.now() / 1000) + 3600,
+  );
 
   assert.equal(await storage.revocations.isRevoked("jti_revoked"), true);
   assert.equal(await storage.revocations.isRevoked("jti_other"), false);
@@ -137,7 +143,10 @@ test("TestSqliteRoleCRUD", async (t) => {
     scopes: ["relayauth:role:manage:*", "relayauth:role:read:*"],
   });
   assert.equal(updated.description, "Updated SQLite admin role");
-  assert.deepEqual(updated.scopes, ["relayauth:role:manage:*", "relayauth:role:read:*"]);
+  assert.deepEqual(updated.scopes, [
+    "relayauth:role:manage:*",
+    "relayauth:role:read:*",
+  ]);
 
   await storage.roles.delete(created.id);
 
@@ -174,12 +183,17 @@ test("TestSqlitePolicyCRUD", async (t) => {
   });
   assert.equal(updated.effect, "deny");
   assert.equal(updated.priority, 75);
-  assert.deepEqual(updated.conditions, [{ type: "ip", operator: "eq", value: "203.0.113.10" }]);
+  assert.deepEqual(updated.conditions, [
+    { type: "ip", operator: "eq", value: "203.0.113.10" },
+  ]);
 
   await storage.policies.delete(created.id);
 
   assert.equal(await storage.policies.get(created.id), null);
-  assert.deepEqual(await storage.policies.list("org_policies", "ws_policies"), []);
+  assert.deepEqual(
+    await storage.policies.list("org_policies", "ws_policies"),
+    [],
+  );
 });
 
 test("TestSqliteAuditLog", async (t) => {
@@ -194,7 +208,10 @@ test("TestSqliteAuditLog", async (t) => {
       plane: "relayauth",
       resource: "/v1/identities",
       result: "allowed",
-      metadata: { sponsorId: "user_audit", sponsorChain: "[\"user_audit\",\"agent_audit_1\"]" },
+      metadata: {
+        sponsorId: "user_audit",
+        sponsorChain: '["user_audit","agent_audit_1"]',
+      },
       ip: "203.0.113.10",
       userAgent: "node:test",
       timestamp: "2026-03-27T12:00:00.000Z",
@@ -207,7 +224,10 @@ test("TestSqliteAuditLog", async (t) => {
       plane: "relayauth",
       resource: "/v1/identities/agent_audit_1",
       result: "allowed",
-      metadata: { sponsorId: "user_audit", sponsorChain: "[\"user_audit\",\"agent_audit_1\"]" },
+      metadata: {
+        sponsorId: "user_audit",
+        sponsorChain: '["user_audit","agent_audit_1"]',
+      },
       ip: "203.0.113.10",
       userAgent: "node:test",
       timestamp: "2026-03-27T12:30:00.000Z",
@@ -236,19 +256,24 @@ test("TestSqliteAuditLog", async (t) => {
 test("TestSqliteAutoCreateTables", async (t) => {
   const { dbPath, storage } = createTempStorage(t);
 
-  const result = await storage.DB.prepare(`
+  const result = await storage.DB.prepare(
+    `
     SELECT name
     FROM sqlite_master
     WHERE type = 'table'
     ORDER BY name ASC
-  `).all<{ name?: string }>();
+  `,
+  ).all<{ name?: string }>();
   const tables = result.results ?? [];
 
   assert.equal(existsSync(dbPath), true);
 
   const tableNames = new Set(
     tables
-      .filter((row): row is { name: string } => typeof row.name === "string" && row.name.length > 0)
+      .filter(
+        (row): row is { name: string } =>
+          typeof row.name === "string" && row.name.length > 0,
+      )
       .map((row) => row.name),
   );
 
@@ -266,6 +291,10 @@ test("TestSqliteAutoCreateTables", async (t) => {
     "audit_webhooks",
     "revoked_tokens",
   ]) {
-    assert.equal(tableNames.has(tableName), true, `expected ${tableName} to be auto-created`);
+    assert.equal(
+      tableNames.has(tableName),
+      true,
+      `expected ${tableName} to be auto-created`,
+    );
   }
 });

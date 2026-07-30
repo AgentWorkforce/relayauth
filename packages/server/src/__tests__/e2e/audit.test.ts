@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AuditAction, AuditEntry, RelayAuthTokenClaims } from "@relayauth/types";
+import type {
+  AuditAction,
+  AuditEntry,
+  RelayAuthTokenClaims,
+} from "@relayauth/types";
 
 import type { StoredIdentity } from "../../storage/identity-types.js";
-import { countExpiredEntries, purgeExpiredEntries } from "../../engine/audit-retention.js";
+import {
+  countExpiredEntries,
+  purgeExpiredEntries,
+} from "../../engine/audit-retention.js";
 import { writeAuditEntry } from "../../engine/audit-logger.js";
 import { dispatchWebhook } from "../../engine/audit-webhook-dispatcher.js";
 import { checkAccess } from "../../engine/policy-evaluation.js";
@@ -152,99 +159,140 @@ const CSV_HEADER = [
 test("Audit & Observability E2E", async (t) => {
   const scenario = await seedScenario();
 
-  await t.test("records base and extended audit actions with the full sponsorChain", async () => {
-    const response = await scenario.harness.request("GET", `/v1/audit?orgId=${ORG_ID}`);
-    const body = await assertJsonResponse<AuditQueryResponse>(response, 200);
+  await t.test(
+    "records base and extended audit actions with the full sponsorChain",
+    async () => {
+      const response = await scenario.harness.request(
+        "GET",
+        `/v1/audit?orgId=${ORG_ID}`,
+      );
+      const body = await assertJsonResponse<AuditQueryResponse>(response, 200);
 
-    const actions = new Set(body.entries.map((entry) => entry.action));
-    assert.deepEqual(
-      actions,
-      new Set<ExtendedAuditAction>([
-        "token.issued",
-        "identity.created",
-        "scope.checked",
-        "scope.denied",
-        "budget.exceeded",
-        "budget.alert",
-        "scope.escalation_denied",
-      ]),
-    );
+      const actions = new Set(body.entries.map((entry) => entry.action));
+      assert.deepEqual(
+        actions,
+        new Set<ExtendedAuditAction>([
+          "token.issued",
+          "identity.created",
+          "scope.checked",
+          "scope.denied",
+          "budget.exceeded",
+          "budget.alert",
+          "scope.escalation_denied",
+        ]),
+      );
 
-    const issued = body.entries.find((entry) => entry.action === "token.issued");
-    assert.ok(issued?.metadata?.sponsorChain);
-    assert.deepEqual(
-      JSON.parse(issued.metadata.sponsorChain),
-      scenario.targetIdentity.sponsorChain,
-    );
+      const issued = body.entries.find(
+        (entry) => entry.action === "token.issued",
+      );
+      assert.ok(issued?.metadata?.sponsorChain);
+      assert.deepEqual(
+        JSON.parse(issued.metadata.sponsorChain),
+        scenario.targetIdentity.sponsorChain,
+      );
 
-    const budgetExceeded = body.entries.find((entry) => entry.action === "budget.exceeded");
-    assert.ok(budgetExceeded?.metadata?.sponsorChain);
-    assert.deepEqual(
-      JSON.parse(budgetExceeded.metadata.sponsorChain),
-      scenario.budgetExceededIdentity.sponsorChain,
-    );
+      const budgetExceeded = body.entries.find(
+        (entry) => entry.action === "budget.exceeded",
+      );
+      assert.ok(budgetExceeded?.metadata?.sponsorChain);
+      assert.deepEqual(
+        JSON.parse(budgetExceeded.metadata.sponsorChain),
+        scenario.budgetExceededIdentity.sponsorChain,
+      );
 
-    const scopeEscalation = body.entries.find(
-      (entry) => entry.action === "scope.escalation_denied",
-    );
-    assert.equal(
-      scopeEscalation?.metadata?.actionAttempted,
-      "relaycast:workspace:admin:billing",
-    );
-  });
+      const scopeEscalation = body.entries.find(
+        (entry) => entry.action === "scope.escalation_denied",
+      );
+      assert.equal(
+        scopeEscalation?.metadata?.actionAttempted,
+        "relaycast:workspace:admin:billing",
+      );
+    },
+  );
 
-  await t.test("filters audit entries by identity, action, and date range", async () => {
-    const byIdentityResponse = await scenario.harness.request(
-      "GET",
-      `/v1/audit?orgId=${ORG_ID}&identityId=${scenario.targetIdentity.id}`,
-    );
-    const byIdentity = await assertJsonResponse<AuditQueryResponse>(byIdentityResponse, 200);
+  await t.test(
+    "filters audit entries by identity, action, and date range",
+    async () => {
+      const byIdentityResponse = await scenario.harness.request(
+        "GET",
+        `/v1/audit?orgId=${ORG_ID}&identityId=${scenario.targetIdentity.id}`,
+      );
+      const byIdentity = await assertJsonResponse<AuditQueryResponse>(
+        byIdentityResponse,
+        200,
+      );
 
-    assert.equal(byIdentity.entries.length, 5);
-    assert.ok(
-      byIdentity.entries.every((entry) => entry.identityId === scenario.targetIdentity.id),
-    );
+      assert.equal(byIdentity.entries.length, 5);
+      assert.ok(
+        byIdentity.entries.every(
+          (entry) => entry.identityId === scenario.targetIdentity.id,
+        ),
+      );
 
-    const byActionResponse = await scenario.harness.request(
-      "GET",
-      `/v1/audit?orgId=${ORG_ID}&action=scope.checked`,
-    );
-    const byAction = await assertJsonResponse<AuditQueryResponse>(byActionResponse, 200);
+      const byActionResponse = await scenario.harness.request(
+        "GET",
+        `/v1/audit?orgId=${ORG_ID}&action=scope.checked`,
+      );
+      const byAction = await assertJsonResponse<AuditQueryResponse>(
+        byActionResponse,
+        200,
+      );
 
-    assert.equal(byAction.entries.length, 1);
-    assert.equal(byAction.entries[0]?.action, "scope.checked");
+      assert.equal(byAction.entries.length, 1);
+      assert.equal(byAction.entries[0]?.action, "scope.checked");
 
-    const byRangeResponse = await scenario.harness.request(
-      "GET",
-      `/v1/audit?orgId=${ORG_ID}&from=2026-03-24T09:30:00.000Z&to=2026-03-24T12:15:00.000Z`,
-    );
-    const byRange = await assertJsonResponse<AuditQueryResponse>(byRangeResponse, 200);
+      const byRangeResponse = await scenario.harness.request(
+        "GET",
+        `/v1/audit?orgId=${ORG_ID}&from=2026-03-24T09:30:00.000Z&to=2026-03-24T12:15:00.000Z`,
+      );
+      const byRange = await assertJsonResponse<AuditQueryResponse>(
+        byRangeResponse,
+        200,
+      );
 
-    assert.deepEqual(
-      new Set(byRange.entries.map((entry) => entry.action)),
-      new Set<ExtendedAuditAction>(["identity.created", "scope.checked", "scope.denied"]),
-    );
-  });
+      assert.deepEqual(
+        new Set(byRange.entries.map((entry) => entry.action)),
+        new Set<ExtendedAuditAction>([
+          "identity.created",
+          "scope.checked",
+          "scope.denied",
+        ]),
+      );
+    },
+  );
 
   await t.test("exports audit entries as JSON and CSV", async () => {
-    const jsonResponse = await scenario.harness.request("POST", "/v1/audit/export", {
-      body: {
-        format: "json",
-        orgId: ORG_ID,
+    const jsonResponse = await scenario.harness.request(
+      "POST",
+      "/v1/audit/export",
+      {
+        body: {
+          format: "json",
+          orgId: ORG_ID,
+        },
       },
-    });
-    const jsonBody = await assertJsonResponse<ObservedAuditEntry[]>(jsonResponse, 200);
+    );
+    const jsonBody = await assertJsonResponse<ObservedAuditEntry[]>(
+      jsonResponse,
+      200,
+    );
 
     assert.equal(jsonBody.length, 7);
     assert.ok(jsonBody.some((entry) => entry.action === "budget.exceeded"));
-    assert.ok(jsonBody.some((entry) => entry.action === "scope.escalation_denied"));
+    assert.ok(
+      jsonBody.some((entry) => entry.action === "scope.escalation_denied"),
+    );
 
-    const csvResponse = await scenario.harness.request("POST", "/v1/audit/export", {
-      body: {
-        format: "csv",
-        orgId: ORG_ID,
+    const csvResponse = await scenario.harness.request(
+      "POST",
+      "/v1/audit/export",
+      {
+        body: {
+          format: "csv",
+          orgId: ORG_ID,
+        },
       },
-    });
+    );
 
     assert.equal(csvResponse.status, 200);
     assert.match(csvResponse.headers.get("content-type") ?? "", /text\/csv/i);
@@ -259,90 +307,117 @@ test("Audit & Observability E2E", async (t) => {
     assert.ok(csvRows.some((row) => row[1] === "scope.escalation_denied"));
   });
 
-  await t.test("creates, lists, dispatches, and deletes audit webhooks", async (subtest) => {
-    const createResponse = await scenario.harness.request("POST", "/v1/audit/webhooks", {
-      body: {
+  await t.test(
+    "creates, lists, dispatches, and deletes audit webhooks",
+    async (subtest) => {
+      const createResponse = await scenario.harness.request(
+        "POST",
+        "/v1/audit/webhooks",
+        {
+          body: {
+            orgId: ORG_ID,
+            url: "https://audit.example.com/hooks/budget-alert",
+            events: ["budget.alert"],
+            secret: "whsec_audit_budget_alert",
+          },
+        },
+      );
+      const createdWebhook = await assertJsonResponse<AuditWebhookRecord>(
+        createResponse,
+        201,
+      );
+
+      assert.deepEqual(createdWebhook.events, ["budget.alert"]);
+
+      const listResponse = await scenario.harness.request(
+        "GET",
+        `/v1/audit/webhooks?orgId=${ORG_ID}`,
+      );
+      const listedWebhooks = await assertJsonResponse<AuditWebhookRecord[]>(
+        listResponse,
+        200,
+      );
+
+      assert.equal(listedWebhooks.length, 1);
+      assert.equal(listedWebhooks[0]?.id, createdWebhook.id);
+      assert.equal(listedWebhooks[0]?.secret, "****lert");
+
+      const alertEntries = await scenario.harness.db.audit.query({
         orgId: ORG_ID,
-        url: "https://audit.example.com/hooks/budget-alert",
-        events: ["budget.alert"],
-        secret: "whsec_audit_budget_alert",
-      },
-    });
-    const createdWebhook = await assertJsonResponse<AuditWebhookRecord>(createResponse, 201);
+        action: "budget.alert" as AuditAction,
+        limit: 10,
+      });
+      const alertEntry = alertEntries.entries.find(
+        (entry) => entry.action === "budget.alert",
+      );
+      assert.ok(alertEntry, "expected a budget.alert audit row");
 
-    assert.deepEqual(createdWebhook.events, ["budget.alert"]);
+      const requests: Array<{ request: Request; body: string }> = [];
+      const originalFetch = globalThis.fetch;
 
-    const listResponse = await scenario.harness.request(
-      "GET",
-      `/v1/audit/webhooks?orgId=${ORG_ID}`,
-    );
-    const listedWebhooks = await assertJsonResponse<AuditWebhookRecord[]>(listResponse, 200);
+      globalThis.fetch = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        const url =
+          input instanceof Request
+            ? input.url
+            : input instanceof URL
+              ? input.toString()
+              : String(input);
+        if (url.startsWith("data:")) {
+          return originalFetch(input, init);
+        }
+        const request =
+          input instanceof Request ? input : new Request(String(input), init);
+        const body = await request.text();
+        requests.push({ request, body });
+        return new Response(null, { status: 202 });
+      }) as typeof globalThis.fetch;
 
-    assert.equal(listedWebhooks.length, 1);
-    assert.equal(listedWebhooks[0]?.id, createdWebhook.id);
-    assert.equal(listedWebhooks[0]?.secret, "****lert");
+      subtest.after(() => {
+        globalThis.fetch = originalFetch;
+      });
 
-    const alertEntries = await scenario.harness.db.audit.query({
-      orgId: ORG_ID,
-      action: "budget.alert" as AuditAction,
-      limit: 10,
-    });
-    const alertEntry = alertEntries.entries.find((entry) => entry.action === "budget.alert");
-    assert.ok(alertEntry, "expected a budget.alert audit row");
+      await dispatchWebhook(createdWebhook, alertEntry);
 
-    const requests: Array<{ request: Request; body: string }> = [];
-    const originalFetch = globalThis.fetch;
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0]?.request.url, createdWebhook.url);
+      assert.match(
+        requests[0]?.request.headers.get("x-relayauth-signature") ?? "",
+        /^sha256=/,
+      );
 
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = input instanceof Request ? input.url : input instanceof URL ? input.toString() : String(input);
-      if (url.startsWith("data:")) {
-        return originalFetch(input, init);
-      }
-      const request = input instanceof Request ? input : new Request(String(input), init);
-      const body = await request.text();
-      requests.push({ request, body });
-      return new Response(null, { status: 202 });
-    }) as typeof globalThis.fetch;
+      const payload = JSON.parse(requests[0]?.body ?? "{}") as {
+        type: string;
+        entry: ObservedAuditEntry;
+      };
 
-    subtest.after(() => {
-      globalThis.fetch = originalFetch;
-    });
+      assert.equal(payload.type, "audit.event");
+      assert.equal(payload.entry.action, "budget.alert");
+      assert.deepEqual(
+        JSON.parse(payload.entry.metadata?.sponsorChain ?? "[]"),
+        scenario.budgetAlertIdentity.sponsorChain,
+      );
 
-    await dispatchWebhook(createdWebhook, alertEntry);
+      const deleteResponse = await scenario.harness.request(
+        "DELETE",
+        `/v1/audit/webhooks/${createdWebhook.id}?orgId=${ORG_ID}`,
+      );
+      assert.equal(deleteResponse.status, 204);
 
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0]?.request.url, createdWebhook.url);
-    assert.match(requests[0]?.request.headers.get("x-relayauth-signature") ?? "", /^sha256=/);
+      const listAfterDeleteResponse = await scenario.harness.request(
+        "GET",
+        `/v1/audit/webhooks?orgId=${ORG_ID}`,
+      );
+      const listAfterDelete = await assertJsonResponse<AuditWebhookRecord[]>(
+        listAfterDeleteResponse,
+        200,
+      );
 
-    const payload = JSON.parse(requests[0]?.body ?? "{}") as {
-      type: string;
-      entry: ObservedAuditEntry;
-    };
-
-    assert.equal(payload.type, "audit.event");
-    assert.equal(payload.entry.action, "budget.alert");
-    assert.deepEqual(
-      JSON.parse(payload.entry.metadata?.sponsorChain ?? "[]"),
-      scenario.budgetAlertIdentity.sponsorChain,
-    );
-
-    const deleteResponse = await scenario.harness.request(
-      "DELETE",
-      `/v1/audit/webhooks/${createdWebhook.id}?orgId=${ORG_ID}`,
-    );
-    assert.equal(deleteResponse.status, 204);
-
-    const listAfterDeleteResponse = await scenario.harness.request(
-      "GET",
-      `/v1/audit/webhooks?orgId=${ORG_ID}`,
-    );
-    const listAfterDelete = await assertJsonResponse<AuditWebhookRecord[]>(
-      listAfterDeleteResponse,
-      200,
-    );
-
-    assert.deepEqual(listAfterDelete, []);
-  });
+      assert.deepEqual(listAfterDelete, []);
+    },
+  );
 
   await t.test("returns identity activity scoped to one identity", async () => {
     const response = await scenario.harness.request(
@@ -352,22 +427,35 @@ test("Audit & Observability E2E", async (t) => {
     const body = await assertJsonResponse<AuditActivityResponse>(response, 200);
 
     assert.equal(body.entries.length, 5);
-    assert.ok(body.entries.every((entry) => entry.identityId === scenario.targetIdentity.id));
+    assert.ok(
+      body.entries.every(
+        (entry) => entry.identityId === scenario.targetIdentity.id,
+      ),
+    );
     assert.deepEqual(body.sponsorChain, scenario.targetIdentity.sponsorChain);
     assert.equal(body.subAgents[0]?.id, scenario.childIdentity.id);
-    assert.equal(body.subAgents[0]?.children[0]?.id, scenario.grandchildIdentity.id);
+    assert.equal(
+      body.subAgents[0]?.children[0]?.id,
+      scenario.grandchildIdentity.id,
+    );
   });
 
-  await t.test("reports dashboard stats from the actions performed", async () => {
-    const response = await scenario.harness.request("GET", "/v1/stats");
-    const body = await assertJsonResponse<DashboardStatsResponse>(response, 200);
+  await t.test(
+    "reports dashboard stats from the actions performed",
+    async () => {
+      const response = await scenario.harness.request("GET", "/v1/stats");
+      const body = await assertJsonResponse<DashboardStatsResponse>(
+        response,
+        200,
+      );
 
-    assert.equal(body.tokensIssued, 1);
-    assert.equal(body.scopeChecks, 1);
-    assert.equal(body.scopeDenials, 1);
-    assert.equal(body.activeIdentities, 4);
-    assert.equal(body.suspendedIdentities, 1);
-  });
+      assert.equal(body.tokensIssued, 1);
+      assert.equal(body.scopeChecks, 1);
+      assert.equal(body.scopeDenials, 1);
+      assert.equal(body.activeIdentities, 4);
+      assert.equal(body.suspendedIdentities, 1);
+    },
+  );
 
   await t.test("purges retained audit rows older than the cutoff", async () => {
     const oldTimestamp = daysAgo(120);
@@ -386,7 +474,9 @@ test("Audit & Observability E2E", async (t) => {
       },
       timestamp: oldTimestamp,
     });
-    await scenario.harness.db.DB.prepare("UPDATE audit_logs SET created_at = ? WHERE id = ?")
+    await scenario.harness.db.DB.prepare(
+      "UPDATE audit_logs SET created_at = ? WHERE id = ?",
+    )
       .bind(oldTimestamp, "aud_retention_old")
       .run();
 
@@ -399,9 +489,9 @@ test("Audit & Observability E2E", async (t) => {
     const afterPurge = await countExpiredEntries(scenario.harness.db, 90);
     assert.deepEqual(afterPurge, { expiredCount: 0 });
     assert.equal(
-      (await scenario.harness.db.audit.query({ orgId: ORG_ID, limit: 100 })).entries.some(
-        (row) => row.id === "aud_retention_old",
-      ),
+      (
+        await scenario.harness.db.audit.query({ orgId: ORG_ID, limit: 100 })
+      ).entries.some((row) => row.id === "aud_retention_old"),
       false,
     );
   });
@@ -412,7 +502,11 @@ async function seedScenario(): Promise<SeededScenario> {
     id: "agent_observed_target",
     name: "Observed Target",
     sponsorId: "agent_observed_parent",
-    sponsorChain: ["user_observed_owner", "agent_observed_parent", "agent_observed_target"],
+    sponsorChain: [
+      "user_observed_owner",
+      "agent_observed_parent",
+      "agent_observed_target",
+    ],
     budget: {
       maxActionsPerHour: 20,
       maxCostPerDay: 50,
@@ -444,7 +538,11 @@ async function seedScenario(): Promise<SeededScenario> {
     id: "agent_budget_exceeded",
     name: "Budget Exceeded Agent",
     sponsorId: "agent_observed_parent",
-    sponsorChain: ["user_observed_owner", "agent_observed_parent", "agent_budget_exceeded"],
+    sponsorChain: [
+      "user_observed_owner",
+      "agent_observed_parent",
+      "agent_budget_exceeded",
+    ],
     scopes: ["relaycast:workspace:write:*"],
     budget: {
       maxActionsPerHour: 10,
@@ -462,7 +560,11 @@ async function seedScenario(): Promise<SeededScenario> {
     id: "agent_budget_alert",
     name: "Budget Alert Agent",
     sponsorId: "agent_observed_parent",
-    sponsorChain: ["user_observed_owner", "agent_observed_parent", "agent_budget_alert"],
+    sponsorChain: [
+      "user_observed_owner",
+      "agent_observed_parent",
+      "agent_budget_alert",
+    ],
     scopes: ["relaycast:workspace:write:*"],
     budget: {
       maxActionsPerHour: 10,
@@ -569,11 +671,15 @@ async function seedScenario(): Promise<SeededScenario> {
   };
 }
 
-async function createAuditHarness(identities: StoredIdentity[]): Promise<AuditHarness> {
+async function createAuditHarness(
+  identities: StoredIdentity[],
+): Promise<AuditHarness> {
   const state: HarnessState = {
     auditLogs: [],
     auditWebhooks: new Map<string, AuditWebhookRecord>(),
-    identities: new Map(identities.map((identity) => [identity.id, clone(identity)])),
+    identities: new Map(
+      identities.map((identity) => [identity.id, clone(identity)]),
+    ),
     executed: [],
   };
 
@@ -629,7 +735,9 @@ async function createAuditHarness(identities: StoredIdentity[]): Promise<AuditHa
       };
     },
     async batch<T>(statements: D1PreparedStatement[]) {
-      return Promise.all(statements.map((statement) => statement.run())) as Awaited<T>;
+      return Promise.all(
+        statements.map((statement) => statement.run()),
+      ) as Awaited<T>;
     },
     async exec() {
       return { count: 0, duration: 0 };
@@ -714,15 +822,30 @@ async function createAuditHarness(identities: StoredIdentity[]): Promise<AuditHa
   };
 }
 
-function resolveAll(state: HarnessState, query: string, params: unknown[]): unknown[] {
+function resolveAll(
+  state: HarnessState,
+  query: string,
+  params: unknown[],
+): unknown[] {
   const normalized = normalizeSql(query);
 
-  if (/\bfrom audit_logs\b/.test(normalized) && /\bgroup by action\b/.test(normalized)) {
+  if (
+    /\bfrom audit_logs\b/.test(normalized) &&
+    /\bgroup by action\b/.test(normalized)
+  ) {
     return summarizeAuditCounts(state.auditLogs, normalized, params);
   }
 
-  if (/\bselect count\(\*\) as count\b/.test(normalized) && /\bfrom audit_logs\b/.test(normalized)) {
-    return [{ count: countExpiredRows(state.auditLogs, params), expiredCount: countExpiredRows(state.auditLogs, params) }];
+  if (
+    /\bselect count\(\*\) as count\b/.test(normalized) &&
+    /\bfrom audit_logs\b/.test(normalized)
+  ) {
+    return [
+      {
+        count: countExpiredRows(state.auditLogs, params),
+        expiredCount: countExpiredRows(state.auditLogs, params),
+      },
+    ];
   }
 
   if (/\bfrom audit_logs\b/.test(normalized)) {
@@ -735,7 +858,8 @@ function resolveAll(state: HarnessState, query: string, params: unknown[]): unkn
       .filter((record) => typeof orgId !== "string" || record.orgId === orgId)
       .sort(
         (left, right) =>
-          right.createdAt?.localeCompare(left.createdAt ?? "") ?? right.id.localeCompare(left.id),
+          right.createdAt?.localeCompare(left.createdAt ?? "") ??
+          right.id.localeCompare(left.id),
       )
       .map((record) => ({
         id: record.id,
@@ -754,7 +878,10 @@ function resolveAll(state: HarnessState, query: string, params: unknown[]): unkn
       }));
   }
 
-  if (/\bfrom identities\b/.test(normalized) && /\bgroup by status\b/.test(normalized)) {
+  if (
+    /\bfrom identities\b/.test(normalized) &&
+    /\bgroup by status\b/.test(normalized)
+  ) {
     const [orgId] = params;
     const counts = new Map<StoredIdentity["status"], number>();
 
@@ -768,16 +895,22 @@ function resolveAll(state: HarnessState, query: string, params: unknown[]): unkn
       }
     }
 
-    return Array.from(counts.entries()).map(([status, count]) => ({ status, count }));
+    return Array.from(counts.entries()).map(([status, count]) => ({
+      status,
+      count,
+    }));
   }
 
   if (
-    /\bselect roles, roles_json\b/.test(normalized)
-    && /\bfrom identities\b/.test(normalized)
-    && /\bwhere id = \?/.test(normalized)
+    /\bselect roles, roles_json\b/.test(normalized) &&
+    /\bfrom identities\b/.test(normalized) &&
+    /\bwhere id = \?/.test(normalized)
   ) {
     const [identityId] = params;
-    const identity = typeof identityId === "string" ? state.identities.get(identityId) : undefined;
+    const identity =
+      typeof identityId === "string"
+        ? state.identities.get(identityId)
+        : undefined;
     if (!identity) {
       return [];
     }
@@ -790,17 +923,21 @@ function resolveAll(state: HarnessState, query: string, params: unknown[]): unkn
     ];
   }
 
-  if (/\bfrom identities\b/.test(normalized) && /\bsponsor_id = \?/.test(normalized)) {
+  if (
+    /\bfrom identities\b/.test(normalized) &&
+    /\bsponsor_id = \?/.test(normalized)
+  ) {
     const [orgId, sponsorId] = params;
     return Array.from(state.identities.values())
       .filter(
         (identity) =>
-          (typeof orgId !== "string" || identity.orgId === orgId)
-          && (typeof sponsorId !== "string" || identity.sponsorId === sponsorId),
+          (typeof orgId !== "string" || identity.orgId === orgId) &&
+          (typeof sponsorId !== "string" || identity.sponsorId === sponsorId),
       )
       .sort(
         (left, right) =>
-          right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id),
+          right.createdAt.localeCompare(left.createdAt) ||
+          right.id.localeCompare(left.id),
       )
       .map((identity) => ({
         id: identity.id,
@@ -814,12 +951,14 @@ function resolveAll(state: HarnessState, query: string, params: unknown[]): unkn
   }
 
   if (
-    /\bfrom identities\b/.test(normalized)
-    && /\bwhere org_id = \? and id = \?/.test(normalized)
+    /\bfrom identities\b/.test(normalized) &&
+    /\bwhere org_id = \? and id = \?/.test(normalized)
   ) {
     const [orgId, identityId] = params;
     const identity =
-      typeof identityId === "string" ? state.identities.get(identityId) : undefined;
+      typeof identityId === "string"
+        ? state.identities.get(identityId)
+        : undefined;
 
     if (!identity || (typeof orgId === "string" && identity.orgId !== orgId)) {
       return [];
@@ -880,7 +1019,8 @@ async function executeRun(
 
   if (/\bdelete from audit_webhooks\b/.test(normalized)) {
     const [orgId, id] = params;
-    const existing = typeof id === "string" ? state.auditWebhooks.get(id) : undefined;
+    const existing =
+      typeof id === "string" ? state.auditWebhooks.get(id) : undefined;
     const deleted =
       existing && typeof orgId === "string" && existing.orgId === orgId
         ? state.auditWebhooks.delete(id)
@@ -896,7 +1036,10 @@ async function executeRun(
     };
   }
 
-  if (/\bdelete from audit_logs\b/.test(normalized) && /\bcreated_at < \?/.test(normalized)) {
+  if (
+    /\bdelete from audit_logs\b/.test(normalized) &&
+    /\bcreated_at < \?/.test(normalized)
+  ) {
     const before = state.auditLogs.length;
     const cutoff = typeof params[0] === "string" ? params[0] : "";
     state.auditLogs = state.auditLogs.filter((row) => row.created_at >= cutoff);
@@ -935,13 +1078,37 @@ function selectAuditLogs(
 
   const clausePositions = [
     { type: "orgId", index: normalized.search(/\borg_id\s*=\s*\?/i), arity: 1 },
-    { type: "identityId", index: normalized.search(/\bidentity_id\s*=\s*\?/i), arity: 1 },
-    { type: "action", index: normalized.search(/\baction\s*=\s*\?/i), arity: 1 },
-    { type: "workspaceId", index: normalized.search(/\bworkspace_id\s*=\s*\?/i), arity: 1 },
+    {
+      type: "identityId",
+      index: normalized.search(/\bidentity_id\s*=\s*\?/i),
+      arity: 1,
+    },
+    {
+      type: "action",
+      index: normalized.search(/\baction\s*=\s*\?/i),
+      arity: 1,
+    },
+    {
+      type: "workspaceId",
+      index: normalized.search(/\bworkspace_id\s*=\s*\?/i),
+      arity: 1,
+    },
     { type: "plane", index: normalized.search(/\bplane\s*=\s*\?/i), arity: 1 },
-    { type: "result", index: normalized.search(/\bresult\s*=\s*\?/i), arity: 1 },
-    { type: "from", index: normalized.search(/\btimestamp\s*>=\s*\?/i), arity: 1 },
-    { type: "to", index: normalized.search(/\btimestamp\s*<\s*\?(?!\s*or)/i), arity: 1 },
+    {
+      type: "result",
+      index: normalized.search(/\bresult\s*=\s*\?/i),
+      arity: 1,
+    },
+    {
+      type: "from",
+      index: normalized.search(/\btimestamp\s*>=\s*\?/i),
+      arity: 1,
+    },
+    {
+      type: "to",
+      index: normalized.search(/\btimestamp\s*<\s*\?(?!\s*or)/i),
+      arity: 1,
+    },
     {
       type: "cursor",
       index: normalized.search(
@@ -1001,12 +1168,16 @@ function selectAuditLogs(
   }
 
   const cursor = values.get("cursor");
-  if (cursor && typeof cursor[0] === "string" && typeof cursor[2] === "string") {
+  if (
+    cursor &&
+    typeof cursor[0] === "string" &&
+    typeof cursor[2] === "string"
+  ) {
     const [cursorTimestamp, , cursorId] = cursor;
     filtered = filtered.filter(
       (row) =>
-        row.timestamp < cursorTimestamp
-        || (row.timestamp === cursorTimestamp && row.id < cursorId),
+        row.timestamp < cursorTimestamp ||
+        (row.timestamp === cursorTimestamp && row.id < cursorId),
     );
   }
 
@@ -1029,12 +1200,18 @@ function summarizeAuditCounts(
   let from: string | undefined;
   let to: string | undefined;
 
-  if (/\btimestamp >= \?\b/.test(normalized) && typeof rest[offset] === "string") {
+  if (
+    /\btimestamp >= \?\b/.test(normalized) &&
+    typeof rest[offset] === "string"
+  ) {
     from = rest[offset] as string;
     offset += 1;
   }
 
-  if (/\btimestamp < \?\b/.test(normalized) && typeof rest[offset] === "string") {
+  if (
+    /\btimestamp < \?\b/.test(normalized) &&
+    typeof rest[offset] === "string"
+  ) {
     to = rest[offset] as string;
   }
 
@@ -1054,12 +1231,12 @@ function summarizeAuditCounts(
     }
 
     const shouldInclude =
-      row.action === "token.issued"
-      || row.action === "token.revoked"
-      || row.action === "token.refreshed"
-      || row.action === "scope.denied"
-      || (row.action === "scope.checked"
-        && (row.result === "allowed" || row.result === "denied"));
+      row.action === "token.issued" ||
+      row.action === "token.revoked" ||
+      row.action === "token.refreshed" ||
+      row.action === "scope.denied" ||
+      (row.action === "scope.checked" &&
+        (row.result === "allowed" || row.result === "denied"));
 
     if (!shouldInclude) {
       continue;
@@ -1068,7 +1245,10 @@ function summarizeAuditCounts(
     counts.set(row.action, (counts.get(row.action) ?? 0) + 1);
   }
 
-  return Array.from(counts.entries()).map(([action, count]) => ({ action, count }));
+  return Array.from(counts.entries()).map(([action, count]) => ({
+    action,
+    count,
+  }));
 }
 
 function countExpiredRows(rows: AuditLogRow[], params: unknown[]): number {
@@ -1092,7 +1272,8 @@ function toAuditLogRow(params: unknown[]): AuditLogRow {
     timestamp,
   ] = params;
 
-  const ts = typeof timestamp === "string" ? timestamp : new Date().toISOString();
+  const ts =
+    typeof timestamp === "string" ? timestamp : new Date().toISOString();
 
   return {
     id: String(id),
@@ -1121,7 +1302,9 @@ function toObservedAuditEntry(row: AuditLogRow): ObservedAuditEntry {
     ...(row.plane ? { plane: row.plane } : {}),
     ...(row.resource ? { resource: row.resource } : {}),
     result: row.result,
-    ...(row.metadata_json ? { metadata: JSON.parse(row.metadata_json) as Record<string, string> } : {}),
+    ...(row.metadata_json
+      ? { metadata: JSON.parse(row.metadata_json) as Record<string, string> }
+      : {}),
     ...(row.ip ? { ip: row.ip } : {}),
     ...(row.user_agent ? { userAgent: row.user_agent } : {}),
     timestamp: row.timestamp,
@@ -1170,7 +1353,12 @@ function toIdentityRow(identity: StoredIdentity) {
     sponsor_chain_json: JSON.stringify(identity.sponsorChain),
     workspaceId: identity.workspaceId,
     workspace_id: identity.workspaceId,
-    ...(identity.budget ? { budget: identity.budget, budget_json: JSON.stringify(identity.budget) } : {}),
+    ...(identity.budget
+      ? {
+          budget: identity.budget,
+          budget_json: JSON.stringify(identity.budget),
+        }
+      : {}),
     ...(identity.budgetUsage
       ? {
           budgetUsage: identity.budgetUsage,
@@ -1181,7 +1369,9 @@ function toIdentityRow(identity: StoredIdentity) {
   };
 }
 
-function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredIdentity {
+function createStoredIdentity(
+  overrides: Partial<StoredIdentity> = {},
+): StoredIdentity {
   const base = generateTestIdentity({
     id: overrides.id ?? `agent_${Math.random().toString(16).slice(2)}`,
     name: overrides.name ?? "Audit Identity",
@@ -1202,7 +1392,9 @@ function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredId
     sponsorChain: overrides.sponsorChain ?? [sponsorId, base.id],
     workspaceId: overrides.workspaceId ?? WORKSPACE_ID,
     ...(overrides.budget !== undefined ? { budget: overrides.budget } : {}),
-    ...(overrides.budgetUsage !== undefined ? { budgetUsage: overrides.budgetUsage } : {}),
+    ...(overrides.budgetUsage !== undefined
+      ? { budgetUsage: overrides.budgetUsage }
+      : {}),
   };
 }
 
@@ -1212,7 +1404,9 @@ function createManualAuditWrite(
   overrides: Partial<AuditWriteInput> = {},
 ): AuditWriteInput {
   const defaultResult: AuditEntry["result"] =
-    action === "scope.denied" || action === "scope.escalation_denied" ? "denied" : "allowed";
+    action === "scope.denied" || action === "scope.escalation_denied"
+      ? "denied"
+      : "allowed";
 
   return {
     id: overrides.id,
@@ -1238,7 +1432,10 @@ function createManualAuditWrite(
 }
 
 function compareAuditRowsDesc(left: AuditLogRow, right: AuditLogRow): number {
-  return right.timestamp.localeCompare(left.timestamp) || right.id.localeCompare(left.id);
+  return (
+    right.timestamp.localeCompare(left.timestamp) ||
+    right.id.localeCompare(left.id)
+  );
 }
 
 function normalizeSql(query: string): string {
@@ -1254,9 +1451,9 @@ function parseCsvLine(line: string): string[] {
     const character = line[index];
 
     if (inQuotes) {
-      if (character === "\"") {
-        if (line[index + 1] === "\"") {
-          current += "\"";
+      if (character === '"') {
+        if (line[index + 1] === '"') {
+          current += '"';
           index += 1;
         } else {
           inQuotes = false;
@@ -1267,7 +1464,7 @@ function parseCsvLine(line: string): string[] {
       continue;
     }
 
-    if (character === "\"") {
+    if (character === '"') {
       inQuotes = true;
       continue;
     }
