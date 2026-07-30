@@ -98,6 +98,62 @@ function createAuditEntry(overrides: Partial<AuditEntry> = {}): Omit<AuditEntry,
   };
 }
 
+test("sqlite token storage owns issued-token persistence and hot-path lookups", async () => {
+  const { storage, cleanup } = createHarness();
+
+  try {
+    await storage.tokens.persistIssued({
+      id: "tok_row_1",
+      tokenId: "tok_external_1",
+      jti: "jti_1",
+      identityId: "agent_token_1",
+      sessionId: "sess_shared",
+      issuedAt: 1_774_608_000,
+      expiresAt: 1_774_611_600,
+      createdAt: "2026-03-27T12:00:00.000Z",
+    });
+    await storage.tokens.persistIssued({
+      id: "tok_row_2",
+      tokenId: "tok_external_2",
+      jti: "jti_2",
+      identityId: "agent_token_2",
+      sessionId: "sess_shared",
+      issuedAt: 1_774_608_000,
+      expiresAt: 1_774_611_600,
+      createdAt: "2026-03-27T12:00:00.000Z",
+    });
+
+    assert.deepEqual(await storage.tokens.getById("tok_external_1"), {
+      id: "tok_row_1",
+      tokenId: "tok_external_1",
+      jti: "jti_1",
+      identityId: "agent_token_1",
+      status: "active",
+      sessionId: "sess_shared",
+      expiresAt: 1_774_611_600,
+    });
+    assert.deepEqual(
+      await storage.tokens.listActiveByIdentityId("agent_token_1"),
+      [await storage.tokens.getById("jti_1")],
+    );
+    assert.deepEqual(
+      (await storage.tokens.listActiveBySessionId("sess_shared")).map((token) => token.id),
+      ["tok_row_1", "tok_row_2"],
+    );
+    assert.deepEqual(await storage.tokens.listActiveIds("agent_token_1"), ["tok_row_1"]);
+
+    await storage.revocations.revokeIdentityTokens(
+      "agent_token_1",
+      ["tok_row_1"],
+      "2026-03-27T12:01:00.000Z",
+    );
+    assert.deepEqual(await storage.tokens.listActiveByIdentityId("agent_token_1"), []);
+    assert.equal((await storage.tokens.getById("tok_row_1"))?.status, "revoked");
+  } finally {
+    cleanup();
+  }
+});
+
 test("sqlite identity storage supports CRUD, hierarchy, and budget auto-suspend", async () => {
   const { storage, cleanup } = createHarness();
 

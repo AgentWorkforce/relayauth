@@ -43,12 +43,14 @@ import type {
   IdentityChildSummary,
   IdentityStorage,
   IdentityStatusCounts,
+  IssuedTokenRecord,
   ListIdentitiesOptions,
   OrganizationContextRecord,
   PolicyStorage,
   PolicyUpdate,
   RevocationStorage,
   RoleStorage,
+  StoredTokenRecord,
   TokenStorage,
   RoleUpdate,
   WorkspaceContextRecord,
@@ -412,6 +414,40 @@ const LIST_ACTIVE_TOKENS_SQL = `
   WHERE identity_id = ? AND status = 'active'
 `;
 
+const SELECT_TOKEN_BY_ID_SQL = `
+  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
+  FROM tokens
+  WHERE id = ? OR token_id = ? OR jti = ?
+  LIMIT 1
+`;
+
+const SELECT_TOKENS_BY_IDENTITY_SQL = `
+  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
+  FROM tokens
+  WHERE identity_id = ? AND status = 'active'
+`;
+
+const SELECT_TOKENS_BY_SESSION_SQL = `
+  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
+  FROM tokens
+  WHERE session_id = ? AND status = 'active'
+`;
+
+const INSERT_TOKEN_SQL = `
+  INSERT INTO tokens (
+    id,
+    token_id,
+    jti,
+    identity_id,
+    session_id,
+    issued_at,
+    expires_at,
+    status,
+    created_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+`;
+
 const UPSERT_REVOKED_TOKEN_SQL = `
   INSERT OR REPLACE INTO revoked_tokens (jti, expires_at)
   VALUES (?, ?)
@@ -604,6 +640,15 @@ type ChildIdentityRow = {
 };
 type StatusCountRow = { status?: string | null; count?: number | string | null };
 type ActiveTokenRow = { id?: string; jti?: string; token_id?: string };
+type TokenRow = {
+  id?: string | null;
+  token_id?: string | null;
+  jti?: string | null;
+  identity_id?: string | null;
+  status?: string | null;
+  session_id?: string | null;
+  expires_at?: number | string | null;
+};
 type ExistsRow = { found?: number | string | bigint | null };
 type RevokedTokenRow = { expires_at?: number | string | null };
 type TableInfoRow = { name?: string | null };
@@ -705,10 +750,13 @@ type BudgetPolicyResult = {
 
 type MemoryTokenRecord = {
   id: string;
-  tokenId?: string;
-  jti?: string;
+  tokenId: string;
+  jti: string;
   identityId: string;
   status: string;
+  sessionId?: string | null;
+  issuedAt: number;
+  expiresAt: number;
   createdAt: string;
 };
 
@@ -1240,6 +1288,91 @@ class SqliteIdentityStorage implements IdentityStorage {
 class SqliteTokenStorage implements TokenStorage {
   constructor(private readonly provider: BackendProvider) {}
 
+  async persistIssued(token: IssuedTokenRecord): Promise<void> {
+    const backend = await this.provider.getBackend();
+
+    if (backend.kind === "memory") {
+      backend.state.tokens.set(token.id, {
+        ...token,
+        status: "active",
+      });
+      return;
+    }
+
+    backend.db.prepare(INSERT_TOKEN_SQL).run(
+      token.id,
+      token.tokenId,
+      token.jti,
+      token.identityId,
+      token.sessionId ?? null,
+      token.issuedAt,
+      token.expiresAt,
+      token.createdAt,
+    );
+  }
+
+  async getById(tokenId: string): Promise<StoredTokenRecord | null> {
+    const normalizedTokenId = normalizeOptionalString(tokenId);
+    if (!normalizedTokenId) {
+      return null;
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const token = [...backend.state.tokens.values()].find((candidate) =>
+        candidate.id === normalizedTokenId
+        || candidate.tokenId === normalizedTokenId
+        || candidate.jti === normalizedTokenId
+      );
+      return token ? toStoredTokenRecord(token) : null;
+    }
+
+    const row = backend.db.prepare<TokenRow>(SELECT_TOKEN_BY_ID_SQL).get(
+      normalizedTokenId,
+      normalizedTokenId,
+      normalizedTokenId,
+    );
+    return row ? toStoredTokenRecord(row) : null;
+  }
+
+  async listActiveByIdentityId(identityId: string): Promise<StoredTokenRecord[]> {
+    const normalizedIdentityId = normalizeOptionalString(identityId);
+    if (!normalizedIdentityId) {
+      return [];
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      return [...backend.state.tokens.values()]
+        .filter((token) => token.identityId === normalizedIdentityId && token.status === "active")
+        .map(toStoredTokenRecord);
+    }
+
+    return backend.db
+      .prepare<TokenRow>(SELECT_TOKENS_BY_IDENTITY_SQL)
+      .all(normalizedIdentityId)
+      .map(toStoredTokenRecord);
+  }
+
+  async listActiveBySessionId(sessionId: string): Promise<StoredTokenRecord[]> {
+    const normalizedSessionId = normalizeOptionalString(sessionId);
+    if (!normalizedSessionId) {
+      return [];
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      return [...backend.state.tokens.values()]
+        .filter((token) => token.sessionId === normalizedSessionId && token.status === "active")
+        .map(toStoredTokenRecord);
+    }
+
+    return backend.db
+      .prepare<TokenRow>(SELECT_TOKENS_BY_SESSION_SQL)
+      .all(normalizedSessionId)
+      .map(toStoredTokenRecord);
+  }
+
   async listActiveIds(identityId: string): Promise<string[]> {
     const normalizedIdentityId = requireString(identityId, "identityId is required");
     const backend = await this.provider.getBackend();
@@ -1257,6 +1390,30 @@ class SqliteTokenStorage implements TokenStorage {
       .map((row) => normalizeOptionalString(row.id) ?? normalizeOptionalString(row.jti) ?? normalizeOptionalString(row.token_id))
       .filter((tokenId): tokenId is string => Boolean(tokenId));
   }
+}
+
+function toStoredTokenRecord(token: TokenRow | MemoryTokenRecord): StoredTokenRecord {
+  if ("identityId" in token) {
+    return {
+      id: token.id,
+      tokenId: token.tokenId,
+      jti: token.jti,
+      identityId: token.identityId,
+      status: token.status,
+      sessionId: token.sessionId ?? null,
+      expiresAt: token.expiresAt,
+    };
+  }
+
+  return {
+    id: token.id,
+    tokenId: token.token_id,
+    jti: token.jti,
+    identityId: token.identity_id,
+    status: token.status,
+    sessionId: token.session_id,
+    expiresAt: token.expires_at,
+  };
 }
 
 class SqliteRevocationStorage implements RevocationStorage {
