@@ -3105,7 +3105,19 @@ function buildAuditQuerySql(query: AuditQueryInput, limit: number): { sql: strin
   }
   if (query.cursor?.kind === "archive_partition") {
     clauses.push("timestamp < ?");
-    params.push(query.cursor.timestamp);
+    params.push(
+      query.cursor.inclusive && !query.cursor.chunk
+        ? new Date(new Date(query.cursor.timestamp).getTime() + 60_000).toISOString()
+        : query.cursor.timestamp,
+    );
+    if (query.cursor.entryCursor) {
+      clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
+      params.push(
+        query.cursor.entryCursor.timestamp,
+        query.cursor.entryCursor.timestamp,
+        query.cursor.entryCursor.id,
+      );
+    }
   } else if (query.cursor) {
     clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
     params.push(query.cursor.timestamp, query.cursor.timestamp, query.cursor.id);
@@ -3222,7 +3234,18 @@ function matchesAuditQuery(entry: AuditEntryRecord, query: AuditQueryInput): boo
     return false;
   }
   if (query.cursor?.kind === "archive_partition") {
-    if (entry.timestamp >= query.cursor.timestamp) {
+    const upper = query.cursor.inclusive && !query.cursor.chunk
+      ? new Date(new Date(query.cursor.timestamp).getTime() + 60_000).toISOString()
+      : query.cursor.timestamp;
+    if (entry.timestamp >= upper) {
+      return false;
+    }
+    if (
+      query.cursor.entryCursor &&
+      (entry.timestamp > query.cursor.entryCursor.timestamp ||
+        (entry.timestamp === query.cursor.entryCursor.timestamp &&
+          entry.id >= query.cursor.entryCursor.id))
+    ) {
       return false;
     }
   } else if (query.cursor) {

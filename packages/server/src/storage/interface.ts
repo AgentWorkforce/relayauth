@@ -75,6 +75,29 @@ export type AuditArchivePartitionCursor = {
   kind: "archive_partition";
   orgId: string;
   timestamp: string;
+  /**
+   * Resume at (rather than strictly before) this partition. This is used only
+   * when a fixed budget is exhausted before any chunk of the partition is
+   * read, so the next request cannot skip that unread partition.
+   */
+  inclusive?: boolean;
+  /**
+   * The next unread immutable index chunk for a partition that is larger than
+   * one request's fixed R2 budget. It is a resumable position, never an
+   * emitted chunk, so a continuation cannot duplicate prior entries.
+   */
+  chunk?: {
+    key: string;
+    sha256: string;
+  };
+  /** Original entry page boundary, retained when budget continuation starts mid-page. */
+  entryCursor?: AuditEntryCursor;
+  /**
+   * Opaque canonical query scope. Archive cursors may only be replayed by the
+   * exact org-scoped query that produced them; this prevents a continuation
+   * from being reused with broader/narrower filters or a different ordering.
+   */
+  filterKey: string;
 };
 
 export type AuditQueryCursor = AuditEntryCursor | AuditArchivePartitionCursor;
@@ -121,6 +144,59 @@ export type DashboardAuditQuery = {
   cursor?: AuditArchivePartitionCursor;
 };
 
+/**
+ * The archive is ordered timestamp DESC, id DESC. Keep this canonical key in
+ * the storage contract so every backend produces continuations accepted by
+ * the HTTP boundary without copying filter semantics.
+ */
+export function createAuditQueryContinuationFilterKey(
+  query: Pick<
+    AuditQueryInput,
+    | "identityId"
+    | "action"
+    | "workspaceId"
+    | "plane"
+    | "result"
+    | "from"
+    | "to"
+    | "limit"
+    | "cursor"
+  >,
+): string {
+  const entryCursor = query.cursor?.kind === "archive_partition"
+    ? query.cursor.entryCursor
+    : query.cursor;
+  return JSON.stringify({
+    version: 1,
+    resource: "audit",
+    order: "timestamp_desc_id_desc",
+    identityId: query.identityId ?? null,
+    action: query.action ?? null,
+    workspaceId: query.workspaceId ?? null,
+    plane: query.plane ?? null,
+    result: query.result ?? null,
+    from: query.from ?? null,
+    to: query.to ?? null,
+    limit: query.limit,
+    entryCursor: entryCursor
+      ? { timestamp: entryCursor.timestamp, id: entryCursor.id }
+      : null,
+  });
+}
+
+/** Dashboard supports only the documented exact from/to range tuple. */
+export function createDashboardAuditContinuationFilterKey(
+  query: Pick<DashboardAuditQuery, "from" | "to">,
+): string {
+  return JSON.stringify({
+    version: 1,
+    resource: "dashboard-audit-counts",
+    order: "partition_minute_desc",
+    from: query.from ?? null,
+    to: query.to ?? null,
+  });
+}
+
 export type DashboardAuditCounts = {
   tokensIssued: number;
   tokensRevoked: number;
@@ -133,6 +209,8 @@ export type DashboardAuditCountsResult =
   | {
       kind: "complete";
       counts: DashboardAuditCounts;
+      /** Archive scan counters are returned when a backend performed one. */
+      workBudget?: AuditQueryWorkBudget;
     }
   | {
       kind: "budget_exhausted";
