@@ -1505,12 +1505,31 @@ test("POST /v1/tokens/refresh", async (t) => {
     const { app, identity } = await createHarness();
     const { pair, accessClaims, refreshClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti, refreshClaims.jti]);
+    const atomicRevocations =
+      app.storage.revocations.revokeIdentityTokensWithAudit.bind(
+        app.storage.revocations,
+      );
+    const atomicCascadeCalls: Parameters<typeof atomicRevocations>[0][] = [];
+    app.storage.revocations.revokeIdentityTokensWithAudit = async (input) => {
+      atomicCascadeCalls.push(input);
+      await atomicRevocations(input);
+    };
+    app.storage.revocations.revokeIdentityTokens = async () => {
+      throw new Error("refresh-reuse cascade must use revokeIdentityTokensWithAudit");
+    };
 
     const firstResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
       body: { refreshToken: pair.refreshToken },
     });
     const firstBody = await assertJsonResponse<TokenPair>(firstResponse, 200);
-    const secondRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(firstBody.refreshToken, 1);
+    const secondAccessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+      firstBody.accessToken,
+      1,
+    );
+    const secondRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+      firstBody.refreshToken,
+      1,
+    );
 
     // Replay the original refresh token (single-use violation).
     const replayResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
@@ -1519,6 +1538,32 @@ test("POST /v1/tokens/refresh", async (t) => {
     await assertJsonResponse<ErrorBody>(replayResponse, 401, (body) => {
       assert.match(JSON.stringify(body), /revoked/i);
     });
+    assert.equal(atomicCascadeCalls.length, 1);
+    assert.deepEqual(
+      [...atomicCascadeCalls[0]!.tokenIds].sort(),
+      [
+        refreshClaims.jti,
+        secondAccessClaims.jti,
+        secondRefreshClaims.jti,
+      ].sort(),
+    );
+    assert.equal(atomicCascadeCalls[0]!.identityId, identity.id);
+    assert.match(atomicCascadeCalls[0]!.revokedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.deepEqual(atomicCascadeCalls[0]!.auditEntry, {
+      id: atomicCascadeCalls[0]!.auditEntry.id,
+      action: "token.revoked",
+      identityId: identity.id,
+      orgId: identity.orgId,
+      workspaceId: identity.workspaceId,
+      plane: "relayauth",
+      resource: "tokens",
+      result: "allowed",
+      metadata: {
+        tokenId: refreshClaims.jti,
+        actorId: "refresh_reuse_detected",
+      },
+      timestamp: atomicCascadeCalls[0]!.auditEntry.timestamp,
+    });
 
     // The newly issued refresh token should ALSO be unusable now because the
     // session was cascade-revoked.
@@ -1526,6 +1571,27 @@ test("POST /v1/tokens/refresh", async (t) => {
       body: { refreshToken: firstBody.refreshToken },
     });
     await assertJsonResponse<ErrorBody>(followupResponse, 401);
+    assert.equal(atomicCascadeCalls.length, 2);
+    assert.deepEqual(atomicCascadeCalls[1]!.tokenIds, [
+      secondRefreshClaims.jti,
+    ]);
+    assert.equal(atomicCascadeCalls[1]!.identityId, identity.id);
+    assert.match(atomicCascadeCalls[1]!.revokedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.deepEqual(atomicCascadeCalls[1]!.auditEntry, {
+      id: atomicCascadeCalls[1]!.auditEntry.id,
+      action: "token.revoked",
+      identityId: identity.id,
+      orgId: identity.orgId,
+      workspaceId: identity.workspaceId,
+      plane: "relayauth",
+      resource: "tokens",
+      result: "allowed",
+      metadata: {
+        tokenId: secondRefreshClaims.jti,
+        actorId: "refresh_reuse_detected",
+      },
+      timestamp: atomicCascadeCalls[1]!.auditEntry.timestamp,
+    });
 
     const revoked = await listRevokedTokenIds(app);
     assert.ok(revoked.includes(refreshClaims.jti), "original refresh JTI must be revoked");
