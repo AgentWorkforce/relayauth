@@ -193,7 +193,7 @@ test("sqlite token pair and audit entry commit atomically and retries do not dup
         orgId: "org_test",
         action: "token.issued",
         limit: 10,
-      }, { includeOverflowRow: false })).map((entry) => entry.id),
+      }, { includeOverflowRow: false })).entries.map((entry) => entry.id),
       ["aud_pair"],
     );
 
@@ -205,7 +205,7 @@ test("sqlite token pair and audit entry commit atomically and retries do not dup
       orgId: "org_test",
       action: "token.issued",
       limit: 10,
-    }, { includeOverflowRow: false })).length, 1);
+    }, { includeOverflowRow: false })).entries.length, 1);
   } finally {
     cleanup();
   }
@@ -312,7 +312,7 @@ test("sqlite refresh rotation atomically mints, revokes, and audits", async () =
       (await storage.audit.query({
         orgId: "org_test",
         limit: 10,
-      }, { includeOverflowRow: false })).map((entry) => entry.id).sort(),
+      }, { includeOverflowRow: false })).entries.map((entry) => entry.id).sort(),
       ["aud_rotation_refreshed", "aud_rotation_revoked"],
     );
   } finally {
@@ -574,16 +574,19 @@ test("sqlite storage supports roles, policies, audit, webhooks, contexts, and re
       orgId: "org_test",
       limit: 1,
     });
-    assert.equal(queriedAudit.length, 2);
-    assert.equal(queriedAudit[0]?.id, "aud_newer");
+    assert.equal(queriedAudit.entries.length, 2);
+    assert.equal(queriedAudit.entries[0]?.id, "aud_newer");
 
     const actionCounts = await storage.audit.getActionCounts("org_test", {});
     assert.deepEqual(actionCounts, {
+      kind: "complete",
+      counts: {
       tokensIssued: 0,
       tokensRevoked: 1,
       tokensRefreshed: 0,
       scopeChecks: 1,
       scopeDenials: 0,
+      },
     });
 
     const suspendedIdentity = createIdentity({

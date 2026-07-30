@@ -34,6 +34,20 @@ export interface RelayAuthClientOptions {
   token?: string;
 }
 
+export type AuditQueryWorkBudget = {
+  d1Pages: number;
+  d1Rows: number;
+  partitions: number;
+  r2Reads: number;
+};
+
+export type AuditQueryPage = {
+  entries: AuditEntry[];
+  cursor?: string;
+  partial?: true;
+  workBudget?: AuditQueryWorkBudget;
+};
+
 type ListIdentitiesOptions = {
   limit?: number;
   cursor?: string;
@@ -213,10 +227,12 @@ export class RelayAuthClient {
     };
   }
 
-  async queryAudit(query: AuditQuery): Promise<{ entries: AuditEntry[]; cursor?: string }> {
+  async queryAudit(query: AuditQuery): Promise<AuditQueryPage> {
     const response = await this._request<{
       entries?: AuditEntry[];
       nextCursor?: string | null;
+      partial?: boolean;
+      workBudget?: AuditQueryWorkBudget;
     }>("/v1/audit", {
       query: serializeAuditQuery(query),
     });
@@ -227,10 +243,12 @@ export class RelayAuthClient {
   async getIdentityActivity(
     identityId: string,
     options?: Omit<AuditQuery, "identityId" | "orgId">,
-  ): Promise<{ entries: AuditEntry[]; cursor?: string }> {
+  ): Promise<AuditQueryPage> {
     const response = await this._request<{
       entries?: AuditEntry[];
       nextCursor?: string | null;
+      partial?: boolean;
+      workBudget?: AuditQueryWorkBudget;
     }>(`/v1/identities/${encodeURIComponent(identityId)}/activity`, {
       query: serializeAuditQuery(options),
     });
@@ -441,15 +459,15 @@ function serializeAuditQuery(query?: Partial<AuditQuery>): Record<string, string
 function mapAuditPage(response: {
   entries?: AuditEntry[];
   nextCursor?: string | null;
-}): { entries: AuditEntry[]; cursor?: string } {
-  return response.nextCursor
-    ? {
-        entries: response.entries ?? [],
-        cursor: response.nextCursor,
-      }
-    : {
-        entries: response.entries ?? [],
-      };
+  partial?: boolean;
+  workBudget?: AuditQueryWorkBudget;
+}): AuditQueryPage {
+  return {
+    entries: response.entries ?? [],
+    ...(response.nextCursor ? { cursor: response.nextCursor } : {}),
+    ...(response.partial ? { partial: true as const } : {}),
+    ...(response.workBudget ? { workBudget: response.workBudget } : {}),
+  };
 }
 
 function normalizeBaseUrl(baseUrl: string): string {

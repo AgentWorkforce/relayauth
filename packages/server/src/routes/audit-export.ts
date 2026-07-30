@@ -4,6 +4,7 @@ import type { AppEnv } from "../env.js";
 import { requireScope } from "../middleware/scope.js";
 import {
   buildAuditQuery,
+  encodeAuditCursor,
   parseAuditQuery,
   toAuditEntry,
   type AuditLogRow,
@@ -64,7 +65,20 @@ auditExport.post("/export", requireScope("relayauth:audit:read"), async (c) => {
     return c.json({ error: parsed.error }, 400);
   }
 
-  const entries = await c.get("storage").audit.query(parsed.value, { includeOverflowRow: false });
+  const result = await c.get("storage").audit.query(parsed.value, { includeOverflowRow: false });
+  if (result.kind === "budget_exhausted") {
+    return c.json(
+      {
+        error: "audit_archive_query_budget_exceeded",
+        entries: result.entries,
+        nextCursor: encodeAuditCursor(result.continuation),
+        partial: true,
+        workBudget: result.workBudget,
+      },
+      409,
+    );
+  }
+  const entries = result.entries;
 
   if (body.format === "json") {
     return c.json(entries, 200);

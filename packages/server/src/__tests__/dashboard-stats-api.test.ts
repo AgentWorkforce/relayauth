@@ -5,6 +5,7 @@ import {
   assertJsonResponse,
   createTestApp,
   createTestRequest,
+  createTestStorage,
   generateTestIdentity,
   generateTestToken,
   seedAuditEntries,
@@ -19,6 +20,15 @@ type DashboardStatsResponse = {
   scopeDenials: number;
   activeIdentities: number;
   suspendedIdentities: number;
+  partial?: boolean;
+  nextCursor?: string;
+  hasMore?: boolean;
+  workBudget?: {
+    d1Pages: number;
+    d1Rows: number;
+    partitions: number;
+    r2Reads: number;
+  };
 };
 
 type AuditLogRow = {
@@ -576,6 +586,60 @@ test("GET /v1/stats is scoped to the caller's org", async () => {
   assert.equal(body.scopeDenials, 0);
   assert.equal(body.activeIdentities, 1);
   assert.equal(body.suspendedIdentities, 0);
+});
+
+test("GET /v1/stats exposes a typed, org-scoped bounded count continuation", async () => {
+  const storage = createTestStorage();
+  storage.audit.getActionCounts = async (orgId, query) => {
+    assert.equal(orgId, "org_stats_continuation");
+    if (query.cursor?.kind === "archive_partition") {
+      return {
+        kind: "complete",
+        counts: { tokensIssued: 2, tokensRevoked: 0, tokensRefreshed: 0, scopeChecks: 0, scopeDenials: 0 },
+      };
+    }
+    return {
+      kind: "budget_exhausted",
+      counts: { tokensIssued: 128, tokensRevoked: 0, tokensRefreshed: 0, scopeChecks: 0, scopeDenials: 0 },
+      continuation: {
+        kind: "archive_partition",
+        orgId: "org_stats_continuation",
+        timestamp: "2026-03-24T12:00:00.000Z",
+      },
+      workBudget: { d1Pages: 1, d1Rows: 129, partitions: 128, r2Reads: 0 },
+    };
+  };
+  const app = createTestApp({ storage });
+  const token = `Bearer ${generateTestToken({
+    org: "org_stats_continuation",
+    scopes: ["relayauth:stats:read"],
+  })}`;
+
+  const first = await app.request(
+    createTestRequest("GET", "/v1/stats", undefined, { Authorization: token }),
+    undefined,
+    app.bindings,
+  );
+  const firstBody = await assertJsonResponse<DashboardStatsResponse>(first, 200);
+  assert.equal(firstBody.tokensIssued, 128);
+  assert.equal(firstBody.partial, true);
+  assert.equal(firstBody.hasMore, true);
+  assert.equal(typeof firstBody.nextCursor, "string");
+  assert.deepEqual(firstBody.workBudget, { d1Pages: 1, d1Rows: 129, partitions: 128, r2Reads: 0 });
+
+  const second = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/stats?cursor=${encodeURIComponent(firstBody.nextCursor!)}`,
+      undefined,
+      { Authorization: token },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const secondBody = await assertJsonResponse<DashboardStatsResponse>(second, 200);
+  assert.equal(secondBody.tokensIssued, 2);
+  assert.equal(secondBody.partial, undefined);
 });
 
 test("GET /v1/stats returns 401 without valid auth token", async () => {

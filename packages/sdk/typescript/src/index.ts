@@ -1,5 +1,9 @@
 export { RelayAuthClient } from "./client.js";
-export type { RelayAuthClientOptions } from "./client.js";
+export type {
+  AuditQueryPage,
+  AuditQueryWorkBudget,
+  RelayAuthClientOptions,
+} from "./client.js";
 export { AgentTokenSession, createAgentTokenSession } from "./agent-token-session.js";
 export type { AgentTokenSessionOptions } from "./agent-token-session.js";
 export type {

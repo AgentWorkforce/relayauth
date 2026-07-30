@@ -173,6 +173,28 @@ test("queryAudit sends audit filters as query params and maps nextCursor to curs
   assert.equal(request.url.searchParams.get("limit"), "50");
 });
 
+test("queryAudit preserves a typed archive work-budget continuation", async (t) => {
+  const client = createClient();
+  const workBudget = { d1Pages: 4, d1Rows: 129, partitions: 128, r2Reads: 128 };
+  const fetchMock = mockFetch(() =>
+    jsonResponse({
+      entries: auditEntries.slice(0, 1),
+      nextCursor: "archive_partition_cursor",
+      hasMore: true,
+      partial: true,
+      workBudget,
+    }),
+  );
+  t.after(() => fetchMock.restore());
+
+  assert.deepEqual(await client.queryAudit({ orgId: "org_123" }), {
+    entries: auditEntries.slice(0, 1),
+    cursor: "archive_partition_cursor",
+    partial: true,
+    workBudget,
+  });
+});
+
 test("queryAudit returns an empty page when no audit entries match", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() =>

@@ -127,11 +127,11 @@ function createD1AuditStorage(db: D1DatabaseLike): AuditStorage {
       }
     },
 
-    async query(_query: AuditQueryInput, _options?: AuditQueryOptions): Promise<AuditEntryRecord[]> {
+    async query(_query: AuditQueryInput, _options?: AuditQueryOptions) {
       throw new Error("D1 audit storage adapter does not support query()");
     },
 
-    async getActionCounts(_orgId: string, _query: DashboardAuditQuery): Promise<DashboardAuditCounts> {
+    async getActionCounts(_orgId: string, _query: DashboardAuditQuery) {
       throw new Error("D1 audit storage adapter does not support getActionCounts()");
     },
 

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
 import { requireScope } from "../middleware/scope.js";
+import { decodeAuditCursor, encodeAuditCursor } from "./audit-query.js";
 
 type ScopeContextVars = {
   identity?: {
@@ -20,6 +21,15 @@ type DashboardStatsResponse = {
   period?: {
     from: string;
     to: string;
+  };
+  partial?: true;
+  nextCursor?: string;
+  hasMore?: true;
+  workBudget?: {
+    d1Pages: number;
+    d1Rows: number;
+    partitions: number;
+    r2Reads: number;
   };
 };
 
@@ -46,6 +56,11 @@ type DashboardIdentityCounts = Required<Pick<DashboardStatsResponse, "activeIden
 type DashboardStatsQuery = {
   from?: string;
   to?: string;
+  cursor?: {
+    kind: "archive_partition";
+    orgId: string;
+    timestamp: string;
+  };
 };
 
 const dashboardStats = new Hono<AppEnv>();
@@ -54,7 +69,7 @@ dashboardStats.use("*", requireScope("relayauth:stats:read"));
 
 dashboardStats.get("/", async (c) => {
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
-  const parsedQuery = parseDashboardStatsQuery(c.req.query());
+  const parsedQuery = parseDashboardStatsQuery(c.req.query(), claims?.org);
 
   if (!parsedQuery.ok) {
     return c.json({ error: parsedQuery.error }, 400);
@@ -65,11 +80,12 @@ dashboardStats.get("/", async (c) => {
   }
 
   const storage = c.get("storage");
-  const [auditCounts, identityCounts] = await Promise.all([
+  const [auditResult, identityCounts] = await Promise.all([
     storage.audit.getActionCounts(claims.org, parsedQuery.value),
     storage.identities.getStatusCounts(claims.org),
   ]);
 
+  const auditCounts = auditResult.counts;
   const response: DashboardStatsResponse = {
     tokensIssued: auditCounts.tokensIssued,
     tokensRevoked: auditCounts.tokensRevoked,
@@ -86,6 +102,14 @@ dashboardStats.get("/", async (c) => {
           },
         }
       : {}),
+    ...(auditResult.kind === "budget_exhausted"
+      ? {
+          partial: true as const,
+          nextCursor: encodeAuditCursor(auditResult.continuation) ?? "",
+          hasMore: true as const,
+          workBudget: auditResult.workBudget,
+        }
+      : {}),
   };
 
   return c.json(response, 200);
@@ -93,6 +117,7 @@ dashboardStats.get("/", async (c) => {
 
 function parseDashboardStatsQuery(
   query: Record<string, string | undefined>,
+  authenticatedOrgId: string | undefined,
 ): { ok: true; value: DashboardStatsQuery } | { ok: false; error: string } {
   const from = normalizeQueryValue(query.from);
   if (from && !isIsoTimestamp(from)) {
@@ -104,11 +129,21 @@ function parseDashboardStatsQuery(
     return { ok: false, error: "to must be an ISO 8601 timestamp" };
   }
 
+  const cursorValue = normalizeQueryValue(query.cursor);
+  const decodedCursor = cursorValue ? decodeAuditCursor(cursorValue) : undefined;
+  if (cursorValue && (!decodedCursor || decodedCursor.kind !== "archive_partition")) {
+    return { ok: false, error: "invalid cursor" };
+  }
+  if (decodedCursor?.kind === "archive_partition" && decodedCursor.orgId !== authenticatedOrgId) {
+    return { ok: false, error: "invalid cursor" };
+  }
+
   return {
     ok: true,
     value: {
       from,
       to,
+      cursor: decodedCursor,
     },
   };
 }
