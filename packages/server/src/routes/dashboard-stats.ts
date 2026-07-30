@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../env.js";
 import { requireScope } from "../middleware/scope.js";
 import { decodeAuditCursor, encodeAuditCursor } from "./audit-query.js";
+import { createDashboardAuditContinuationFilterKey } from "../storage/interface.js";
 
 type ScopeContextVars = {
   identity?: {
@@ -60,6 +61,16 @@ type DashboardStatsQuery = {
     kind: "archive_partition";
     orgId: string;
     timestamp: string;
+    inclusive?: boolean;
+    chunk?: {
+      key: string;
+      sha256: string;
+    };
+    entryCursor?: {
+      timestamp: string;
+      id: string;
+    };
+    filterKey: string;
   };
 };
 
@@ -102,12 +113,12 @@ dashboardStats.get("/", async (c) => {
           },
         }
       : {}),
+    ...(auditResult.workBudget ? { workBudget: auditResult.workBudget } : {}),
     ...(auditResult.kind === "budget_exhausted"
       ? {
           partial: true as const,
           nextCursor: encodeAuditCursor(auditResult.continuation) ?? "",
           hasMore: true as const,
-          workBudget: auditResult.workBudget,
         }
       : {}),
   };
@@ -131,10 +142,20 @@ function parseDashboardStatsQuery(
 
   const cursorValue = normalizeQueryValue(query.cursor);
   const decodedCursor = cursorValue ? decodeAuditCursor(cursorValue) : undefined;
-  if (cursorValue && (!decodedCursor || decodedCursor.kind !== "archive_partition")) {
+  if (
+    cursorValue &&
+    (!decodedCursor ||
+      decodedCursor.kind !== "archive_partition" ||
+      decodedCursor.entryCursor)
+  ) {
     return { ok: false, error: "invalid cursor" };
   }
-  if (decodedCursor?.kind === "archive_partition" && decodedCursor.orgId !== authenticatedOrgId) {
+  if (
+    decodedCursor?.kind === "archive_partition" &&
+    (decodedCursor.orgId !== authenticatedOrgId ||
+      decodedCursor.filterKey !==
+        createDashboardAuditContinuationFilterKey({ from, to }))
+  ) {
     return { ok: false, error: "invalid cursor" };
   }
 

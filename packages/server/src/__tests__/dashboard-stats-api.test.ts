@@ -12,6 +12,7 @@ import {
   seedStoredIdentities,
 } from "./test-helpers.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
+import { createDashboardAuditContinuationFilterKey } from "../storage/interface.js";
 
 type DashboardStatsResponse = {
   tokensIssued: number;
@@ -605,6 +606,7 @@ test("GET /v1/stats exposes a typed, org-scoped bounded count continuation", asy
         kind: "archive_partition",
         orgId: "org_stats_continuation",
         timestamp: "2026-03-24T12:00:00.000Z",
+        filterKey: createDashboardAuditContinuationFilterKey(query),
       },
       workBudget: { d1Pages: 1, d1Rows: 129, partitions: 128, r2Reads: 0 },
     };
@@ -616,7 +618,12 @@ test("GET /v1/stats exposes a typed, org-scoped bounded count continuation", asy
   })}`;
 
   const first = await app.request(
-    createTestRequest("GET", "/v1/stats", undefined, { Authorization: token }),
+    createTestRequest(
+      "GET",
+      "/v1/stats?from=2026-03-24T00%3A00%3A00.000Z&to=2026-03-25T00%3A00%3A00.000Z",
+      undefined,
+      { Authorization: token },
+    ),
     undefined,
     app.bindings,
   );
@@ -627,10 +634,24 @@ test("GET /v1/stats exposes a typed, org-scoped bounded count continuation", asy
   assert.equal(typeof firstBody.nextCursor, "string");
   assert.deepEqual(firstBody.workBudget, { d1Pages: 1, d1Rows: 129, partitions: 128, r2Reads: 0 });
 
+  const mismatchedRange = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/stats?from=2026-03-24T00%3A00%3A00.000Z&to=2026-03-26T00%3A00%3A00.000Z&cursor=${encodeURIComponent(firstBody.nextCursor!)}`,
+      undefined,
+      { Authorization: token },
+    ),
+    undefined,
+    app.bindings,
+  );
+  await assertJsonResponse<{ error: string }>(mismatchedRange, 400, (body) => {
+    assert.equal(body.error, "invalid cursor");
+  });
+
   const second = await app.request(
     createTestRequest(
       "GET",
-      `/v1/stats?cursor=${encodeURIComponent(firstBody.nextCursor!)}`,
+      `/v1/stats?from=2026-03-24T00%3A00%3A00.000Z&to=2026-03-25T00%3A00%3A00.000Z&cursor=${encodeURIComponent(firstBody.nextCursor!)}`,
       undefined,
       { Authorization: token },
     ),

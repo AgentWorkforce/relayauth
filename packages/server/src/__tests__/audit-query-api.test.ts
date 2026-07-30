@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AuditAction, AuditEntry } from "@relayauth/types";
+import { createAuditQueryContinuationFilterKey } from "../storage/interface.js";
 import {
   assertJsonResponse,
   createTestApp,
@@ -389,6 +390,11 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
     assert.equal(query.orgId, "org_archive");
     if (query.cursor?.kind === "archive_partition") {
       assert.equal(query.cursor.timestamp, "2026-03-24T12:00:02.000Z");
+      assert.equal(query.cursor.inclusive, true);
+      assert.deepEqual(query.cursor.chunk, {
+        key: "indexes/v1/org=org_archive/next.json",
+        sha256: "a".repeat(64),
+      });
       return { kind: "complete", entries: [entries[2]!] };
     }
     return {
@@ -398,6 +404,12 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
         kind: "archive_partition",
         orgId: "org_archive",
         timestamp: "2026-03-24T12:00:02.000Z",
+        inclusive: true,
+        chunk: {
+          key: "indexes/v1/org=org_archive/next.json",
+          sha256: "a".repeat(64),
+        },
+        filterKey: createAuditQueryContinuationFilterKey(query),
       },
       workBudget: { d1Pages: 4, d1Rows: 129, partitions: 128, r2Reads: 128 },
     };
@@ -409,7 +421,12 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
   })}`;
 
   const first = await app.request(
-    createTestRequest("GET", "/v1/audit?orgId=org_archive", undefined, { Authorization: token }),
+    createTestRequest(
+      "GET",
+      "/v1/audit?orgId=org_archive&identityId=agent_archive&action=token.validated&workspaceId=workspace_archive&plane=relayauth&result=allowed&from=2026-03-24T12%3A00%3A00.000Z&to=2026-03-24T13%3A00%3A00.000Z&limit=3",
+      undefined,
+      { Authorization: token },
+    ),
     undefined,
     app.bindings,
   );
@@ -438,10 +455,24 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
     assert.equal(body.error, "invalid cursor");
   });
 
+  const mismatchedFilter = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/audit?orgId=org_archive&identityId=agent_other&action=token.validated&workspaceId=workspace_archive&plane=relayauth&result=allowed&from=2026-03-24T12%3A00%3A00.000Z&to=2026-03-24T13%3A00%3A00.000Z&limit=3&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      undefined,
+      { Authorization: token },
+    ),
+    undefined,
+    app.bindings,
+  );
+  await assertJsonResponse<{ error: string }>(mismatchedFilter, 400, (body) => {
+    assert.equal(body.error, "invalid cursor");
+  });
+
   const second = await app.request(
     createTestRequest(
       "GET",
-      `/v1/audit?orgId=org_archive&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      `/v1/audit?orgId=org_archive&identityId=agent_archive&action=token.validated&workspaceId=workspace_archive&plane=relayauth&result=allowed&from=2026-03-24T12%3A00%3A00.000Z&to=2026-03-24T13%3A00%3A00.000Z&limit=3&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
       undefined,
       { Authorization: token },
     ),

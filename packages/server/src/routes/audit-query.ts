@@ -2,7 +2,10 @@ import type { AuditAction, AuditEntry } from "@relayauth/types";
 import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
-import type { AuditQueryCursor } from "../storage/interface.js";
+import {
+  createAuditQueryContinuationFilterKey,
+  type AuditQueryCursor,
+} from "../storage/interface.js";
 import { requireScope } from "../middleware/scope.js";
 
 export type ScopeContextVars = {
@@ -158,29 +161,35 @@ export function parseAuditQuery(
   if (cursor && !decodedCursor) {
     return { ok: false, error: "invalid cursor" };
   }
-  if (decodedCursor?.kind === "archive_partition" && decodedCursor.orgId !== orgId) {
-    return { ok: false, error: "invalid cursor" };
-  }
-
   const limit = parseLimit(query.limit, options.defaultLimit ?? 50, options.maxLimit ?? 200);
   if (limit === null) {
     return { ok: false, error: "limit must be a positive integer" };
   }
 
+  const value: AuditQueryParams = {
+    orgId,
+    identityId: normalizeQueryValue(query.identityId),
+    action: action as AuditAction | undefined,
+    workspaceId: normalizeQueryValue(query.workspaceId),
+    plane: normalizeQueryValue(query.plane),
+    result: result as "allowed" | "denied" | undefined,
+    from,
+    to,
+    cursor: decodedCursor ?? undefined,
+    limit,
+  };
+
+  if (
+    decodedCursor?.kind === "archive_partition" &&
+    (decodedCursor.orgId !== orgId ||
+      decodedCursor.filterKey !== createAuditQueryContinuationFilterKey(value))
+  ) {
+    return { ok: false, error: "invalid cursor" };
+  }
+
   return {
     ok: true,
-    value: {
-      orgId,
-      identityId: normalizeQueryValue(query.identityId),
-      action: action as AuditAction | undefined,
-      workspaceId: normalizeQueryValue(query.workspaceId),
-      plane: normalizeQueryValue(query.plane),
-      result: result as "allowed" | "denied" | undefined,
-      from,
-      to,
-      cursor: decodedCursor ?? undefined,
-      limit,
-    },
+    value,
   };
 }
 
@@ -228,7 +237,19 @@ export function buildAuditQuery(
 
   if (params.cursor?.kind === "archive_partition") {
     clauses.push("timestamp < ?");
-    values.push(params.cursor.timestamp);
+    values.push(
+      params.cursor.inclusive && !params.cursor.chunk
+        ? new Date(new Date(params.cursor.timestamp).getTime() + 60_000).toISOString()
+        : params.cursor.timestamp,
+    );
+    if (params.cursor.entryCursor) {
+      clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
+      values.push(
+        params.cursor.entryCursor.timestamp,
+        params.cursor.entryCursor.timestamp,
+        params.cursor.entryCursor.id,
+      );
+    }
   } else if (params.cursor) {
     clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
     values.push(params.cursor.timestamp, params.cursor.timestamp, params.cursor.id);
@@ -328,7 +349,18 @@ export function encodeAuditCursor(cursor: AuditQueryCursor | undefined): string 
   }
 
   if (cursor.kind === "archive_partition") {
-    return toBase64Url(`archive_partition|${cursor.orgId}|${cursor.timestamp}`);
+    return toBase64Url(
+      JSON.stringify({
+        version: 1,
+        kind: cursor.kind,
+        orgId: cursor.orgId,
+        timestamp: cursor.timestamp,
+        inclusive: cursor.inclusive === true,
+        ...(cursor.chunk ? { chunk: cursor.chunk } : {}),
+        ...(cursor.entryCursor ? { entryCursor: cursor.entryCursor } : {}),
+        filterKey: cursor.filterKey,
+      }),
+    );
   }
 
   if (!cursor.id) {
@@ -341,14 +373,9 @@ export function encodeAuditCursor(cursor: AuditQueryCursor | undefined): string 
 export function decodeAuditCursor(value: string): AuditQueryCursor | null {
   try {
     const decoded = fromBase64Url(value);
-    if (decoded.startsWith("archive_partition|")) {
-      const payload = decoded.slice("archive_partition|".length);
-      const separator = payload.lastIndexOf("|");
-      const orgId = payload.slice(0, separator);
-      const timestamp = payload.slice(separator + 1);
-      return orgId && timestamp && isIsoTimestamp(timestamp)
-        ? { kind: "archive_partition", orgId, timestamp }
-        : null;
+    const archiveCursor = parseArchiveCursor(decoded);
+    if (archiveCursor) {
+      return archiveCursor;
     }
     const separator = decoded.lastIndexOf("|");
     if (separator <= 0 || separator === decoded.length - 1) {
@@ -365,6 +392,60 @@ export function decodeAuditCursor(value: string): AuditQueryCursor | null {
   } catch {
     return null;
   }
+}
+
+function parseArchiveCursor(value: string): Extract<AuditQueryCursor, { kind: "archive_partition" }> | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!isRecord(parsed)) {
+      return null;
+    }
+    const { version, kind, orgId, timestamp, inclusive, chunk, entryCursor, filterKey } = parsed;
+    return version === 1 &&
+      kind === "archive_partition" &&
+      typeof orgId === "string" &&
+      orgId.length > 0 &&
+      typeof timestamp === "string" &&
+      isIsoTimestamp(timestamp) &&
+      (inclusive === undefined || typeof inclusive === "boolean") &&
+      (chunk === undefined ||
+        (isRecord(chunk) &&
+          typeof chunk.key === "string" &&
+          chunk.key.length > 0 &&
+          typeof chunk.sha256 === "string" &&
+          chunk.sha256.length > 0)) &&
+      (entryCursor === undefined ||
+        (isRecord(entryCursor) &&
+          typeof entryCursor.timestamp === "string" &&
+          isIsoTimestamp(entryCursor.timestamp) &&
+          typeof entryCursor.id === "string" &&
+          entryCursor.id.length > 0)) &&
+      typeof filterKey === "string" &&
+      filterKey.length > 0
+      ? {
+          kind,
+          orgId,
+          timestamp,
+          ...(inclusive === true ? { inclusive } : {}),
+          ...(chunk ? { chunk: { key: chunk.key as string, sha256: chunk.sha256 as string } } : {}),
+          ...(entryCursor
+            ? {
+                entryCursor: {
+                  timestamp: entryCursor.timestamp as string,
+                  id: entryCursor.id as string,
+                },
+              }
+            : {}),
+          filterKey,
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function toBase64Url(value: string): string {
