@@ -110,11 +110,20 @@ identityActivity.get(
     const entries = result.entries;
     const hasMore = entries.length > parsed.value.limit;
     const page = hasMore ? entries.slice(0, parsed.value.limit) : entries;
+    const nextCursor = hasMore
+      ? encodeAuditCursor({
+          timestamp: page[page.length - 1]?.timestamp ?? "",
+          id: page[page.length - 1]?.id ?? "",
+        })
+      : null;
+    if (hasMore && !nextCursor) {
+      return c.json({ error: "invalid audit continuation" }, 500);
+    }
 
     return c.json(
       {
         entries: page,
-        nextCursor: hasMore ? encodeCursor(page[page.length - 1]) : null,
+        nextCursor,
         hasMore,
         sponsorChain: storedIdentity.identity.sponsorChain,
         budgetUsage: summarizeBudgetUsage(storedIdentity.identity),
@@ -267,19 +276,6 @@ function summarizeBudgetUsage(
     percentOfBudget:
       percentages.length > 0 ? Number(Math.max(...percentages).toFixed(2)) : 0,
   };
-}
-
-function encodeCursor(
-  row: { timestamp?: string; id?: string } | undefined,
-): string | null {
-  if (!row?.timestamp || !row.id) {
-    return null;
-  }
-
-  return btoa(`${row.timestamp}|${row.id}`)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
 }
 
 export default identityActivity;
