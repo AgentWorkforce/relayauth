@@ -29,10 +29,10 @@ type DashboardStatsResponse = {
   nextCursor?: string;
   hasMore?: boolean;
   workBudget?: {
-    d1Pages: number;
-    d1Rows: number;
-    partitions: number;
-    r2Reads: number;
+    hotStorePages: number;
+    hotStoreRows: number;
+    archivePartitions: number;
+    archiveReads: number;
   };
 };
 
@@ -742,7 +742,12 @@ test("GET /v1/stats exposes a typed, org-scoped bounded count continuation", asy
         timestamp: "2026-03-24T12:00:00.000Z",
         filterKey: createDashboardAuditContinuationFilterKey(query),
       },
-      workBudget: { d1Pages: 1, d1Rows: 129, partitions: 128, r2Reads: 0 },
+      workBudget: {
+        hotStorePages: 1,
+        hotStoreRows: 129,
+        archivePartitions: 128,
+        archiveReads: 0,
+      },
     };
   };
   const app = createTestApp({}, { storage });
@@ -770,10 +775,10 @@ test("GET /v1/stats exposes a typed, org-scoped bounded count continuation", asy
   assert.equal(firstBody.hasMore, true);
   assert.equal(typeof firstBody.nextCursor, "string");
   assert.deepEqual(firstBody.workBudget, {
-    d1Pages: 1,
-    d1Rows: 129,
-    partitions: 128,
-    r2Reads: 0,
+    hotStorePages: 1,
+    hotStoreRows: 129,
+    archivePartitions: 128,
+    archiveReads: 0,
   });
 
   const mismatchedRange = await app.request(
@@ -806,6 +811,48 @@ test("GET /v1/stats exposes a typed, org-scoped bounded count continuation", asy
   );
   assert.equal(secondBody.tokensIssued, 2);
   assert.equal(secondBody.partial, undefined);
+});
+
+test("GET /v1/stats fails closed instead of advertising an empty continuation", async () => {
+  const storage = createTestStorage();
+  storage.audit.getActionCounts = async (orgId) => ({
+    kind: "budget_exhausted",
+    counts: {
+      tokensIssued: 1,
+      tokensRevoked: 0,
+      tokensRefreshed: 0,
+      scopeChecks: 0,
+      scopeDenials: 0,
+    },
+    continuation: {
+      kind: "archive_partition",
+      orgId,
+      timestamp: "",
+      filterKey: "invalid-continuation",
+    },
+    workBudget: {
+      hotStorePages: 1,
+      hotStoreRows: 1,
+      archivePartitions: 1,
+      archiveReads: 1,
+    },
+  });
+  const app = createTestApp({}, { storage });
+  const response = await app.request(
+    createTestRequest("GET", "/v1/stats", undefined, {
+      Authorization: `Bearer ${generateTestToken({
+        org: "org_invalid_continuation",
+        scopes: ["relayauth:stats:read"],
+      })}`,
+    }),
+    undefined,
+    app.bindings,
+  );
+  const body = await assertJsonResponse<{ error: string }>(response, 500);
+
+  assert.equal(body.error, "invalid audit continuation");
+  assert.equal("hasMore" in body, false);
+  assert.equal("nextCursor" in body, false);
 });
 
 test("GET /v1/stats returns 401 without valid auth token", async () => {

@@ -69,11 +69,15 @@ auditExport.post("/export", requireScope("relayauth:audit:read"), async (c) => {
     .get("storage")
     .audit.query(parsed.value, { includeOverflowRow: false });
   if (result.kind === "budget_exhausted") {
+    const nextCursor = encodeAuditCursor(result.continuation);
+    if (!nextCursor) {
+      return c.json({ error: "invalid audit continuation" }, 500);
+    }
     return c.json(
       {
         error: "audit_archive_query_budget_exceeded",
         entries: result.entries,
-        nextCursor: encodeAuditCursor(result.continuation),
+        nextCursor,
         partial: true,
         workBudget: result.workBudget,
       },

@@ -17,10 +17,10 @@ type AuditQueryResponse = {
   hasMore?: boolean;
   partial?: boolean;
   workBudget?: {
-    d1Pages: number;
-    d1Rows: number;
-    partitions: number;
-    r2Reads: number;
+    hotStorePages: number;
+    hotStoreRows: number;
+    archivePartitions: number;
+    archiveReads: number;
   };
 };
 
@@ -438,6 +438,7 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
   ];
   storage.audit.query = async (query) => {
     assert.equal(query.orgId, "org_archive");
+    assert.equal(query.identityId, "agent_archive_雪");
     if (query.cursor?.kind === "archive_partition") {
       assert.equal(query.cursor.timestamp, "2026-03-24T12:00:02.000Z");
       assert.equal(query.cursor.inclusive, true);
@@ -449,7 +450,7 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
     }
     return {
       kind: "budget_exhausted",
-      entries: entries.slice(0, 2),
+      entries,
       continuation: {
         kind: "archive_partition",
         orgId: "org_archive",
@@ -461,7 +462,12 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
         },
         filterKey: createAuditQueryContinuationFilterKey(query),
       },
-      workBudget: { d1Pages: 4, d1Rows: 129, partitions: 128, r2Reads: 128 },
+      workBudget: {
+        hotStorePages: 4,
+        hotStoreRows: 129,
+        archivePartitions: 128,
+        archiveReads: 128,
+      },
     };
   };
   const app = createTestApp({}, { storage });
@@ -473,7 +479,7 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
   const first = await app.request(
     createTestRequest(
       "GET",
-      "/v1/audit?orgId=org_archive&identityId=agent_archive&action=token.validated&workspaceId=workspace_archive&plane=relayauth&result=allowed&from=2026-03-24T12%3A00%3A00.000Z&to=2026-03-24T13%3A00%3A00.000Z&limit=3",
+      "/v1/audit?orgId=org_archive&identityId=agent_archive_%E9%9B%AA&action=token.validated&workspaceId=workspace_archive&plane=relayauth&result=allowed&from=2026-03-24T12%3A00%3A00.000Z&to=2026-03-24T13%3A00%3A00.000Z&limit=2",
       undefined,
       { Authorization: token },
     ),
@@ -484,11 +490,16 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
   assert.equal(firstPage.partial, true);
   assert.equal(firstPage.hasMore, true);
   assert.equal(typeof firstPage.nextCursor, "string");
+  assert.deepEqual(
+    firstPage.entries.map((entry) => entry.id),
+    ["aud_archive_003", "aud_archive_002"],
+    "the overflow row must be held for the resumed page",
+  );
   assert.deepEqual(firstPage.workBudget, {
-    d1Pages: 4,
-    d1Rows: 129,
-    partitions: 128,
-    r2Reads: 128,
+    hotStorePages: 4,
+    hotStoreRows: 129,
+    archivePartitions: 128,
+    archiveReads: 128,
   });
 
   const crossOrg = await app.request(
@@ -513,7 +524,7 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
   const mismatchedFilter = await app.request(
     createTestRequest(
       "GET",
-      `/v1/audit?orgId=org_archive&identityId=agent_other&action=token.validated&workspaceId=workspace_archive&plane=relayauth&result=allowed&from=2026-03-24T12%3A00%3A00.000Z&to=2026-03-24T13%3A00%3A00.000Z&limit=3&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      `/v1/audit?orgId=org_archive&identityId=agent_other&action=token.validated&workspaceId=workspace_archive&plane=relayauth&result=allowed&from=2026-03-24T12%3A00%3A00.000Z&to=2026-03-24T13%3A00%3A00.000Z&limit=2&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
       undefined,
       { Authorization: token },
     ),
@@ -527,7 +538,7 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
   const second = await app.request(
     createTestRequest(
       "GET",
-      `/v1/audit?orgId=org_archive&identityId=agent_archive&action=token.validated&workspaceId=workspace_archive&plane=relayauth&result=allowed&from=2026-03-24T12%3A00%3A00.000Z&to=2026-03-24T13%3A00%3A00.000Z&limit=3&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      `/v1/audit?orgId=org_archive&identityId=agent_archive_%E9%9B%AA&action=token.validated&workspaceId=workspace_archive&plane=relayauth&result=allowed&from=2026-03-24T12%3A00%3A00.000Z&to=2026-03-24T13%3A00%3A00.000Z&limit=2&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
       undefined,
       { Authorization: token },
     ),
@@ -571,6 +582,29 @@ test("GET /v1/audit returns 400 for invalid action", async () => {
 test("GET /v1/audit returns 400 for invalid cursor", async () => {
   const response = await queryAudit(
     createAuditSearch({ orgId: "org_test", cursor: "not-valid-base64-cursor" }),
+    {
+      claims: { org: "org_test", scopes: ["relayauth:audit:read"] },
+    },
+  );
+  const body = (await response.json()) as { error: string };
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error, "invalid cursor");
+});
+
+test("GET /v1/audit returns 400 for an ISO-shaped impossible cursor timestamp", async () => {
+  const impossibleCursor = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      kind: "archive_partition",
+      orgId: "org_test",
+      timestamp: "2026-99-99T99:99:99Z",
+      filterKey: "irrelevant-invalid-cursor-filter",
+    }),
+    "utf8",
+  ).toString("base64url");
+  const response = await queryAudit(
+    createAuditSearch({ orgId: "org_test", cursor: impossibleCursor }),
     {
       claims: { org: "org_test", scopes: ["relayauth:audit:read"] },
     },

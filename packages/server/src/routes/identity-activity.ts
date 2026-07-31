@@ -85,10 +85,14 @@ identityActivity.get(
 
     const result = await storage.audit.query(parsed.value);
     if (result.kind === "budget_exhausted") {
+      const nextCursor = encodeAuditCursor(result.continuation);
+      if (!nextCursor) {
+        return c.json({ error: "invalid audit continuation" }, 500);
+      }
       return c.json(
         {
-          entries: result.entries,
-          nextCursor: encodeAuditCursor(result.continuation),
+          entries: result.entries.slice(0, parsed.value.limit),
+          nextCursor,
           hasMore: true,
           partial: true,
           workBudget: result.workBudget,

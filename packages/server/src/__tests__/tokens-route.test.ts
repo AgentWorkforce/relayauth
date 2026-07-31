@@ -1802,6 +1802,86 @@ test("POST /v1/tokens/refresh", async (t) => {
   );
 
   await t.test(
+    "treats a concurrent refresh rotation loser as reuse and leaves no active session",
+    async () => {
+      const { app, identity } = await createHarness();
+      const { pair, accessClaims, refreshClaims } =
+        createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [
+        accessClaims.jti,
+        refreshClaims.jti,
+      ]);
+      await app.storage.DB.prepare(
+        "UPDATE tokens SET session_id = ? WHERE identity_id = ?",
+      )
+        .bind(refreshClaims.sid, identity.id)
+        .run();
+
+      const rotate = app.storage.tokens.rotateIssuedPairWithAudit.bind(
+        app.storage.tokens,
+      );
+      let waitingRotations = 0;
+      let releaseRotations!: () => void;
+      const bothAtRotation = new Promise<void>((resolve) => {
+        releaseRotations = resolve;
+      });
+      app.storage.tokens.rotateIssuedPairWithAudit = async (input) => {
+        waitingRotations += 1;
+        if (waitingRotations === 2) {
+          releaseRotations();
+        }
+        await bothAtRotation;
+        await rotate(input);
+      };
+
+      const responses = await Promise.all([
+        requestRoute(app, "POST", "/v1/tokens/refresh", {
+          body: { refreshToken: pair.refreshToken },
+        }),
+        requestRoute(app, "POST", "/v1/tokens/refresh", {
+          body: { refreshToken: pair.refreshToken },
+        }),
+      ]);
+      assert.equal(waitingRotations, 2);
+
+      const successful = responses.find((response) => response.status === 200);
+      const rejected = responses.find((response) => response.status === 401);
+      assert.ok(successful, "one concurrent refresh must win the rotation");
+      assert.ok(rejected, "the losing refresh must enter the reuse cascade");
+      assert.deepEqual(await rejected.json(), {
+        error: "Refresh token has been revoked",
+      });
+
+      const winningPair = (await successful.json()) as TokenPair;
+      const winningAccess = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        winningPair.accessToken,
+        1,
+      );
+      const winningRefresh = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        winningPair.refreshToken,
+        1,
+      );
+      assert.deepEqual(
+        await app.storage.tokens.listActiveBySessionId(refreshClaims.sid!),
+        [],
+        "the reuse cascade must revoke every token in the raced session",
+      );
+      for (const tokenId of [
+        accessClaims.jti,
+        refreshClaims.jti,
+        winningAccess.jti,
+        winningRefresh.jti,
+      ]) {
+        assert.equal(
+          (await app.storage.tokens.getById(tokenId))?.status,
+          "revoked",
+          `${tokenId} must not remain active after concurrent reuse`,
+        );
+      }
+    },
+  );
+
+  await t.test(
     "rolls back the new pair and leaves the old JTI active when rotation audit fails",
     async () => {
       const { app, identity } = await createHarness();

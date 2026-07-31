@@ -103,10 +103,10 @@ export type AuditArchivePartitionCursor = {
 export type AuditQueryCursor = AuditEntryCursor | AuditArchivePartitionCursor;
 
 export type AuditQueryWorkBudget = {
-  d1Pages: number;
-  d1Rows: number;
-  partitions: number;
-  r2Reads: number;
+  hotStorePages: number;
+  hotStoreRows: number;
+  archivePartitions: number;
+  archiveReads: number;
 };
 
 export type AuditQueryInput = {

@@ -193,7 +193,12 @@ test("queryAudit sends audit filters as query params and maps nextCursor to curs
 
 test("queryAudit preserves a typed archive work-budget continuation", async (t) => {
   const client = createClient();
-  const workBudget = { d1Pages: 4, d1Rows: 129, partitions: 128, r2Reads: 128 };
+  const workBudget = {
+    hotStorePages: 4,
+    hotStoreRows: 129,
+    archivePartitions: 128,
+    archiveReads: 128,
+  };
   const fetchMock = mockFetch(() =>
     jsonResponse({
       entries: auditEntries.slice(0, 1),

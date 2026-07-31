@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AuditAction, AuditEntry, RelayAuthTokenClaims } from "@relayauth/types";
 import type { StoredIdentity } from "../storage/identity-types.js";
+import { createAuditQueryContinuationFilterKey } from "../storage/interface.js";
 import {
   assertJsonResponse,
   createTestApp,
   createTestRequest,
+  createTestStorage,
   generateTestIdentity,
   generateTestToken,
   seedAuditEntries,
@@ -31,6 +33,13 @@ type IdentityActivityResponse = {
   entries: ActivityEntry[];
   nextCursor: string | null;
   hasMore: boolean;
+  partial?: boolean;
+  workBudget?: {
+    hotStorePages: number;
+    hotStoreRows: number;
+    archivePartitions: number;
+    archiveReads: number;
+  };
   sponsorChain: string[];
   budgetUsage: IdentityActivityBudgetUsage;
   subAgents: IdentityActivitySubAgent[];
@@ -820,6 +829,107 @@ test("GET /v1/identities/:id/activity supports cursor-based pagination", async (
   assert.deepEqual(secondPage.entries.map((entry) => entry.id), ["aud_page_002", "aud_page_001"]);
   assert.equal(secondPage.nextCursor, null);
   assert.equal(secondPage.hasMore, false);
+});
+
+test("GET /v1/identities/:id/activity trims a budget overflow row and resumes without duplication", async () => {
+  const identity = createStoredIdentity({
+    id: "agent_activity_archive",
+    orgId: "org_activity_archive",
+  });
+  const entries = [
+    createAuditEntry(3, {
+      id: "aud_activity_archive_003",
+      identityId: identity.id,
+      orgId: identity.orgId,
+      timestamp: "2026-03-24T12:00:03.000Z",
+    }),
+    createAuditEntry(2, {
+      id: "aud_activity_archive_002",
+      identityId: identity.id,
+      orgId: identity.orgId,
+      timestamp: "2026-03-24T12:00:02.000Z",
+    }),
+    createAuditEntry(1, {
+      id: "aud_activity_archive_001",
+      identityId: identity.id,
+      orgId: identity.orgId,
+      timestamp: "2026-03-24T12:00:01.000Z",
+    }),
+  ];
+  const storage = createTestStorage();
+  await storage.identities.create(identity);
+  storage.audit.query = async (query) => {
+    if (query.cursor?.kind === "archive_partition") {
+      return { kind: "complete", entries: [entries[2]!] };
+    }
+    return {
+      kind: "budget_exhausted",
+      entries,
+      continuation: {
+        kind: "archive_partition",
+        orgId: identity.orgId,
+        timestamp: entries[2]!.timestamp,
+        inclusive: true,
+        filterKey: createAuditQueryContinuationFilterKey(query),
+      },
+      workBudget: {
+        hotStorePages: 1,
+        hotStoreRows: 3,
+        archivePartitions: 1,
+        archiveReads: 1,
+      },
+    };
+  };
+  const app = createTestApp({}, { storage });
+  const authorization = `Bearer ${generateTestToken({
+    org: identity.orgId,
+    scopes: ["relayauth:audit:read"],
+  })}`;
+
+  const firstResponse = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/identities/${identity.id}/activity?limit=2`,
+      undefined,
+      { Authorization: authorization },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const firstPage = await assertJsonResponse<IdentityActivityResponse>(
+    firstResponse,
+    200,
+  );
+  assert.deepEqual(
+    firstPage.entries.map((entry) => entry.id),
+    ["aud_activity_archive_003", "aud_activity_archive_002"],
+  );
+  assert.equal(firstPage.partial, true);
+  assert.equal(firstPage.hasMore, true);
+  assert.equal(typeof firstPage.nextCursor, "string");
+
+  const secondResponse = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/identities/${identity.id}/activity?limit=2&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      undefined,
+      { Authorization: authorization },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const secondPage = await assertJsonResponse<IdentityActivityResponse>(
+    secondResponse,
+    200,
+  );
+  const received = [...firstPage.entries, ...secondPage.entries].map(
+    (entry) => entry.id,
+  );
+  assert.deepEqual(
+    received,
+    entries.map((entry) => entry.id),
+  );
+  assert.equal(new Set(received).size, received.length);
 });
 
 test("GET /v1/identities/:id/activity returns 404 when the identity does not exist", async () => {

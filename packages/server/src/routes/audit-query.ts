@@ -90,10 +90,14 @@ auditQuery.get("/", requireScope("relayauth:audit:read"), async (c) => {
 
   const result = await c.get("storage").audit.query(parsed.value);
   if (result.kind === "budget_exhausted") {
+    const nextCursor = encodeAuditCursor(result.continuation);
+    if (!nextCursor) {
+      return c.json({ error: "invalid audit continuation" }, 500);
+    }
     return c.json(
       {
-        entries: result.entries,
-        nextCursor: encodeAuditCursor(result.continuation),
+        entries: result.entries.slice(0, parsed.value.limit),
+        nextCursor,
         hasMore: true,
         partial: true,
         workBudget: result.workBudget,
@@ -111,6 +115,9 @@ auditQuery.get("/", requireScope("relayauth:audit:read"), async (c) => {
         id: page[page.length - 1]?.id ?? "",
       })
     : null;
+  if (hasMore && !nextCursor) {
+    return c.json({ error: "invalid audit continuation" }, 500);
+  }
 
   return c.json(
     {
@@ -356,19 +363,69 @@ function parseLimit(
 }
 
 function isIsoTimestamp(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
-    value,
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
+      value,
+    );
+  if (!match) {
+    return false;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = match[7] === undefined ? 0 : Number(match[7]);
+  const offsetMinute = match[8] === undefined ? 0 : Number(match[8]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= (daysInMonth[month - 1] ?? 0) &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    offsetHour <= 23 &&
+    offsetMinute <= 59 &&
+    Number.isFinite(Date.parse(value))
   );
 }
 
 export function encodeAuditCursor(
   cursor: AuditQueryCursor | undefined,
 ): string | null {
-  if (!cursor?.timestamp) {
+  if (!cursor?.timestamp || !isIsoTimestamp(cursor.timestamp)) {
     return null;
   }
 
   if (cursor.kind === "archive_partition") {
+    if (
+      cursor.orgId.trim().length === 0 ||
+      cursor.filterKey.length === 0 ||
+      (cursor.entryCursor !== undefined &&
+        (!isIsoTimestamp(cursor.entryCursor.timestamp) ||
+          cursor.entryCursor.id.trim().length === 0))
+    ) {
+      return null;
+    }
     return toBase64Url(
       JSON.stringify({
         version: 1,
@@ -487,7 +544,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function toBase64Url(value: string): string {
-  return btoa(value)
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary)
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
@@ -499,7 +561,9 @@ function fromBase64Url(value: string): string {
     normalized.length + ((4 - (normalized.length % 4)) % 4),
     "=",
   );
-  return atob(padded);
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
 export default auditQuery;

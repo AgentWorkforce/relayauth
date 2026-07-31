@@ -27,10 +27,10 @@ type DashboardStatsResponse = {
   nextCursor?: string;
   hasMore?: true;
   workBudget?: {
-    d1Pages: number;
-    d1Rows: number;
-    partitions: number;
-    r2Reads: number;
+    hotStorePages: number;
+    hotStoreRows: number;
+    archivePartitions: number;
+    archiveReads: number;
   };
 };
 
@@ -108,6 +108,13 @@ dashboardStats.get("/", async (c) => {
   ]);
 
   const auditCounts = auditResult.counts;
+  const nextCursor =
+    auditResult.kind === "budget_exhausted"
+      ? encodeAuditCursor(auditResult.continuation)
+      : null;
+  if (auditResult.kind === "budget_exhausted" && !nextCursor) {
+    return c.json({ error: "invalid audit continuation" }, 500);
+  }
   const response: DashboardStatsResponse = {
     tokensIssued: auditCounts.tokensIssued,
     tokensRevoked: auditCounts.tokensRevoked,
@@ -130,7 +137,7 @@ dashboardStats.get("/", async (c) => {
     ...(auditResult.kind === "budget_exhausted"
       ? {
           partial: true as const,
-          nextCursor: encodeAuditCursor(auditResult.continuation) ?? "",
+          nextCursor: nextCursor!,
           hasMore: true as const,
         }
       : {}),

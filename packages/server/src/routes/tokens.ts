@@ -27,10 +27,11 @@ import { signToken } from "../lib/sign.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { StoredApiKey } from "../storage/api-key-types.js";
-import type {
-  AuditLogWriteEntry,
-  AuthStorage,
-  StoredTokenRecord,
+import {
+  isStorageError,
+  type AuditLogWriteEntry,
+  type AuthStorage,
+  type StoredTokenRecord,
 } from "../storage/index.js";
 
 type IssueTokenRequest = {
@@ -727,38 +728,49 @@ tokens.post("/refresh", async (c) => {
     );
   }
 
-  const tokenPair = await issueTokenPair(storage, c.env, identity, {
-    deferTask: c.get("deferTask"),
-    accessScopes: isDerivedClaims(verification.claims)
-      ? parseMetaStringArray(
-          verification.claims.meta?.accessScopes,
-          identity.scopes,
-        )
-      : normalizeScopes(undefined, identity.scopes),
-    accessAudience: isDerivedClaims(verification.claims)
-      ? parseMetaStringArray(
-          verification.claims.meta?.accessAudience,
-          normalizeAudience(undefined, identity.scopes),
-        )
-      : normalizeAudience(undefined, identity.scopes),
-    accessExpiresIn: isDerivedClaims(verification.claims)
-      ? MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS
-      : DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
-    refreshTokenTtlSeconds: parseMetaRefreshTokenTtl(verification.claims.meta),
-    sessionId: presentedSid,
-    action: "token.refreshed",
-    parentTokenId: normalizeOptionalString(verification.claims.parentTokenId),
-    meta: verification.claims.meta,
-    expiresNotAfter: delegationHorizon.epochSeconds,
-    wrapAccessToken: isDerivedClaims(verification.claims),
-    wrapRefreshToken: isDerivedClaims(verification.claims),
-    tokenIdPrefix: tokenPrefixForClaims(verification.claims),
-    previousRefreshToken: {
-      id: presentedJti,
-      identityId: identity.id,
-      expiresAt: verification.claims.exp,
-    },
-  });
+  let tokenPair: TokenPair;
+  try {
+    tokenPair = await issueTokenPair(storage, c.env, identity, {
+      deferTask: c.get("deferTask"),
+      accessScopes: isDerivedClaims(verification.claims)
+        ? parseMetaStringArray(
+            verification.claims.meta?.accessScopes,
+            identity.scopes,
+          )
+        : normalizeScopes(undefined, identity.scopes),
+      accessAudience: isDerivedClaims(verification.claims)
+        ? parseMetaStringArray(
+            verification.claims.meta?.accessAudience,
+            normalizeAudience(undefined, identity.scopes),
+          )
+        : normalizeAudience(undefined, identity.scopes),
+      accessExpiresIn: isDerivedClaims(verification.claims)
+        ? MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS
+        : DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+      refreshTokenTtlSeconds: parseMetaRefreshTokenTtl(
+        verification.claims.meta,
+      ),
+      sessionId: presentedSid,
+      action: "token.refreshed",
+      parentTokenId: normalizeOptionalString(verification.claims.parentTokenId),
+      meta: verification.claims.meta,
+      expiresNotAfter: delegationHorizon.epochSeconds,
+      wrapAccessToken: isDerivedClaims(verification.claims),
+      wrapRefreshToken: isDerivedClaims(verification.claims),
+      tokenIdPrefix: tokenPrefixForClaims(verification.claims),
+      previousRefreshToken: {
+        id: presentedJti,
+        identityId: identity.id,
+        expiresAt: verification.claims.exp,
+      },
+    });
+  } catch (error) {
+    if (isStorageError(error) && error.code === "refresh_token_not_active") {
+      await cascadeRevokeSession(storage, identity, presentedSid, presentedJti);
+      return c.json({ error: "Refresh token has been revoked" }, 401);
+    }
+    throw error;
+  }
 
   await populateRevocationCache(
     storage,
