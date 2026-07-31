@@ -6,6 +6,7 @@ import {
   createAuditQueryContinuationFilterKey,
   isValidAuditTimestamp,
   normalizeAuditArchiveCursorBoundaries,
+  normalizeAuditQueryCursor,
   type AuditQueryCursor,
 } from "../storage/interface.js";
 import { requireScope } from "../middleware/scope.js";
@@ -370,35 +371,37 @@ export function encodeAuditCursor(
     return null;
   }
 
-  if (cursor.kind === "archive_partition") {
+  let normalizedCursor: AuditQueryCursor;
+  try {
+    normalizedCursor = normalizeAuditQueryCursor(cursor);
+  } catch {
+    return null;
+  }
+
+  if (normalizedCursor.kind === "archive_partition") {
     if (
-      cursor.orgId.trim().length === 0 ||
-      cursor.filterKey.length === 0 ||
-      (cursor.entryCursor !== undefined &&
-        (!isIsoTimestamp(cursor.entryCursor.timestamp) ||
-          cursor.entryCursor.id.trim().length === 0))
+      normalizedCursor.orgId.trim().length === 0 ||
+      normalizedCursor.filterKey.length === 0
     ) {
       return null;
     }
     return toBase64Url(
       JSON.stringify({
         version: 1,
-        kind: cursor.kind,
-        orgId: cursor.orgId,
-        timestamp: cursor.timestamp,
-        inclusive: cursor.inclusive === true,
-        ...(cursor.chunk ? { chunk: cursor.chunk } : {}),
-        ...(cursor.entryCursor ? { entryCursor: cursor.entryCursor } : {}),
-        filterKey: cursor.filterKey,
+        kind: normalizedCursor.kind,
+        orgId: normalizedCursor.orgId,
+        timestamp: normalizedCursor.timestamp,
+        inclusive: normalizedCursor.inclusive === true,
+        ...(normalizedCursor.chunk ? { chunk: normalizedCursor.chunk } : {}),
+        ...(normalizedCursor.entryCursor
+          ? { entryCursor: normalizedCursor.entryCursor }
+          : {}),
+        filterKey: normalizedCursor.filterKey,
       }),
     );
   }
 
-  if (!cursor.id) {
-    return null;
-  }
-
-  return toBase64Url(`${cursor.timestamp}|${cursor.id}`);
+  return toBase64Url(`${normalizedCursor.timestamp}|${normalizedCursor.id}`);
 }
 
 export function decodeAuditCursor(value: string): AuditQueryCursor | null {
@@ -419,7 +422,7 @@ export function decodeAuditCursor(value: string): AuditQueryCursor | null {
       return null;
     }
 
-    return { kind: "entry", timestamp, id };
+    return normalizeAuditQueryCursor({ kind: "entry", timestamp, id });
   } catch {
     return null;
   }
@@ -464,7 +467,7 @@ function parseArchiveCursor(
           entryCursor.id.length > 0)) &&
       typeof filterKey === "string" &&
       filterKey.length > 0
-      ? {
+      ? (normalizeAuditQueryCursor({
           kind,
           orgId,
           timestamp,
@@ -486,7 +489,7 @@ function parseArchiveCursor(
               }
             : {}),
           filterKey,
-        }
+        }) as Extract<AuditQueryCursor, { kind: "archive_partition" }>)
       : null;
   } catch {
     return null;

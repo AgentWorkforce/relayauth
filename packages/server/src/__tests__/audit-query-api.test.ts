@@ -440,7 +440,7 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
     assert.equal(query.orgId, "org_archive");
     assert.equal(query.identityId, "agent_archive_雪");
     if (query.cursor?.kind === "archive_partition") {
-      assert.equal(query.cursor.timestamp, "2026-03-24T12:00:02.000Z");
+      assert.equal(query.cursor.timestamp, "2026-03-24T12:00:00.000Z");
       assert.equal(query.cursor.inclusive, true);
       assert.deepEqual(query.cursor.chunk, {
         key: "indexes/v1/org=org_archive/next.json",
@@ -454,7 +454,7 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
       continuation: {
         kind: "archive_partition",
         orgId: "org_archive",
-        timestamp: "2026-03-24T12:00:02.000Z",
+        timestamp: "2026-03-24T12:00:00.000Z",
         inclusive: true,
         chunk: {
           key: "indexes/v1/org=org_archive/next.json",
@@ -605,6 +605,29 @@ test("GET /v1/audit returns 400 for an ISO-shaped impossible cursor timestamp", 
   ).toString("base64url");
   const response = await queryAudit(
     createAuditSearch({ orgId: "org_test", cursor: impossibleCursor }),
+    {
+      claims: { org: "org_test", scopes: ["relayauth:audit:read"] },
+    },
+  );
+  const body = (await response.json()) as { error: string };
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error, "invalid cursor");
+});
+
+test("GET /v1/audit returns 400 for a non-minute archive cursor timestamp", async () => {
+  const nonMinuteCursor = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      kind: "archive_partition",
+      orgId: "org_test",
+      timestamp: "2026-03-24T13:00:59.001+01:00",
+      filterKey: "irrelevant-invalid-cursor-filter",
+    }),
+    "utf8",
+  ).toString("base64url");
+  const response = await queryAudit(
+    createAuditSearch({ orgId: "org_test", cursor: nonMinuteCursor }),
     {
       claims: { org: "org_test", scopes: ["relayauth:audit:read"] },
     },

@@ -866,7 +866,7 @@ test("GET /v1/identities/:id/activity trims a budget overflow row and resumes wi
     assert.equal(query.identityId, identity.id);
     if (query.cursor?.kind === "archive_partition") {
       assert.equal(query.cursor.orgId, identity.orgId);
-      assert.equal(query.cursor.timestamp, entries[2]!.timestamp);
+      assert.equal(query.cursor.timestamp, "2026-03-24T12:00:00.000Z");
       assert.equal(query.cursor.inclusive, true);
       assert.equal(query.cursor.filterKey, continuationFilterKey);
       return { kind: "complete", entries: [entries[2]!] };
@@ -878,7 +878,7 @@ test("GET /v1/identities/:id/activity trims a budget overflow row and resumes wi
       continuation: {
         kind: "archive_partition",
         orgId: identity.orgId,
-        timestamp: entries[2]!.timestamp,
+        timestamp: "2026-03-24T12:00:00.000Z",
         inclusive: true,
         filterKey: continuationFilterKey,
       },

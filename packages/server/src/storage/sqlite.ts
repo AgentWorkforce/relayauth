@@ -60,8 +60,8 @@ import type {
   WorkspaceContextRecord,
 } from "./interface.js";
 import {
-  getAuditArchiveCursorUpperBound,
   normalizeAuditArchiveCursorBoundaries,
+  normalizeAuditQueryCursor,
   StorageError,
 } from "./interface.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
@@ -3556,16 +3556,16 @@ function normalizeAuditWriteEntry(entry: AuditLogWriteEntry): AuditEntryRecord {
 
 function normalizeAuditQuery(query: AuditQueryInput): AuditQueryInput {
   const orgId = requireString(query.orgId, "orgId is required");
-
-  if (query.cursor?.kind === "archive_partition") {
-    // Validate before the provider is opened so invalid direct storage calls
-    // cannot reach a SQL statement or the in-memory scan.
-    getAuditArchiveCursorUpperBound(query.cursor);
-  }
+  // Validate and canonicalize before the provider is opened so both SQL and
+  // in-memory scans compare the same UTC cursor values.
+  const cursor = query.cursor
+    ? normalizeAuditQueryCursor(query.cursor)
+    : undefined;
 
   return {
     ...query,
     orgId,
+    cursor,
     limit: normalizeAuditLimit(query.limit),
   };
 }

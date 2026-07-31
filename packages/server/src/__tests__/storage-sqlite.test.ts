@@ -205,6 +205,135 @@ async function assertOffsetArchiveCursorParity(
   }
 }
 
+async function assertOffsetEntryCursorPagination(
+  storage: ReturnType<typeof createSqliteStorage>,
+) {
+  const expectedIds = [
+    "aud_after",
+    "aud_same_c",
+    "aud_same_b",
+    "aud_same_a",
+    "aud_before",
+  ];
+  for (const [id, timestamp] of [
+    ["aud_after", "2026-03-27T12:00:01.000Z"],
+    ["aud_same_c", "2026-03-27T12:00:00.000Z"],
+    ["aud_same_b", "2026-03-27T12:00:00.000Z"],
+    ["aud_same_a", "2026-03-27T12:00:00.000Z"],
+    ["aud_before", "2026-03-27T11:59:59.000Z"],
+  ]) {
+    await storage.audit.write({
+      id,
+      action: "scope.checked",
+      identityId: "agent_entry_cursor_offset",
+      orgId: "org_entry_cursor_offset",
+      result: "allowed",
+      timestamp,
+    });
+  }
+
+  const queryPage = (timestamp?: string, id?: string) =>
+    storage.audit.query(
+      {
+        orgId: "org_entry_cursor_offset",
+        limit: 2,
+        ...(timestamp && id ? { cursor: { timestamp, id } } : {}),
+      },
+      { includeOverflowRow: false },
+    );
+
+  const firstPage = await queryPage();
+  assert.deepEqual(
+    firstPage.entries.map((entry) => entry.id),
+    expectedIds.slice(0, 2),
+  );
+
+  const utcSecondPage = await queryPage(
+    "2026-03-27T12:00:00.000Z",
+    "aud_same_c",
+  );
+  const offsetSecondPage = await queryPage(
+    "2026-03-27T13:00:00.000+01:00",
+    "aud_same_c",
+  );
+  assert.deepEqual(
+    offsetSecondPage.entries.map((entry) => entry.id),
+    utcSecondPage.entries.map((entry) => entry.id),
+    "same-instant offset and UTC cursors must have identical timestamp/id tiebreaks",
+  );
+  assert.deepEqual(
+    offsetSecondPage.entries.map((entry) => entry.id),
+    expectedIds.slice(2, 4),
+  );
+
+  const thirdPage = await queryPage(
+    "2026-03-27T13:00:00.000+01:00",
+    "aud_same_a",
+  );
+  const receivedIds = [
+    ...firstPage.entries,
+    ...offsetSecondPage.entries,
+    ...thirdPage.entries,
+  ].map((entry) => entry.id);
+  assert.deepEqual(receivedIds, expectedIds);
+  assert.equal(new Set(receivedIds).size, receivedIds.length);
+}
+
+async function assertRejectsMisalignedArchiveCursors(
+  storage: ReturnType<typeof createSqliteStorage>,
+) {
+  const variants: AuditArchivePartitionCursor[] = [
+    {
+      kind: "archive_partition",
+      orgId: "org_audit_cursor",
+      timestamp: "2026-03-27T12:00:59.000Z",
+      filterKey: "storage-contract-test",
+    },
+    {
+      kind: "archive_partition",
+      orgId: "org_audit_cursor",
+      timestamp: "2026-03-27T13:00:00.001+01:00",
+      inclusive: true,
+      filterKey: "storage-contract-test",
+    },
+    {
+      kind: "archive_partition",
+      orgId: "org_audit_cursor",
+      timestamp: "2026-03-27T12:00:30.000Z",
+      inclusive: true,
+      chunk: { key: "chunk-2", sha256: "chunk-2-sha" },
+      filterKey: "storage-contract-test",
+    },
+    {
+      kind: "archive_partition",
+      orgId: "org_audit_cursor",
+      timestamp: "2026-03-27T12:00:00.250Z",
+      entryCursor: {
+        timestamp: "2026-03-27T11:59:59.999Z",
+        id: "aud_entry",
+      },
+      filterKey: "storage-contract-test",
+    },
+  ];
+
+  for (const cursor of variants) {
+    await assert.rejects(
+      () =>
+        storage.audit.query({
+          orgId: "org_audit_cursor",
+          limit: 10,
+          cursor,
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StorageError);
+        assert.equal(error.status, 400);
+        assert.equal(error.code, "invalid_input");
+        return true;
+      },
+    );
+  }
+}
+
 test("TestSqliteAuditQuery rejects impossible archive timestamps before opening storage", async (t) => {
   const { dbPath, storage } = createTempStorage(t);
 
@@ -261,6 +390,26 @@ test("TestSqliteAuditQuery normalizes offset archive cursor boundaries", async (
 test("TestSqliteAuditQuery normalizes offset archive cursor boundaries in forced memory", async (t) => {
   const storage = createForcedMemoryStorage(t);
   await assertOffsetArchiveCursorParity(storage);
+});
+
+test("TestSqliteAuditQuery normalizes ordinary offset cursors without pagination gaps", async (t) => {
+  const { storage } = createTempStorage(t);
+  await assertOffsetEntryCursorPagination(storage);
+});
+
+test("TestSqliteAuditQuery normalizes ordinary offset cursors without pagination gaps in forced memory", async (t) => {
+  const storage = createForcedMemoryStorage(t);
+  await assertOffsetEntryCursorPagination(storage);
+});
+
+test("TestSqliteAuditQuery rejects non-minute archive cursor variants", async (t) => {
+  const { storage } = createTempStorage(t);
+  await assertRejectsMisalignedArchiveCursors(storage);
+});
+
+test("TestSqliteAuditQuery rejects non-minute archive cursor variants in forced memory", async (t) => {
+  const storage = createForcedMemoryStorage(t);
+  await assertRejectsMisalignedArchiveCursors(storage);
 });
 
 test("TestSqliteIdentityCRUD", async (t) => {

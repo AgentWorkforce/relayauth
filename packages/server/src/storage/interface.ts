@@ -520,6 +520,28 @@ export function isValidAuditTimestamp(value: unknown): value is string {
   );
 }
 
+function normalizeAuditEntryCursor(cursor: AuditEntryCursor): AuditEntryCursor {
+  if (!isValidAuditTimestamp(cursor.timestamp)) {
+    throw new StorageError(
+      "audit cursor timestamp must be an ISO 8601 timestamp",
+      400,
+      "invalid_input",
+    );
+  }
+  if (typeof cursor.id !== "string" || cursor.id.trim().length === 0) {
+    throw new StorageError(
+      "audit cursor id is required",
+      400,
+      "invalid_input",
+    );
+  }
+
+  return {
+    ...cursor,
+    timestamp: new Date(Date.parse(cursor.timestamp)).toISOString(),
+  };
+}
+
 /**
  * Return the exclusive hot-store upper bound for an archive partition cursor.
  * This is deliberately part of the storage contract: direct callers bypass
@@ -542,19 +564,23 @@ export function normalizeAuditArchiveCursorBoundaries(
   }
 
   const cursorTimestamp = new Date(Date.parse(cursor.timestamp)).toISOString();
+  const cursorDate = new Date(cursorTimestamp);
+  if (
+    cursorDate.getUTCSeconds() !== 0 ||
+    cursorDate.getUTCMilliseconds() !== 0
+  ) {
+    throw new StorageError(
+      "archive cursor timestamp must be aligned to a UTC minute",
+      400,
+      "invalid_input",
+    );
+  }
   let entryCursorTimestamp: string | undefined;
 
   if (cursor.entryCursor) {
-    if (!isValidAuditTimestamp(cursor.entryCursor.timestamp)) {
-      throw new StorageError(
-        "archive entry cursor timestamp must be an ISO 8601 timestamp",
-        400,
-        "invalid_input",
-      );
-    }
-    entryCursorTimestamp = new Date(
-      Date.parse(cursor.entryCursor.timestamp),
-    ).toISOString();
+    entryCursorTimestamp = normalizeAuditEntryCursor(
+      cursor.entryCursor,
+    ).timestamp;
   }
 
   const upperBound =
@@ -566,6 +592,32 @@ export function normalizeAuditArchiveCursorBoundaries(
     cursorTimestamp,
     upperBound,
     ...(entryCursorTimestamp ? { entryCursorTimestamp } : {}),
+  };
+}
+
+/**
+ * Validate and canonicalize an audit query cursor at the shared storage/codec
+ * boundary so SQL and in-memory comparisons use the same UTC values.
+ */
+export function normalizeAuditQueryCursor(
+  cursor: AuditQueryCursor,
+): AuditQueryCursor {
+  if (cursor.kind !== "archive_partition") {
+    return normalizeAuditEntryCursor(cursor);
+  }
+
+  const boundaries = normalizeAuditArchiveCursorBoundaries(cursor);
+  return {
+    ...cursor,
+    timestamp: boundaries.cursorTimestamp,
+    ...(cursor.entryCursor
+      ? {
+          entryCursor: {
+            ...cursor.entryCursor,
+            timestamp: boundaries.entryCursorTimestamp!,
+          },
+        }
+      : {}),
   };
 }
 
