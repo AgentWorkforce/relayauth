@@ -63,6 +63,32 @@ test("audit cursor codecs trim ordinary and archive entry cursor IDs", () => {
   });
 });
 
+test("audit cursor codecs reject empty archive chunk fields and preserve valid opaque values", () => {
+  const baseCursor = {
+    kind: "archive_partition" as const,
+    orgId: "org_archive",
+    timestamp: "2026-03-24T12:00:00.000Z",
+    filterKey: "archive-filter",
+  };
+
+  for (const chunk of [
+    { key: "", sha256: "a".repeat(64) },
+    { key: "   ", sha256: "a".repeat(64) },
+    { key: "indexes/v1/org=org_archive/next.json", sha256: "" },
+    { key: "indexes/v1/org=org_archive/next.json", sha256: "\t \n" },
+  ]) {
+    assert.equal(encodeAuditCursor({ ...baseCursor, chunk }), null);
+  }
+
+  const chunk = {
+    key: " indexes/v1/org=org_archive/next.json ",
+    sha256: ` ${"a".repeat(64)} `,
+  };
+  const encoded = encodeAuditCursor({ ...baseCursor, chunk });
+  assert.ok(encoded);
+  assert.deepEqual(decodeAuditCursor(encoded), { ...baseCursor, chunk });
+});
+
 function createAuditEntry(
   index: number,
   overrides: Partial<AuditEntry & { createdAt?: string }> = {},
@@ -620,6 +646,50 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
     entries.map((entry) => entry.id),
   );
   assert.equal(new Set(received).size, received.length);
+});
+
+test("GET /v1/audit fails closed for a malformed archive budget continuation", async () => {
+  const storage = createTestStorage();
+  storage.audit.query = async (query) => ({
+    kind: "budget_exhausted",
+    entries: [],
+    continuation: {
+      kind: "archive_partition",
+      orgId: query.orgId,
+      timestamp: "2026-03-24T12:00:00.000Z",
+      chunk: {
+        key: "   ",
+        sha256: "a".repeat(64),
+      },
+      filterKey: createAuditQueryContinuationFilterKey(query),
+    },
+    workBudget: {
+      hotStorePages: 4,
+      hotStoreRows: 128,
+      archivePartitions: 128,
+      archiveReads: 128,
+    },
+  });
+  const app = createTestApp({}, { storage });
+  const response = await app.request(
+    createTestRequest("GET", "/v1/audit?orgId=org_malformed", undefined, {
+      Authorization: `Bearer ${generateTestToken({
+        org: "org_malformed",
+        scopes: ["relayauth:audit:read"],
+      })}`,
+    }),
+    undefined,
+    app.bindings,
+  );
+  await assertJsonResponse<{
+    error: string;
+    hasMore?: boolean;
+    nextCursor?: string | null;
+  }>(response, 500, (body) => {
+    assert.equal(body.error, "invalid audit continuation");
+    assert.equal("hasMore" in body, false);
+    assert.equal("nextCursor" in body, false);
+  });
 });
 
 test("GET /v1/audit returns 400 when orgId is missing", async () => {

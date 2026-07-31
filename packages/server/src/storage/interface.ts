@@ -630,6 +630,17 @@ export function normalizeAuditQueryCursor(
   }
 
   const boundaries = normalizeAuditArchiveCursorBoundaries(cursor);
+  if (
+    cursor.chunk &&
+    (cursor.chunk.key.trim().length === 0 ||
+      cursor.chunk.sha256.trim().length === 0)
+  ) {
+    throw new StorageError(
+      "archive cursor chunk key and sha256 must be non-empty",
+      400,
+      "invalid_input",
+    );
+  }
   return {
     ...cursor,
     timestamp: boundaries.cursorTimestamp,
