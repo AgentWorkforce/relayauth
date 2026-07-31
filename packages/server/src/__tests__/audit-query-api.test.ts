@@ -3,6 +3,10 @@ import test from "node:test";
 import type { AuditAction, AuditEntry } from "@relayauth/types";
 import { createAuditQueryContinuationFilterKey } from "../storage/interface.js";
 import {
+  decodeAuditCursor,
+  encodeAuditCursor,
+} from "../routes/audit-query.js";
+import {
   assertJsonResponse,
   createTestApp,
   createTestRequest,
@@ -23,6 +27,41 @@ type AuditQueryResponse = {
     archiveReads: number;
   };
 };
+
+test("audit cursor codecs trim ordinary and archive entry cursor IDs", () => {
+  const ordinary = encodeAuditCursor({
+    timestamp: "2026-03-24T12:00:00.000Z",
+    id: "  aud_same_b  ",
+  });
+  assert.ok(ordinary);
+  assert.deepEqual(decodeAuditCursor(ordinary), {
+    kind: "entry",
+    timestamp: "2026-03-24T12:00:00.000Z",
+    id: "aud_same_b",
+  });
+
+  const archive = encodeAuditCursor({
+    kind: "archive_partition",
+    orgId: "org_archive",
+    timestamp: "2026-03-24T12:00:00.000Z",
+    entryCursor: {
+      timestamp: "2026-03-24T11:59:59.000Z",
+      id: "  aud_same_a  ",
+    },
+    filterKey: "archive-filter",
+  });
+  assert.ok(archive);
+  assert.deepEqual(decodeAuditCursor(archive), {
+    kind: "archive_partition",
+    orgId: "org_archive",
+    timestamp: "2026-03-24T12:00:00.000Z",
+    entryCursor: {
+      timestamp: "2026-03-24T11:59:59.000Z",
+      id: "aud_same_a",
+    },
+    filterKey: "archive-filter",
+  });
+});
 
 function createAuditEntry(
   index: number,

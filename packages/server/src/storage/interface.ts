@@ -560,6 +560,7 @@ function normalizeAuditEntryCursor(cursor: AuditEntryCursor): AuditEntryCursor {
 
   return {
     ...cursor,
+    id: cursor.id.trim(),
     timestamp: new Date(Date.parse(cursor.timestamp)).toISOString(),
   };
 }
@@ -636,6 +637,7 @@ export function normalizeAuditQueryCursor(
       ? {
           entryCursor: {
             ...cursor.entryCursor,
+            id: cursor.entryCursor.id.trim(),
             timestamp: boundaries.entryCursorTimestamp!,
           },
         }

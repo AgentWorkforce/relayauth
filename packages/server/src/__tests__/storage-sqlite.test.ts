@@ -150,7 +150,7 @@ async function assertOffsetArchiveCursorParity(
         timestamp: "2026-03-27T14:00:00.000+01:00",
         entryCursor: {
           timestamp: "2026-03-27T13:00:00.000+01:00",
-          id: "aud_same_b",
+          id: "  aud_same_b  ",
         },
       },
       expectedIds: ["aud_same_a", "aud_before_partition"],
@@ -256,7 +256,7 @@ async function assertOffsetEntryCursorPagination(
   );
   const offsetSecondPage = await queryPage(
     "2026-03-27T13:00:00.000+01:00",
-    "aud_same_c",
+    "  aud_same_c  ",
   );
   assert.deepEqual(
     offsetSecondPage.entries.map((entry) => entry.id),
