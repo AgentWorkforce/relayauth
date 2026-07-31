@@ -4,6 +4,7 @@ import type { AppEnv } from "../env.js";
 import { requireScope } from "../middleware/scope.js";
 import {
   buildAuditQuery,
+  encodeAuditCursor,
   parseAuditQuery,
   toAuditEntry,
   type AuditLogRow,
@@ -64,7 +65,26 @@ auditExport.post("/export", requireScope("relayauth:audit:read"), async (c) => {
     return c.json({ error: parsed.error }, 400);
   }
 
-  const entries = await c.get("storage").audit.query(parsed.value, { includeOverflowRow: false });
+  const result = await c
+    .get("storage")
+    .audit.query(parsed.value, { includeOverflowRow: false });
+  if (result.kind === "budget_exhausted") {
+    const nextCursor = encodeAuditCursor(result.continuation);
+    if (!nextCursor) {
+      return c.json({ error: "invalid audit continuation" }, 500);
+    }
+    return c.json(
+      {
+        error: "audit_archive_query_budget_exceeded",
+        entries: result.entries,
+        nextCursor,
+        partial: true,
+        workBudget: result.workBudget,
+      },
+      409,
+    );
+  }
+  const entries = result.entries;
 
   if (body.format === "json") {
     return c.json(entries, 200);
@@ -114,7 +134,7 @@ function escapeCsvValue(value: string): string {
     return sanitized;
   }
 
-  return `"${sanitized.replace(/"/g, "\"\"")}"`;
+  return `"${sanitized.replace(/"/g, '""')}"`;
 }
 
 export default auditExport;

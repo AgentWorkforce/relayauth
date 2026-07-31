@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AuditAction, AuditEntry, RelayAuthTokenClaims } from "@relayauth/types";
 import type { StoredIdentity } from "../storage/identity-types.js";
+import { createAuditQueryContinuationFilterKey } from "../storage/interface.js";
 import {
   assertJsonResponse,
   createTestApp,
   createTestRequest,
+  createTestStorage,
   generateTestIdentity,
   generateTestToken,
   seedAuditEntries,
@@ -31,6 +33,13 @@ type IdentityActivityResponse = {
   entries: ActivityEntry[];
   nextCursor: string | null;
   hasMore: boolean;
+  partial?: boolean;
+  workBudget?: {
+    hotStorePages: number;
+    hotStoreRows: number;
+    archivePartitions: number;
+    archiveReads: number;
+  };
   sponsorChain: string[];
   budgetUsage: IdentityActivityBudgetUsage;
   subAgents: IdentityActivitySubAgent[];
@@ -820,6 +829,294 @@ test("GET /v1/identities/:id/activity supports cursor-based pagination", async (
   assert.deepEqual(secondPage.entries.map((entry) => entry.id), ["aud_page_002", "aud_page_001"]);
   assert.equal(secondPage.nextCursor, null);
   assert.equal(secondPage.hasMore, false);
+});
+
+test("GET /v1/identities/:id/activity round-trips a UTF-8 ordinary cursor", async () => {
+  const identity = createStoredIdentity({
+    id: "agent_activity_utf8_cursor",
+    orgId: "org_activity_utf8_cursor",
+  });
+  const entries = [
+    createAuditEntry(1, {
+      id: "aud_utf8_cursor_003",
+      orgId: identity.orgId,
+      identityId: identity.id,
+      timestamp: "2026-03-24T12:00:03.000Z",
+    }),
+    createAuditEntry(2, {
+      id: "aud_utf8_cursor_雪",
+      orgId: identity.orgId,
+      identityId: identity.id,
+      timestamp: "2026-03-24T12:00:02.000Z",
+    }),
+    createAuditEntry(3, {
+      id: "aud_utf8_cursor_001",
+      orgId: identity.orgId,
+      identityId: identity.id,
+      timestamp: "2026-03-24T12:00:01.000Z",
+    }),
+  ];
+
+  const firstResponse = await getIdentityActivity(
+    identity.id,
+    createActivitySearch({ limit: 2 }),
+    {
+      claims: {
+        org: identity.orgId,
+        scopes: ["relayauth:audit:read"],
+      },
+      entries,
+      identities: [identity],
+    },
+  );
+  const firstPage = await assertJsonResponse<IdentityActivityResponse>(
+    firstResponse,
+    200,
+  );
+  assert.deepEqual(
+    firstPage.entries.map((entry) => entry.id),
+    ["aud_utf8_cursor_003", "aud_utf8_cursor_雪"],
+  );
+  assert.equal(firstPage.hasMore, true);
+  assert.equal(
+    firstPage.nextCursor,
+    encodeCursor("2026-03-24T12:00:02.000Z", "aud_utf8_cursor_雪"),
+  );
+
+  const secondResponse = await getIdentityActivity(
+    identity.id,
+    createActivitySearch({
+      limit: 2,
+      cursor: firstPage.nextCursor ?? undefined,
+    }),
+    {
+      claims: {
+        org: identity.orgId,
+        scopes: ["relayauth:audit:read"],
+      },
+      entries,
+      identities: [identity],
+    },
+  );
+  const secondPage = await assertJsonResponse<IdentityActivityResponse>(
+    secondResponse,
+    200,
+  );
+  assert.deepEqual(
+    secondPage.entries.map((entry) => entry.id),
+    ["aud_utf8_cursor_001"],
+  );
+  assert.equal(secondPage.hasMore, false);
+  assert.equal(secondPage.nextCursor, null);
+});
+
+test("GET /v1/identities/:id/activity fails closed for an unencodable ordinary cursor", async () => {
+  const identity = createStoredIdentity({
+    id: "agent_activity_invalid_cursor",
+    orgId: "org_activity_invalid_cursor",
+  });
+  const storage = createTestStorage();
+  await storage.identities.create(identity);
+  storage.audit.query = async (query) => {
+    assert.equal(query.orgId, identity.orgId);
+    assert.equal(query.identityId, identity.id);
+    assert.equal(query.limit, 1);
+    return {
+      kind: "complete",
+      entries: [
+        createAuditEntry(1, {
+          id: "",
+          orgId: identity.orgId,
+          identityId: identity.id,
+          timestamp: "2026-03-24T12:00:02.000Z",
+        }),
+        createAuditEntry(2, {
+          id: "aud_invalid_cursor_overflow",
+          orgId: identity.orgId,
+          identityId: identity.id,
+          timestamp: "2026-03-24T12:00:01.000Z",
+        }),
+      ],
+    };
+  };
+  const app = createTestApp({}, { storage });
+  const response = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/identities/${identity.id}/activity?limit=1`,
+      undefined,
+      {
+        Authorization: `Bearer ${generateTestToken({
+          org: identity.orgId,
+          scopes: ["relayauth:audit:read"],
+        })}`,
+      },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  assert.deepEqual(
+    await assertJsonResponse<{ error: string }>(response, 500),
+    { error: "invalid audit continuation" },
+  );
+});
+
+test("GET /v1/identities/:id/activity trims a budget overflow row and resumes without duplication", async () => {
+  const identity = createStoredIdentity({
+    id: "agent_activity_archive",
+    orgId: "org_activity_archive",
+  });
+  const entries = [
+    createAuditEntry(3, {
+      id: "aud_activity_archive_003",
+      identityId: identity.id,
+      orgId: identity.orgId,
+      timestamp: "2026-03-24T12:00:03.000Z",
+    }),
+    createAuditEntry(2, {
+      id: "aud_activity_archive_002",
+      identityId: identity.id,
+      orgId: identity.orgId,
+      timestamp: "2026-03-24T12:00:02.000Z",
+    }),
+    createAuditEntry(1, {
+      id: "aud_activity_archive_001",
+      identityId: identity.id,
+      orgId: identity.orgId,
+      timestamp: "2026-03-24T12:00:01.000Z",
+    }),
+  ];
+  const storage = createTestStorage();
+  await storage.identities.create(identity);
+  let auditQueryCalls = 0;
+  let continuationFilterKey: string | undefined;
+  storage.audit.query = async (query) => {
+    auditQueryCalls += 1;
+    assert.equal(query.orgId, identity.orgId);
+    assert.equal(query.identityId, identity.id);
+    if (query.cursor?.kind === "archive_partition") {
+      assert.equal(query.cursor.orgId, identity.orgId);
+      assert.equal(query.cursor.timestamp, "2026-03-24T12:00:00.000Z");
+      assert.equal(query.cursor.inclusive, true);
+      assert.equal(query.cursor.filterKey, continuationFilterKey);
+      return { kind: "complete", entries: [entries[2]!] };
+    }
+    continuationFilterKey = createAuditQueryContinuationFilterKey(query);
+    return {
+      kind: "budget_exhausted",
+      entries,
+      continuation: {
+        kind: "archive_partition",
+        orgId: identity.orgId,
+        timestamp: "2026-03-24T12:00:00.000Z",
+        inclusive: true,
+        filterKey: continuationFilterKey,
+      },
+      workBudget: {
+        hotStorePages: 1,
+        hotStoreRows: 3,
+        archivePartitions: 1,
+        archiveReads: 1,
+      },
+    };
+  };
+  const app = createTestApp({}, { storage });
+  const authorization = `Bearer ${generateTestToken({
+    org: identity.orgId,
+    scopes: ["relayauth:audit:read"],
+  })}`;
+
+  const firstResponse = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/identities/${identity.id}/activity?limit=2`,
+      undefined,
+      { Authorization: authorization },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const firstPage = await assertJsonResponse<IdentityActivityResponse>(
+    firstResponse,
+    200,
+  );
+  assert.deepEqual(
+    firstPage.entries.map((entry) => entry.id),
+    ["aud_activity_archive_003", "aud_activity_archive_002"],
+  );
+  assert.equal(firstPage.partial, true);
+  assert.equal(firstPage.hasMore, true);
+  assert.equal(typeof firstPage.nextCursor, "string");
+  assert.deepEqual(firstPage.workBudget, {
+    hotStorePages: 1,
+    hotStoreRows: 3,
+    archivePartitions: 1,
+    archiveReads: 1,
+  });
+
+  const crossOrgResponse = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/identities/${identity.id}/activity?limit=2&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      undefined,
+      {
+        Authorization: `Bearer ${generateTestToken({
+          org: "org_activity_other",
+          scopes: ["relayauth:audit:read"],
+        })}`,
+      },
+    ),
+    undefined,
+    app.bindings,
+  );
+  assert.deepEqual(
+    await assertJsonResponse<{ error: string }>(crossOrgResponse, 404),
+    { error: "identity_not_found" },
+  );
+
+  const mismatchedFilterResponse = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/identities/${identity.id}/activity?limit=2&action=token.refreshed&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      undefined,
+      { Authorization: authorization },
+    ),
+    undefined,
+    app.bindings,
+  );
+  assert.deepEqual(
+    await assertJsonResponse<{ error: string }>(mismatchedFilterResponse, 400),
+    { error: "invalid cursor" },
+  );
+
+  const secondResponse = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/identities/${identity.id}/activity?limit=2&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      undefined,
+      { Authorization: authorization },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const secondPage = await assertJsonResponse<IdentityActivityResponse>(
+    secondResponse,
+    200,
+  );
+  const received = [...firstPage.entries, ...secondPage.entries].map(
+    (entry) => entry.id,
+  );
+  assert.deepEqual(
+    received,
+    entries.map((entry) => entry.id),
+  );
+  assert.equal(new Set(received).size, received.length);
+  assert.equal(
+    auditQueryCalls,
+    2,
+    "only the initial and valid resumed queries may reach audit storage",
+  );
 });
 
 test("GET /v1/identities/:id/activity returns 404 when the identity does not exist", async () => {

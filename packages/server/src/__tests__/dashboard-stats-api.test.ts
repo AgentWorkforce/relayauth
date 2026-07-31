@@ -1,16 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AgentIdentity, AuditEntry, RelayAuthTokenClaims } from "@relayauth/types";
+import type {
+  AgentIdentity,
+  AuditEntry,
+  RelayAuthTokenClaims,
+} from "@relayauth/types";
 import {
   assertJsonResponse,
   createTestApp,
   createTestRequest,
+  createTestStorage,
   generateTestIdentity,
   generateTestToken,
   seedAuditEntries,
   seedStoredIdentities,
 } from "./test-helpers.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
+import { createDashboardAuditContinuationFilterKey } from "../storage/interface.js";
 
 type DashboardStatsResponse = {
   tokensIssued: number;
@@ -19,6 +25,15 @@ type DashboardStatsResponse = {
   scopeDenials: number;
   activeIdentities: number;
   suspendedIdentities: number;
+  partial?: boolean;
+  nextCursor?: string;
+  hasMore?: boolean;
+  workBudget?: {
+    hotStorePages: number;
+    hotStoreRows: number;
+    archivePartitions: number;
+    archiveReads: number;
+  };
 };
 
 type AuditLogRow = {
@@ -61,9 +76,13 @@ function createAuditEntry(
     action: overrides.action ?? "token.issued",
     identityId,
     orgId: overrides.orgId ?? "org_stats",
-    ...(overrides.workspaceId !== undefined ? { workspaceId: overrides.workspaceId } : {}),
+    ...(overrides.workspaceId !== undefined
+      ? { workspaceId: overrides.workspaceId }
+      : {}),
     ...(overrides.plane !== undefined ? { plane: overrides.plane } : {}),
-    ...(overrides.resource !== undefined ? { resource: overrides.resource } : {}),
+    ...(overrides.resource !== undefined
+      ? { resource: overrides.resource }
+      : {}),
     result: overrides.result ?? "allowed",
     metadata: overrides.metadata ?? {
       sponsorId: "user_stats_owner",
@@ -71,11 +90,15 @@ function createAuditEntry(
       requestId: `req_stats_${padded}`,
     },
     ...(overrides.ip !== undefined ? { ip: overrides.ip } : {}),
-    ...(overrides.userAgent !== undefined ? { userAgent: overrides.userAgent } : {}),
+    ...(overrides.userAgent !== undefined
+      ? { userAgent: overrides.userAgent }
+      : {}),
     timestamp:
-      overrides.timestamp ?? new Date(Date.UTC(2026, 2, 24, 12, 0, index)).toISOString(),
+      overrides.timestamp ??
+      new Date(Date.UTC(2026, 2, 24, 12, 0, index)).toISOString(),
     createdAt:
-      overrides.createdAt ?? new Date(Date.UTC(2026, 2, 24, 12, 5, index)).toISOString(),
+      overrides.createdAt ??
+      new Date(Date.UTC(2026, 2, 24, 12, 5, index)).toISOString(),
   };
 }
 
@@ -89,12 +112,20 @@ function createIdentity(
     orgId: overrides.orgId ?? "org_stats",
     status: overrides.status ?? "active",
     createdAt:
-      overrides.createdAt ?? new Date(Date.UTC(2026, 2, 24, 9, 0, index)).toISOString(),
+      overrides.createdAt ??
+      new Date(Date.UTC(2026, 2, 24, 9, 0, index)).toISOString(),
     updatedAt:
-      overrides.updatedAt ?? new Date(Date.UTC(2026, 2, 24, 10, 0, index)).toISOString(),
-    ...(overrides.lastActiveAt !== undefined ? { lastActiveAt: overrides.lastActiveAt } : {}),
-    ...(overrides.suspendedAt !== undefined ? { suspendedAt: overrides.suspendedAt } : {}),
-    ...(overrides.suspendReason !== undefined ? { suspendReason: overrides.suspendReason } : {}),
+      overrides.updatedAt ??
+      new Date(Date.UTC(2026, 2, 24, 10, 0, index)).toISOString(),
+    ...(overrides.lastActiveAt !== undefined
+      ? { lastActiveAt: overrides.lastActiveAt }
+      : {}),
+    ...(overrides.suspendedAt !== undefined
+      ? { suspendedAt: overrides.suspendedAt }
+      : {}),
+    ...(overrides.suspendReason !== undefined
+      ? { suspendReason: overrides.suspendReason }
+      : {}),
   });
 }
 
@@ -131,9 +162,15 @@ function toIdentityRow(identity: AgentIdentity): IdentityRow {
     org_id: identity.orgId,
     created_at: identity.createdAt,
     updated_at: identity.updatedAt,
-    ...(identity.lastActiveAt !== undefined ? { last_active_at: identity.lastActiveAt } : {}),
-    ...(identity.suspendedAt !== undefined ? { suspended_at: identity.suspendedAt } : {}),
-    ...(identity.suspendReason !== undefined ? { suspend_reason: identity.suspendReason } : {}),
+    ...(identity.lastActiveAt !== undefined
+      ? { last_active_at: identity.lastActiveAt }
+      : {}),
+    ...(identity.suspendedAt !== undefined
+      ? { suspended_at: identity.suspendedAt }
+      : {}),
+    ...(identity.suspendReason !== undefined
+      ? { suspend_reason: identity.suspendReason }
+      : {}),
     scopes_json: JSON.stringify(identity.scopes),
     roles_json: JSON.stringify(identity.roles),
     metadata_json: JSON.stringify(identity.metadata),
@@ -160,7 +197,9 @@ function extractAuditFilters(
   to?: string;
 } {
   const normalized = normalizeSql(query);
-  const stringParams = params.filter((param): param is string => typeof param === "string");
+  const stringParams = params.filter(
+    (param): param is string => typeof param === "string",
+  );
   let offset = 0;
   const filters: { orgId?: string; from?: string; to?: string } = {};
 
@@ -249,25 +288,38 @@ function createDashboardStatsD1({
       return true;
     });
 
-    const filteredIdentityRows = identityRows.filter((row) => !orgId || row.org_id === orgId);
+    const filteredIdentityRows = identityRows.filter(
+      (row) => !orgId || row.org_id === orgId,
+    );
 
     return {
-      tokensIssued: filteredAuditRows.filter((row) => row.action === "token.issued").length,
-      tokensRevoked: filteredAuditRows.filter((row) => row.action === "token.revoked").length,
+      tokensIssued: filteredAuditRows.filter(
+        (row) => row.action === "token.issued",
+      ).length,
+      tokensRevoked: filteredAuditRows.filter(
+        (row) => row.action === "token.revoked",
+      ).length,
       scopeChecks: filteredAuditRows.filter(
         (row) =>
           row.action === "scope.checked" &&
           (row.result === "allowed" || row.result === "denied"),
       ).length,
-      scopeDenials: filteredAuditRows.filter((row) => row.action === "scope.denied").length,
-      activeIdentities: filteredIdentityRows.filter((row) => row.status === "active").length,
-      suspendedIdentities: filteredIdentityRows.filter((row) => row.status === "suspended").length,
+      scopeDenials: filteredAuditRows.filter(
+        (row) => row.action === "scope.denied",
+      ).length,
+      activeIdentities: filteredIdentityRows.filter(
+        (row) => row.status === "active",
+      ).length,
+      suspendedIdentities: filteredIdentityRows.filter(
+        (row) => row.status === "suspended",
+      ).length,
     };
   };
 
   const createPreparedStatement = (query: string) => ({
     bind: (...params: unknown[]) => ({
-      first: async <T>() => (resolveAggregateRow(query, params) as T | null) ?? null,
+      first: async <T>() =>
+        (resolveAggregateRow(query, params) as T | null) ?? null,
       run: async () => ({ success: true, meta }),
       raw: async <T>() => {
         const row = resolveAggregateRow(query, params);
@@ -353,7 +405,12 @@ async function getDashboardStats(
     );
   }
 
-  const request = createTestRequest("GET", `/v1/stats${search}`, undefined, headers);
+  const request = createTestRequest(
+    "GET",
+    `/v1/stats${search}`,
+    undefined,
+    headers,
+  );
   return app.request(request, undefined, app.bindings);
 }
 
@@ -364,10 +421,24 @@ test("GET /v1/stats returns aggregate stats object", async () => {
       scopes: ["relayauth:stats:read"],
     },
     entries: [
-      createAuditEntry(1, { orgId: "org_stats_contract", action: "token.issued" }),
-      createAuditEntry(2, { orgId: "org_stats_contract", action: "token.revoked" }),
-      createAuditEntry(3, { orgId: "org_stats_contract", action: "scope.checked", result: "allowed" }),
-      createAuditEntry(4, { orgId: "org_stats_contract", action: "scope.denied", result: "denied" }),
+      createAuditEntry(1, {
+        orgId: "org_stats_contract",
+        action: "token.issued",
+      }),
+      createAuditEntry(2, {
+        orgId: "org_stats_contract",
+        action: "token.revoked",
+      }),
+      createAuditEntry(3, {
+        orgId: "org_stats_contract",
+        action: "scope.checked",
+        result: "allowed",
+      }),
+      createAuditEntry(4, {
+        orgId: "org_stats_contract",
+        action: "scope.denied",
+        result: "denied",
+      }),
     ],
     identities: [
       createIdentity(1, { orgId: "org_stats_contract", status: "active" }),
@@ -399,9 +470,18 @@ test("GET /v1/stats includes tokensIssued count", async () => {
       scopes: ["relayauth:stats:read"],
     },
     entries: [
-      createAuditEntry(1, { orgId: "org_tokens_issued", action: "token.issued" }),
-      createAuditEntry(2, { orgId: "org_tokens_issued", action: "token.issued" }),
-      createAuditEntry(3, { orgId: "org_tokens_issued", action: "token.revoked" }),
+      createAuditEntry(1, {
+        orgId: "org_tokens_issued",
+        action: "token.issued",
+      }),
+      createAuditEntry(2, {
+        orgId: "org_tokens_issued",
+        action: "token.issued",
+      }),
+      createAuditEntry(3, {
+        orgId: "org_tokens_issued",
+        action: "token.revoked",
+      }),
     ],
   });
   const body = await assertJsonResponse<DashboardStatsResponse>(response, 200);
@@ -416,9 +496,18 @@ test("GET /v1/stats includes tokensRevoked count", async () => {
       scopes: ["relayauth:stats:read"],
     },
     entries: [
-      createAuditEntry(1, { orgId: "org_tokens_revoked", action: "token.revoked" }),
-      createAuditEntry(2, { orgId: "org_tokens_revoked", action: "token.revoked" }),
-      createAuditEntry(3, { orgId: "org_tokens_revoked", action: "token.issued" }),
+      createAuditEntry(1, {
+        orgId: "org_tokens_revoked",
+        action: "token.revoked",
+      }),
+      createAuditEntry(2, {
+        orgId: "org_tokens_revoked",
+        action: "token.revoked",
+      }),
+      createAuditEntry(3, {
+        orgId: "org_tokens_revoked",
+        action: "token.issued",
+      }),
     ],
   });
   const body = await assertJsonResponse<DashboardStatsResponse>(response, 200);
@@ -433,10 +522,26 @@ test("GET /v1/stats includes scopeChecks count for allowed and denied evaluation
       scopes: ["relayauth:stats:read"],
     },
     entries: [
-      createAuditEntry(1, { orgId: "org_scope_checks", action: "scope.checked", result: "allowed" }),
-      createAuditEntry(2, { orgId: "org_scope_checks", action: "scope.checked", result: "denied" }),
-      createAuditEntry(3, { orgId: "org_scope_checks", action: "scope.checked", result: "error" }),
-      createAuditEntry(4, { orgId: "org_scope_checks", action: "scope.denied", result: "denied" }),
+      createAuditEntry(1, {
+        orgId: "org_scope_checks",
+        action: "scope.checked",
+        result: "allowed",
+      }),
+      createAuditEntry(2, {
+        orgId: "org_scope_checks",
+        action: "scope.checked",
+        result: "denied",
+      }),
+      createAuditEntry(3, {
+        orgId: "org_scope_checks",
+        action: "scope.checked",
+        result: "error",
+      }),
+      createAuditEntry(4, {
+        orgId: "org_scope_checks",
+        action: "scope.denied",
+        result: "denied",
+      }),
     ],
   });
   const body = await assertJsonResponse<DashboardStatsResponse>(response, 200);
@@ -451,9 +556,21 @@ test("GET /v1/stats includes scopeDenials count", async () => {
       scopes: ["relayauth:stats:read"],
     },
     entries: [
-      createAuditEntry(1, { orgId: "org_scope_denials", action: "scope.denied", result: "denied" }),
-      createAuditEntry(2, { orgId: "org_scope_denials", action: "scope.denied", result: "denied" }),
-      createAuditEntry(3, { orgId: "org_scope_denials", action: "scope.checked", result: "denied" }),
+      createAuditEntry(1, {
+        orgId: "org_scope_denials",
+        action: "scope.denied",
+        result: "denied",
+      }),
+      createAuditEntry(2, {
+        orgId: "org_scope_denials",
+        action: "scope.denied",
+        result: "denied",
+      }),
+      createAuditEntry(3, {
+        orgId: "org_scope_denials",
+        action: "scope.checked",
+        result: "denied",
+      }),
     ],
   });
   const body = await assertJsonResponse<DashboardStatsResponse>(response, 200);
@@ -470,7 +587,10 @@ test("GET /v1/stats includes activeIdentities count", async () => {
     identities: [
       createIdentity(1, { orgId: "org_active_identities", status: "active" }),
       createIdentity(2, { orgId: "org_active_identities", status: "active" }),
-      createIdentity(3, { orgId: "org_active_identities", status: "suspended" }),
+      createIdentity(3, {
+        orgId: "org_active_identities",
+        status: "suspended",
+      }),
       createIdentity(4, { orgId: "org_active_identities", status: "retired" }),
     ],
   });
@@ -486,9 +606,18 @@ test("GET /v1/stats includes suspendedIdentities count", async () => {
       scopes: ["relayauth:stats:read"],
     },
     identities: [
-      createIdentity(1, { orgId: "org_suspended_identities", status: "suspended" }),
-      createIdentity(2, { orgId: "org_suspended_identities", status: "suspended" }),
-      createIdentity(3, { orgId: "org_suspended_identities", status: "active" }),
+      createIdentity(1, {
+        orgId: "org_suspended_identities",
+        status: "suspended",
+      }),
+      createIdentity(2, {
+        orgId: "org_suspended_identities",
+        status: "suspended",
+      }),
+      createIdentity(3, {
+        orgId: "org_suspended_identities",
+        status: "active",
+      }),
     ],
   });
   const body = await assertJsonResponse<DashboardStatsResponse>(response, 200);
@@ -550,6 +679,53 @@ test("GET /v1/stats supports time range filter via from/to query params", async 
   assert.equal(body.scopeDenials, 0);
 });
 
+test("GET /v1/stats canonicalizes offset-equivalent from/to boundaries before storage", async () => {
+  const storage = createTestStorage();
+  storage.audit.getActionCounts = async (_orgId, query) => {
+    assert.equal(query.from, "2026-03-27T06:30:00.000Z");
+    assert.equal(query.to, "2026-03-27T06:30:00.000Z");
+    return {
+      kind: "complete",
+      counts: {
+        tokensIssued: 0,
+        tokensRevoked: 0,
+        tokensRefreshed: 0,
+        scopeChecks: 0,
+        scopeDenials: 0,
+      },
+    };
+  };
+  const app = createTestApp({}, { storage });
+  const response = await app.request(
+    createTestRequest(
+      "GET",
+      "/v1/stats?from=2026-03-27T12%3A00%3A00.000%2B05%3A30&to=2026-03-27T12%3A00%3A00.000%2B05%3A30",
+      undefined,
+      {
+        Authorization: `Bearer ${generateTestToken({
+          org: "org_offset_stats",
+          scopes: ["relayauth:stats:read"],
+        })}`,
+      },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  await assertJsonResponse<DashboardStatsResponse>(response, 200);
+});
+
+test("GET /v1/stats rejects ISO-shaped impossible from/to timestamps", async () => {
+  for (const field of ["from", "to"] as const) {
+    const response = await getDashboardStats(
+      createStatsSearch({ [field]: "2026-99-99T99:99:99Z" }),
+    );
+    const body = await assertJsonResponse<{ error: string }>(response, 400);
+
+    assert.equal(body.error, `${field} must be an ISO 8601 timestamp`);
+  }
+});
+
 test("GET /v1/stats is scoped to the caller's org", async () => {
   const response = await getDashboardStats("", {
     claims: {
@@ -560,7 +736,11 @@ test("GET /v1/stats is scoped to the caller's org", async () => {
       createAuditEntry(1, { orgId: "org_scoped", action: "token.issued" }),
       createAuditEntry(2, { orgId: "org_scoped", action: "token.revoked" }),
       createAuditEntry(3, { orgId: "org_other", action: "token.issued" }),
-      createAuditEntry(4, { orgId: "org_other", action: "scope.denied", result: "denied" }),
+      createAuditEntry(4, {
+        orgId: "org_other",
+        action: "scope.denied",
+        result: "denied",
+      }),
     ],
     identities: [
       createIdentity(1, { orgId: "org_scoped", status: "active" }),
@@ -576,6 +756,150 @@ test("GET /v1/stats is scoped to the caller's org", async () => {
   assert.equal(body.scopeDenials, 0);
   assert.equal(body.activeIdentities, 1);
   assert.equal(body.suspendedIdentities, 0);
+});
+
+test("GET /v1/stats exposes a typed, org-scoped bounded count continuation", async () => {
+  const storage = createTestStorage();
+  storage.audit.getActionCounts = async (orgId, query) => {
+    assert.equal(orgId, "org_stats_continuation");
+    if (query.cursor?.kind === "archive_partition") {
+      return {
+        kind: "complete",
+        counts: {
+          tokensIssued: 2,
+          tokensRevoked: 0,
+          tokensRefreshed: 0,
+          scopeChecks: 0,
+          scopeDenials: 0,
+        },
+      };
+    }
+    return {
+      kind: "budget_exhausted",
+      counts: {
+        tokensIssued: 128,
+        tokensRevoked: 0,
+        tokensRefreshed: 0,
+        scopeChecks: 0,
+        scopeDenials: 0,
+      },
+      continuation: {
+        kind: "archive_partition",
+        orgId: "org_stats_continuation",
+        timestamp: "2026-03-24T12:00:00.000Z",
+        filterKey: createDashboardAuditContinuationFilterKey(query),
+      },
+      workBudget: {
+        hotStorePages: 1,
+        hotStoreRows: 129,
+        archivePartitions: 128,
+        archiveReads: 0,
+      },
+    };
+  };
+  const app = createTestApp({}, { storage });
+  const token = `Bearer ${generateTestToken({
+    org: "org_stats_continuation",
+    scopes: ["relayauth:stats:read"],
+  })}`;
+
+  const first = await app.request(
+    createTestRequest(
+      "GET",
+      "/v1/stats?from=2026-03-24T00%3A00%3A00.000Z&to=2026-03-25T00%3A00%3A00.000Z",
+      undefined,
+      { Authorization: token },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const firstBody = await assertJsonResponse<DashboardStatsResponse>(
+    first,
+    200,
+  );
+  assert.equal(firstBody.tokensIssued, 128);
+  assert.equal(firstBody.partial, true);
+  assert.equal(firstBody.hasMore, true);
+  assert.equal(typeof firstBody.nextCursor, "string");
+  assert.deepEqual(firstBody.workBudget, {
+    hotStorePages: 1,
+    hotStoreRows: 129,
+    archivePartitions: 128,
+    archiveReads: 0,
+  });
+
+  const mismatchedRange = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/stats?from=2026-03-24T00%3A00%3A00.000Z&to=2026-03-26T00%3A00%3A00.000Z&cursor=${encodeURIComponent(firstBody.nextCursor!)}`,
+      undefined,
+      { Authorization: token },
+    ),
+    undefined,
+    app.bindings,
+  );
+  await assertJsonResponse<{ error: string }>(mismatchedRange, 400, (body) => {
+    assert.equal(body.error, "invalid cursor");
+  });
+
+  const second = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/stats?from=2026-03-24T00%3A00%3A00.000Z&to=2026-03-25T00%3A00%3A00.000Z&cursor=${encodeURIComponent(firstBody.nextCursor!)}`,
+      undefined,
+      { Authorization: token },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const secondBody = await assertJsonResponse<DashboardStatsResponse>(
+    second,
+    200,
+  );
+  assert.equal(secondBody.tokensIssued, 2);
+  assert.equal(secondBody.partial, undefined);
+});
+
+test("GET /v1/stats fails closed instead of advertising an empty continuation", async () => {
+  const storage = createTestStorage();
+  storage.audit.getActionCounts = async (orgId) => ({
+    kind: "budget_exhausted",
+    counts: {
+      tokensIssued: 1,
+      tokensRevoked: 0,
+      tokensRefreshed: 0,
+      scopeChecks: 0,
+      scopeDenials: 0,
+    },
+    continuation: {
+      kind: "archive_partition",
+      orgId,
+      timestamp: "",
+      filterKey: "invalid-continuation",
+    },
+    workBudget: {
+      hotStorePages: 1,
+      hotStoreRows: 1,
+      archivePartitions: 1,
+      archiveReads: 1,
+    },
+  });
+  const app = createTestApp({}, { storage });
+  const response = await app.request(
+    createTestRequest("GET", "/v1/stats", undefined, {
+      Authorization: `Bearer ${generateTestToken({
+        org: "org_invalid_continuation",
+        scopes: ["relayauth:stats:read"],
+      })}`,
+    }),
+    undefined,
+    app.bindings,
+  );
+  const body = await assertJsonResponse<{ error: string }>(response, 500);
+
+  assert.equal(body.error, "invalid audit continuation");
+  assert.equal("hasMore" in body, false);
+  assert.equal("nextCursor" in body, false);
 });
 
 test("GET /v1/stats returns 401 without valid auth token", async () => {

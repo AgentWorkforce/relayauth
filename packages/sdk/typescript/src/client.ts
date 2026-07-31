@@ -34,6 +34,20 @@ export interface RelayAuthClientOptions {
   token?: string;
 }
 
+export type AuditQueryWorkBudget = {
+  hotStorePages: number;
+  hotStoreRows: number;
+  archivePartitions: number;
+  archiveReads: number;
+};
+
+export type AuditQueryPage = {
+  entries: AuditEntry[];
+  cursor?: string;
+  partial?: true;
+  workBudget?: AuditQueryWorkBudget;
+};
+
 type ListIdentitiesOptions = {
   limit?: number;
   cursor?: string;
@@ -53,7 +67,9 @@ type CreateRoleInput = {
   workspaceId?: string;
 };
 
-type UpdateRoleInput = Partial<Pick<CreateRoleInput, "name" | "description" | "scopes">>;
+type UpdateRoleInput = Partial<
+  Pick<CreateRoleInput, "name" | "description" | "scopes">
+>;
 
 type RequestOptions = Omit<RequestInit, "body" | "headers"> & {
   body?: unknown;
@@ -86,7 +102,10 @@ export class RelayAuthClient {
     this.options = options;
   }
 
-  async createIdentity(orgId: string, input: CreateIdentityInput): Promise<AgentIdentity> {
+  async createIdentity(
+    orgId: string,
+    input: CreateIdentityInput,
+  ): Promise<AgentIdentity> {
     return this._request<AgentIdentity>("/v1/identities", {
       method: "POST",
       body: {
@@ -97,10 +116,15 @@ export class RelayAuthClient {
   }
 
   async getIdentity(identityId: string): Promise<AgentIdentity> {
-    return this._request<AgentIdentity>(`/v1/identities/${encodeURIComponent(identityId)}`);
+    return this._request<AgentIdentity>(
+      `/v1/identities/${encodeURIComponent(identityId)}`,
+    );
   }
 
-  async issueToken(identityId: string, options?: IssueTokenOptions): Promise<TokenPair> {
+  async issueToken(
+    identityId: string,
+    options?: IssueTokenOptions,
+  ): Promise<TokenPair> {
     return this._request<TokenPair>("/v1/tokens", {
       method: "POST",
       body: {
@@ -122,21 +146,25 @@ export class RelayAuthClient {
     });
   }
 
-  async issueWorkspaceToken(options: WorkspaceTokenIssueRequest): Promise<WorkspaceTokenIssueResponse> {
+  async issueWorkspaceToken(
+    options: WorkspaceTokenIssueRequest,
+  ): Promise<WorkspaceTokenIssueResponse> {
     return this._request<WorkspaceTokenIssueResponse>("/v1/tokens/workspace", {
       method: "POST",
       body: options,
     });
   }
 
-  async issueAgentToken(options: AgentTokenIssueRequest): Promise<AgentTokenPair> {
+  async issueAgentToken(
+    options: AgentTokenIssueRequest,
+  ): Promise<AgentTokenPair> {
     return this._request<AgentTokenPair>("/v1/tokens/agent", {
       method: "POST",
       body: options,
       headers: this.options.apiKey
         ? {
-          "x-api-key": this.options.apiKey,
-        }
+            "x-api-key": this.options.apiKey,
+          }
         : undefined,
       errorContext: {
         identityId: options.agentId,
@@ -150,8 +178,8 @@ export class RelayAuthClient {
       body: options,
       headers: this.options.apiKey
         ? {
-          "x-api-key": this.options.apiKey,
-        }
+            "x-api-key": this.options.apiKey,
+          }
         : undefined,
       errorContext: {
         identityId: options.agentId,
@@ -159,14 +187,16 @@ export class RelayAuthClient {
     });
   }
 
-  async issueWorkspacePathToken(options: WorkspacePathTokenIssueRequest): Promise<WorkspacePathTokenPair> {
+  async issueWorkspacePathToken(
+    options: WorkspacePathTokenIssueRequest,
+  ): Promise<WorkspacePathTokenPair> {
     return this._request<WorkspacePathTokenPair>("/v1/tokens/workspace-path", {
       method: "POST",
       body: options,
       headers: this.options.apiKey
         ? {
-          "x-api-key": this.options.apiKey,
-        }
+            "x-api-key": this.options.apiKey,
+          }
         : undefined,
       errorContext: {
         identityId: options.agentId,
@@ -195,17 +225,17 @@ export class RelayAuthClient {
     orgId: string,
     options?: ListIdentitiesOptions,
   ): Promise<{ identities: AgentIdentity[]; cursor?: string }> {
-    const response = await this._request<{ data: AgentIdentity[]; cursor?: string }>(
-      "/v1/identities",
-      {
-        query: {
-          orgId,
-          limit: options?.limit,
-          cursor: options?.cursor,
-          status: options?.status,
-        },
+    const response = await this._request<{
+      data: AgentIdentity[];
+      cursor?: string;
+    }>("/v1/identities", {
+      query: {
+        orgId,
+        limit: options?.limit,
+        cursor: options?.cursor,
+        status: options?.status,
       },
-    );
+    });
 
     return {
       identities: response.data,
@@ -213,10 +243,12 @@ export class RelayAuthClient {
     };
   }
 
-  async queryAudit(query: AuditQuery): Promise<{ entries: AuditEntry[]; cursor?: string }> {
+  async queryAudit(query: AuditQuery): Promise<AuditQueryPage> {
     const response = await this._request<{
       entries?: AuditEntry[];
       nextCursor?: string | null;
+      partial?: boolean;
+      workBudget?: AuditQueryWorkBudget;
     }>("/v1/audit", {
       query: serializeAuditQuery(query),
     });
@@ -227,10 +259,12 @@ export class RelayAuthClient {
   async getIdentityActivity(
     identityId: string,
     options?: Omit<AuditQuery, "identityId" | "orgId">,
-  ): Promise<{ entries: AuditEntry[]; cursor?: string }> {
+  ): Promise<AuditQueryPage> {
     const response = await this._request<{
       entries?: AuditEntry[];
       nextCursor?: string | null;
+      partial?: boolean;
+      workBudget?: AuditQueryWorkBudget;
     }>(`/v1/identities/${encodeURIComponent(identityId)}/activity`, {
       query: serializeAuditQuery(options),
     });
@@ -238,7 +272,10 @@ export class RelayAuthClient {
     return mapAuditPage(response);
   }
 
-  async exportAudit(query: AuditQuery, format: "json" | "csv"): Promise<string> {
+  async exportAudit(
+    query: AuditQuery,
+    format: "json" | "csv",
+  ): Promise<string> {
     return this._request<string>("/v1/audit/export", {
       method: "POST",
       body: {
@@ -303,15 +340,18 @@ export class RelayAuthClient {
   }
 
   async assignRole(identityId: string, roleId: string): Promise<void> {
-    await this._request<void>(`/v1/identities/${encodeURIComponent(identityId)}/roles`, {
-      method: "POST",
-      body: {
-        roleId,
+    await this._request<void>(
+      `/v1/identities/${encodeURIComponent(identityId)}/roles`,
+      {
+        method: "POST",
+        body: {
+          roleId,
+        },
+        errorContext: {
+          disableIdentityErrorMapping: true,
+        },
       },
-      errorContext: {
-        disableIdentityErrorMapping: true,
-      },
-    });
+    );
   }
 
   async removeRole(identityId: string, roleId: string): Promise<void> {
@@ -330,13 +370,19 @@ export class RelayAuthClient {
     identityId: string,
     updates: Partial<CreateIdentityInput>,
   ): Promise<AgentIdentity> {
-    return this._request<AgentIdentity>(`/v1/identities/${encodeURIComponent(identityId)}`, {
-      method: "PATCH",
-      body: updates,
-    });
+    return this._request<AgentIdentity>(
+      `/v1/identities/${encodeURIComponent(identityId)}`,
+      {
+        method: "PATCH",
+        body: updates,
+      },
+    );
   }
 
-  async suspendIdentity(identityId: string, reason: string): Promise<AgentIdentity> {
+  async suspendIdentity(
+    identityId: string,
+    reason: string,
+  ): Promise<AgentIdentity> {
     return this._request<AgentIdentity>(
       `/v1/identities/${encodeURIComponent(identityId)}/suspend`,
       {
@@ -356,22 +402,38 @@ export class RelayAuthClient {
   }
 
   async retireIdentity(identityId: string): Promise<AgentIdentity> {
-    return this._request<AgentIdentity>(`/v1/identities/${encodeURIComponent(identityId)}/retire`, {
-      method: "POST",
-    });
+    return this._request<AgentIdentity>(
+      `/v1/identities/${encodeURIComponent(identityId)}/retire`,
+      {
+        method: "POST",
+      },
+    );
   }
 
   async deleteIdentity(identityId: string): Promise<void> {
-    await this._request<void>(`/v1/identities/${encodeURIComponent(identityId)}`, {
-      method: "DELETE",
-      headers: {
-        "X-Confirm-Delete": "true",
+    await this._request<void>(
+      `/v1/identities/${encodeURIComponent(identityId)}`,
+      {
+        method: "DELETE",
+        headers: {
+          "X-Confirm-Delete": "true",
+        },
       },
-    });
+    );
   }
 
-  private async _request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    const { body, errorContext, headers, query, responseType = "json", ...init } = options;
+  private async _request<T>(
+    path: string,
+    options: RequestOptions = {},
+  ): Promise<T> {
+    const {
+      body,
+      errorContext,
+      headers,
+      query,
+      responseType = "json",
+      ...init
+    } = options;
     const url = new URL(path, normalizeBaseUrl(this.options.baseUrl));
 
     if (query) {
@@ -423,7 +485,9 @@ export class RelayAuthClient {
   }
 }
 
-function serializeAuditQuery(query?: Partial<AuditQuery>): Record<string, string | number | undefined> {
+function serializeAuditQuery(
+  query?: Partial<AuditQuery>,
+): Record<string, string | number | undefined> {
   return {
     identityId: query?.identityId,
     action: query?.action,
@@ -441,15 +505,15 @@ function serializeAuditQuery(query?: Partial<AuditQuery>): Record<string, string
 function mapAuditPage(response: {
   entries?: AuditEntry[];
   nextCursor?: string | null;
-}): { entries: AuditEntry[]; cursor?: string } {
-  return response.nextCursor
-    ? {
-        entries: response.entries ?? [],
-        cursor: response.nextCursor,
-      }
-    : {
-        entries: response.entries ?? [],
-      };
+  partial?: boolean;
+  workBudget?: AuditQueryWorkBudget;
+}): AuditQueryPage {
+  return {
+    entries: response.entries ?? [],
+    ...(response.nextCursor ? { cursor: response.nextCursor } : {}),
+    ...(response.partial ? { partial: true as const } : {}),
+    ...(response.workBudget ? { workBudget: response.workBudget } : {}),
+  };
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -474,7 +538,8 @@ function createRequestError(
     ? undefined
     : (context?.identityId ?? extractIdentityId(path));
   const errorCode = getString(payload, "code") ?? getString(payload, "error");
-  const message = getString(payload, "message") ?? `Request failed with status ${status}`;
+  const message =
+    getString(payload, "message") ?? `Request failed with status ${status}`;
 
   if (status === 404 && identityId) {
     return new IdentityNotFoundError(identityId);
@@ -508,7 +573,10 @@ function createRequestError(
   }
 
   if (status === 400 && errorCode === "invalid_scope") {
-    return new InvalidScopeError(getString(payload, "scope") ?? "unknown", getString(payload, "reason"));
+    return new InvalidScopeError(
+      getString(payload, "scope") ?? "unknown",
+      getString(payload, "reason"),
+    );
   }
 
   return new RelayAuthError(message, errorCode ?? "request_failed", status);
@@ -534,5 +602,7 @@ function getStringArray(value: unknown, key: string): string[] {
   }
 
   const entry = (value as Record<string, unknown>)[key];
-  return Array.isArray(entry) && entry.every((item) => typeof item === "string") ? entry : [];
+  return Array.isArray(entry) && entry.every((item) => typeof item === "string")
+    ? entry
+    : [];
 }

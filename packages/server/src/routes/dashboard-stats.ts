@@ -2,6 +2,15 @@ import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
 import { requireScope } from "../middleware/scope.js";
+import {
+  decodeAuditCursor,
+  encodeAuditCursor,
+  isIsoTimestamp,
+} from "./audit-query.js";
+import {
+  createDashboardAuditContinuationFilterKey,
+  normalizeAuditQueryTimestamp,
+} from "../storage/interface.js";
 
 type ScopeContextVars = {
   identity?: {
@@ -20,6 +29,15 @@ type DashboardStatsResponse = {
   period?: {
     from: string;
     to: string;
+  };
+  partial?: true;
+  nextCursor?: string;
+  hasMore?: true;
+  workBudget?: {
+    hotStorePages: number;
+    hotStoreRows: number;
+    archivePartitions: number;
+    archiveReads: number;
   };
 };
 
@@ -40,12 +58,38 @@ type DashboardIdentityCountRow = {
   suspendedIdentities?: number | string | null;
 };
 
-type DashboardAuditCounts = Required<Pick<DashboardStatsResponse, "tokensIssued" | "tokensRevoked" | "tokensRefreshed" | "scopeChecks" | "scopeDenials">>;
-type DashboardIdentityCounts = Required<Pick<DashboardStatsResponse, "activeIdentities" | "suspendedIdentities">>;
+type DashboardAuditCounts = Required<
+  Pick<
+    DashboardStatsResponse,
+    | "tokensIssued"
+    | "tokensRevoked"
+    | "tokensRefreshed"
+    | "scopeChecks"
+    | "scopeDenials"
+  >
+>;
+type DashboardIdentityCounts = Required<
+  Pick<DashboardStatsResponse, "activeIdentities" | "suspendedIdentities">
+>;
 
 type DashboardStatsQuery = {
   from?: string;
   to?: string;
+  cursor?: {
+    kind: "archive_partition";
+    orgId: string;
+    timestamp: string;
+    inclusive?: boolean;
+    chunk?: {
+      key: string;
+      sha256: string;
+    };
+    entryCursor?: {
+      timestamp: string;
+      id: string;
+    };
+    filterKey: string;
+  };
 };
 
 const dashboardStats = new Hono<AppEnv>();
@@ -54,7 +98,7 @@ dashboardStats.use("*", requireScope("relayauth:stats:read"));
 
 dashboardStats.get("/", async (c) => {
   const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
-  const parsedQuery = parseDashboardStatsQuery(c.req.query());
+  const parsedQuery = parseDashboardStatsQuery(c.req.query(), claims?.org);
 
   if (!parsedQuery.ok) {
     return c.json({ error: parsedQuery.error }, 400);
@@ -65,11 +109,19 @@ dashboardStats.get("/", async (c) => {
   }
 
   const storage = c.get("storage");
-  const [auditCounts, identityCounts] = await Promise.all([
+  const [auditResult, identityCounts] = await Promise.all([
     storage.audit.getActionCounts(claims.org, parsedQuery.value),
     storage.identities.getStatusCounts(claims.org),
   ]);
 
+  const auditCounts = auditResult.counts;
+  const nextCursor =
+    auditResult.kind === "budget_exhausted"
+      ? encodeAuditCursor(auditResult.continuation)
+      : null;
+  if (auditResult.kind === "budget_exhausted" && !nextCursor) {
+    return c.json({ error: "invalid audit continuation" }, 500);
+  }
   const response: DashboardStatsResponse = {
     tokensIssued: auditCounts.tokensIssued,
     tokensRevoked: auditCounts.tokensRevoked,
@@ -77,13 +129,23 @@ dashboardStats.get("/", async (c) => {
     scopeDenials: auditCounts.scopeDenials,
     activeIdentities: identityCounts.activeIdentities,
     suspendedIdentities: identityCounts.suspendedIdentities,
-    ...(auditCounts.tokensRefreshed > 0 ? { tokensRefreshed: auditCounts.tokensRefreshed } : {}),
+    ...(auditCounts.tokensRefreshed > 0
+      ? { tokensRefreshed: auditCounts.tokensRefreshed }
+      : {}),
     ...(parsedQuery.value.from || parsedQuery.value.to
       ? {
           period: {
             from: parsedQuery.value.from ?? "",
             to: parsedQuery.value.to ?? "",
           },
+        }
+      : {}),
+    ...(auditResult.workBudget ? { workBudget: auditResult.workBudget } : {}),
+    ...(auditResult.kind === "budget_exhausted"
+      ? {
+          partial: true as const,
+          nextCursor: nextCursor!,
+          hasMore: true as const,
         }
       : {}),
   };
@@ -93,15 +155,39 @@ dashboardStats.get("/", async (c) => {
 
 function parseDashboardStatsQuery(
   query: Record<string, string | undefined>,
+  authenticatedOrgId: string | undefined,
 ): { ok: true; value: DashboardStatsQuery } | { ok: false; error: string } {
-  const from = normalizeQueryValue(query.from);
-  if (from && !isIsoTimestamp(from)) {
+  const rawFrom = normalizeQueryValue(query.from);
+  if (rawFrom && !isIsoTimestamp(rawFrom)) {
     return { ok: false, error: "from must be an ISO 8601 timestamp" };
   }
+  const from = normalizeAuditQueryTimestamp(rawFrom, "from");
 
-  const to = normalizeQueryValue(query.to);
-  if (to && !isIsoTimestamp(to)) {
+  const rawTo = normalizeQueryValue(query.to);
+  if (rawTo && !isIsoTimestamp(rawTo)) {
     return { ok: false, error: "to must be an ISO 8601 timestamp" };
+  }
+  const to = normalizeAuditQueryTimestamp(rawTo, "to");
+
+  const cursorValue = normalizeQueryValue(query.cursor);
+  const decodedCursor = cursorValue
+    ? decodeAuditCursor(cursorValue)
+    : undefined;
+  if (
+    cursorValue &&
+    (!decodedCursor ||
+      decodedCursor.kind !== "archive_partition" ||
+      decodedCursor.entryCursor)
+  ) {
+    return { ok: false, error: "invalid cursor" };
+  }
+  if (
+    decodedCursor?.kind === "archive_partition" &&
+    (decodedCursor.orgId !== authenticatedOrgId ||
+      decodedCursor.filterKey !==
+        createDashboardAuditContinuationFilterKey({ from, to }))
+  ) {
+    return { ok: false, error: "invalid cursor" };
   }
 
   return {
@@ -109,11 +195,15 @@ function parseDashboardStatsQuery(
     value: {
       from,
       to,
+      cursor:
+        decodedCursor?.kind === "archive_partition" ? decodedCursor : undefined,
     },
   };
 }
 
-function summarizeAuditCounts(rows: DashboardAuditCountRow[]): DashboardAuditCounts {
+function summarizeAuditCounts(
+  rows: DashboardAuditCountRow[],
+): DashboardAuditCounts {
   const counts: DashboardAuditCounts = {
     tokensIssued: 0,
     tokensRevoked: 0,
@@ -154,7 +244,9 @@ function summarizeAuditCounts(rows: DashboardAuditCountRow[]): DashboardAuditCou
   return counts;
 }
 
-function summarizeIdentityCounts(rows: DashboardIdentityCountRow[]): DashboardIdentityCounts {
+function summarizeIdentityCounts(
+  rows: DashboardIdentityCountRow[],
+): DashboardIdentityCounts {
   const counts: DashboardIdentityCounts = {
     activeIdentities: 0,
     suspendedIdentities: 0,
@@ -217,10 +309,6 @@ function normalizeQueryValue(value: string | undefined): string | undefined {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function isIsoTimestamp(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value);
 }
 
 export default dashboardStats;

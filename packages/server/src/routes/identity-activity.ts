@@ -6,6 +6,7 @@ import type { StoredIdentity } from "../storage/identity-types.js";
 import type { AuthStorage } from "../storage/index.js";
 import {
   buildAuditQuery,
+  encodeAuditCursor,
   parseAuditQuery,
   toAuditEntry,
   type AuditLogRow,
@@ -52,49 +53,90 @@ const SUB_AGENT_QUERY_SQL = `
   ORDER BY created_at DESC, id DESC
 `;
 
-identityActivity.get("/:id/activity", requireScope("relayauth:audit:read"), async (c) => {
-  const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
-  const identityId = c.req.param("id").trim();
-  const storage = c.get("storage");
+identityActivity.get(
+  "/:id/activity",
+  requireScope("relayauth:audit:read"),
+  async (c) => {
+    const claims = (c as typeof c & { var: ScopeContextVars }).var.identity;
+    const identityId = c.req.param("id").trim();
+    const storage = c.get("storage");
 
-  const storedIdentity = await getStoredIdentity(storage, identityId);
-  if (!storedIdentity.ok) {
-    return c.json({ error: storedIdentity.error }, storedIdentity.status);
-  }
+    const storedIdentity = await getStoredIdentity(storage, identityId);
+    if (!storedIdentity.ok) {
+      return c.json({ error: storedIdentity.error }, storedIdentity.status);
+    }
 
-  if (storedIdentity.identity.orgId !== claims?.org) {
-    return c.json({ error: "identity_not_found" }, 404);
-  }
+    if (storedIdentity.identity.orgId !== claims?.org) {
+      return c.json({ error: "identity_not_found" }, 404);
+    }
 
-  const parsed = parseAuditQuery(
-    {
-      ...c.req.query(),
-      orgId: claims.org,
-      identityId,
-    },
-    claims.org,
-  );
+    const parsed = parseAuditQuery(
+      {
+        ...c.req.query(),
+        orgId: claims.org,
+        identityId,
+      },
+      claims.org,
+    );
 
-  if (!parsed.ok) {
-    return c.json({ error: parsed.error }, 400);
-  }
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, 400);
+    }
 
-  const entries = await storage.audit.query(parsed.value);
-  const hasMore = entries.length > parsed.value.limit;
-  const page = hasMore ? entries.slice(0, parsed.value.limit) : entries;
+    const result = await storage.audit.query(parsed.value);
+    if (result.kind === "budget_exhausted") {
+      const nextCursor = encodeAuditCursor(result.continuation);
+      if (!nextCursor) {
+        return c.json({ error: "invalid audit continuation" }, 500);
+      }
+      return c.json(
+        {
+          entries: result.entries.slice(0, parsed.value.limit),
+          nextCursor,
+          hasMore: true,
+          partial: true,
+          workBudget: result.workBudget,
+          sponsorChain: storedIdentity.identity.sponsorChain,
+          budgetUsage: summarizeBudgetUsage(storedIdentity.identity),
+          subAgents: await listSubAgentTree(
+            storage,
+            storedIdentity.identity.orgId,
+            storedIdentity.identity.id,
+          ),
+        },
+        200,
+      );
+    }
+    const entries = result.entries;
+    const hasMore = entries.length > parsed.value.limit;
+    const page = hasMore ? entries.slice(0, parsed.value.limit) : entries;
+    const nextCursor = hasMore
+      ? encodeAuditCursor({
+          timestamp: page[page.length - 1]?.timestamp ?? "",
+          id: page[page.length - 1]?.id ?? "",
+        })
+      : null;
+    if (hasMore && !nextCursor) {
+      return c.json({ error: "invalid audit continuation" }, 500);
+    }
 
-  return c.json(
-    {
-      entries: page,
-      nextCursor: hasMore ? encodeCursor(page[page.length - 1]) : null,
-      hasMore,
-      sponsorChain: storedIdentity.identity.sponsorChain,
-      budgetUsage: summarizeBudgetUsage(storedIdentity.identity),
-      subAgents: await listSubAgentTree(storage, storedIdentity.identity.orgId, storedIdentity.identity.id),
-    },
-    200,
-  );
-});
+    return c.json(
+      {
+        entries: page,
+        nextCursor,
+        hasMore,
+        sponsorChain: storedIdentity.identity.sponsorChain,
+        budgetUsage: summarizeBudgetUsage(storedIdentity.identity),
+        subAgents: await listSubAgentTree(
+          storage,
+          storedIdentity.identity.orgId,
+          storedIdentity.identity.id,
+        ),
+      },
+      200,
+    );
+  },
+);
 
 async function getStoredIdentity(
   storage: AuthStorage,
@@ -118,7 +160,8 @@ async function getStoredIdentity(
       identity,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to fetch identity";
+    const message =
+      error instanceof Error ? error.message : "Failed to fetch identity";
     return {
       ok: false,
       error: message,
@@ -185,46 +228,54 @@ function hydrateSubAgent(row: IdentityTreeRow): HydratedSubAgent | null {
   };
 }
 
-function compareSubAgents(left: HydratedSubAgent, right: HydratedSubAgent): number {
+function compareSubAgents(
+  left: HydratedSubAgent,
+  right: HydratedSubAgent,
+): number {
   const leftCreatedAt = left.createdAt ?? "";
   const rightCreatedAt = right.createdAt ?? "";
 
-  return rightCreatedAt.localeCompare(leftCreatedAt) || right.id.localeCompare(left.id);
+  return (
+    rightCreatedAt.localeCompare(leftCreatedAt) ||
+    right.id.localeCompare(left.id)
+  );
 }
 
-function normalizeIdentityStatus(status: string | undefined): StoredIdentity["status"] {
+function normalizeIdentityStatus(
+  status: string | undefined,
+): StoredIdentity["status"] {
   return status === "suspended" || status === "retired" ? status : "active";
 }
 
-function summarizeBudgetUsage(identity: StoredIdentity): IdentityActivityBudgetUsage {
+function summarizeBudgetUsage(
+  identity: StoredIdentity,
+): IdentityActivityBudgetUsage {
   const actionsThisHour = identity.budgetUsage?.actionsThisHour ?? 0;
   const costToday = identity.budgetUsage?.costToday ?? 0;
   const percentages: number[] = [];
 
-  if (typeof identity.budget?.maxActionsPerHour === "number" && identity.budget.maxActionsPerHour > 0) {
-    percentages.push((actionsThisHour / identity.budget.maxActionsPerHour) * 100);
+  if (
+    typeof identity.budget?.maxActionsPerHour === "number" &&
+    identity.budget.maxActionsPerHour > 0
+  ) {
+    percentages.push(
+      (actionsThisHour / identity.budget.maxActionsPerHour) * 100,
+    );
   }
 
-  if (typeof identity.budget?.maxCostPerDay === "number" && identity.budget.maxCostPerDay > 0) {
+  if (
+    typeof identity.budget?.maxCostPerDay === "number" &&
+    identity.budget.maxCostPerDay > 0
+  ) {
     percentages.push((costToday / identity.budget.maxCostPerDay) * 100);
   }
 
   return {
     actionsThisHour,
     costToday,
-    percentOfBudget: percentages.length > 0 ? Number(Math.max(...percentages).toFixed(2)) : 0,
+    percentOfBudget:
+      percentages.length > 0 ? Number(Math.max(...percentages).toFixed(2)) : 0,
   };
-}
-
-function encodeCursor(row: { timestamp?: string; id?: string } | undefined): string | null {
-  if (!row?.timestamp || !row.id) {
-    return null;
-  }
-
-  return btoa(`${row.timestamp}|${row.id}`)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
 }
 
 export default identityActivity;

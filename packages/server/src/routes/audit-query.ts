@@ -2,6 +2,14 @@ import type { AuditAction, AuditEntry } from "@relayauth/types";
 import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
+import {
+  createAuditQueryContinuationFilterKey,
+  isValidAuditTimestamp,
+  normalizeAuditArchiveCursorBoundaries,
+  normalizeAuditQueryCursor,
+  normalizeAuditQueryTimestamp,
+  type AuditQueryCursor,
+} from "../storage/interface.js";
 import { requireScope } from "../middleware/scope.js";
 
 export type ScopeContextVars = {
@@ -39,10 +47,7 @@ export type AuditQueryParams = {
   result?: "allowed" | "denied";
   from?: string;
   to?: string;
-  cursor?: {
-    timestamp: string;
-    id: string;
-  };
+  cursor?: AuditQueryCursor;
   limit: number;
 };
 
@@ -87,10 +92,36 @@ auditQuery.get("/", requireScope("relayauth:audit:read"), async (c) => {
     return c.json({ error: parsed.error }, 400);
   }
 
-  const entries = await c.get("storage").audit.query(parsed.value);
+  const result = await c.get("storage").audit.query(parsed.value);
+  if (result.kind === "budget_exhausted") {
+    const nextCursor = encodeAuditCursor(result.continuation);
+    if (!nextCursor) {
+      return c.json({ error: "invalid audit continuation" }, 500);
+    }
+    return c.json(
+      {
+        entries: result.entries.slice(0, parsed.value.limit),
+        nextCursor,
+        hasMore: true,
+        partial: true,
+        workBudget: result.workBudget,
+      },
+      200,
+    );
+  }
+
+  const entries = result.entries;
   const hasMore = entries.length > parsed.value.limit;
   const page = hasMore ? entries.slice(0, parsed.value.limit) : entries;
-  const nextCursor = hasMore ? encodeCursor(page[page.length - 1]?.timestamp, page[page.length - 1]?.id) : null;
+  const nextCursor = hasMore
+    ? encodeAuditCursor({
+        timestamp: page[page.length - 1]?.timestamp ?? "",
+        id: page[page.length - 1]?.id ?? "",
+      })
+    : null;
+  if (hasMore && !nextCursor) {
+    return c.json({ error: "invalid audit continuation" }, 500);
+  }
 
   return c.json(
     {
@@ -126,41 +157,56 @@ export function parseAuditQuery(
     return { ok: false, error: "invalid result" };
   }
 
-  const from = normalizeQueryValue(query.from);
-  if (from && !isIsoTimestamp(from)) {
+  const rawFrom = normalizeQueryValue(query.from);
+  if (rawFrom && !isIsoTimestamp(rawFrom)) {
     return { ok: false, error: "from must be an ISO 8601 timestamp" };
   }
+  const from = normalizeAuditQueryTimestamp(rawFrom, "from");
 
-  const to = normalizeQueryValue(query.to);
-  if (to && !isIsoTimestamp(to)) {
+  const rawTo = normalizeQueryValue(query.to);
+  if (rawTo && !isIsoTimestamp(rawTo)) {
     return { ok: false, error: "to must be an ISO 8601 timestamp" };
   }
+  const to = normalizeAuditQueryTimestamp(rawTo, "to");
 
   const cursor = normalizeQueryValue(query.cursor);
-  const decodedCursor = cursor ? decodeCursor(cursor) : null;
+  const decodedCursor = cursor ? decodeAuditCursor(cursor) : null;
   if (cursor && !decodedCursor) {
     return { ok: false, error: "invalid cursor" };
   }
-
-  const limit = parseLimit(query.limit, options.defaultLimit ?? 50, options.maxLimit ?? 200);
+  const limit = parseLimit(
+    query.limit,
+    options.defaultLimit ?? 50,
+    options.maxLimit ?? 200,
+  );
   if (limit === null) {
     return { ok: false, error: "limit must be a positive integer" };
   }
 
+  const value: AuditQueryParams = {
+    orgId,
+    identityId: normalizeQueryValue(query.identityId),
+    action: action as AuditAction | undefined,
+    workspaceId: normalizeQueryValue(query.workspaceId),
+    plane: normalizeQueryValue(query.plane),
+    result: result as "allowed" | "denied" | undefined,
+    from,
+    to,
+    cursor: decodedCursor ?? undefined,
+    limit,
+  };
+
+  if (
+    decodedCursor?.kind === "archive_partition" &&
+    (decodedCursor.orgId !== orgId ||
+      decodedCursor.filterKey !== createAuditQueryContinuationFilterKey(value))
+  ) {
+    return { ok: false, error: "invalid cursor" };
+  }
+
   return {
     ok: true,
-    value: {
-      orgId,
-      identityId: normalizeQueryValue(query.identityId),
-      action: action as AuditAction | undefined,
-      workspaceId: normalizeQueryValue(query.workspaceId),
-      plane: normalizeQueryValue(query.plane),
-      result: result as "allowed" | "denied" | undefined,
-      from,
-      to,
-      cursor: decodedCursor ?? undefined,
-      limit,
-    },
+    value,
   };
 }
 
@@ -206,12 +252,28 @@ export function buildAuditQuery(
     values.push(params.to);
   }
 
-  if (params.cursor) {
+  if (params.cursor?.kind === "archive_partition") {
+    const boundaries = normalizeAuditArchiveCursorBoundaries(params.cursor);
+    clauses.push("timestamp < ?");
+    values.push(boundaries.upperBound);
+    if (params.cursor.entryCursor) {
+      clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
+      values.push(
+        boundaries.entryCursorTimestamp,
+        boundaries.entryCursorTimestamp,
+        params.cursor.entryCursor.id,
+      );
+    }
+  } else if (params.cursor) {
     clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
-    values.push(params.cursor.timestamp, params.cursor.timestamp, params.cursor.id);
+    values.push(
+      params.cursor.timestamp,
+      params.cursor.timestamp,
+      params.cursor.id,
+    );
   }
 
-  values.push(params.limit + (options.includeOverflowRow ?? true ? 1 : 0));
+  values.push(params.limit + ((options.includeOverflowRow ?? true) ? 1 : 0));
 
   return {
     sql: `
@@ -236,7 +298,9 @@ export function toAuditEntry(row: AuditLogRow): AuditEntryResponse {
     ...(row.plane ? { plane: row.plane } : {}),
     ...(row.resource ? { resource: row.resource } : {}),
     result: row.result,
-    ...(row.metadata_json ? { metadata: parseMetadata(row.metadata_json) } : {}),
+    ...(row.metadata_json
+      ? { metadata: parseMetadata(row.metadata_json) }
+      : {}),
     ...(row.ip ? { ip: row.ip } : {}),
     ...(row.user_agent ? { userAgent: row.user_agent } : {}),
     timestamp: row.timestamp,
@@ -270,7 +334,11 @@ function normalizeQueryValue(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function parseLimit(value: unknown, defaultLimit: number, maxLimit: number): number | null {
+function parseLimit(
+  value: unknown,
+  defaultLimit: number,
+  maxLimit: number,
+): number | null {
   if (value === undefined) {
     return defaultLimit;
   }
@@ -295,21 +363,57 @@ function parseLimit(value: unknown, defaultLimit: number, maxLimit: number): num
   return Math.min(parsed, maxLimit);
 }
 
-function isIsoTimestamp(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value);
+export function isIsoTimestamp(value: string): boolean {
+  return isValidAuditTimestamp(value);
 }
 
-function encodeCursor(timestamp: string | undefined, id: string | undefined): string | null {
-  if (!timestamp || !id) {
+export function encodeAuditCursor(
+  cursor: AuditQueryCursor | undefined,
+): string | null {
+  if (!cursor?.timestamp || !isIsoTimestamp(cursor.timestamp)) {
     return null;
   }
 
-  return toBase64Url(`${timestamp}|${id}`);
+  let normalizedCursor: AuditQueryCursor;
+  try {
+    normalizedCursor = normalizeAuditQueryCursor(cursor);
+  } catch {
+    return null;
+  }
+
+  if (normalizedCursor.kind === "archive_partition") {
+    if (
+      normalizedCursor.orgId.trim().length === 0 ||
+      normalizedCursor.filterKey.length === 0
+    ) {
+      return null;
+    }
+    return toBase64Url(
+      JSON.stringify({
+        version: 1,
+        kind: normalizedCursor.kind,
+        orgId: normalizedCursor.orgId,
+        timestamp: normalizedCursor.timestamp,
+        inclusive: normalizedCursor.inclusive === true,
+        ...(normalizedCursor.chunk ? { chunk: normalizedCursor.chunk } : {}),
+        ...(normalizedCursor.entryCursor
+          ? { entryCursor: normalizedCursor.entryCursor }
+          : {}),
+        filterKey: normalizedCursor.filterKey,
+      }),
+    );
+  }
+
+  return toBase64Url(`${normalizedCursor.timestamp}|${normalizedCursor.id}`);
 }
 
-function decodeCursor(value: string): { timestamp: string; id: string } | null {
+export function decodeAuditCursor(value: string): AuditQueryCursor | null {
   try {
     const decoded = fromBase64Url(value);
+    const archiveCursor = parseArchiveCursor(decoded);
+    if (archiveCursor) {
+      return archiveCursor;
+    }
     const separator = decoded.lastIndexOf("|");
     if (separator <= 0 || separator === decoded.length - 1) {
       return null;
@@ -321,20 +425,105 @@ function decodeCursor(value: string): { timestamp: string; id: string } | null {
       return null;
     }
 
-    return { timestamp, id };
+    return normalizeAuditQueryCursor({ kind: "entry", timestamp, id });
   } catch {
     return null;
   }
 }
 
+function parseArchiveCursor(
+  value: string,
+): Extract<AuditQueryCursor, { kind: "archive_partition" }> | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!isRecord(parsed)) {
+      return null;
+    }
+    const {
+      version,
+      kind,
+      orgId,
+      timestamp,
+      inclusive,
+      chunk,
+      entryCursor,
+      filterKey,
+    } = parsed;
+    return version === 1 &&
+      kind === "archive_partition" &&
+      typeof orgId === "string" &&
+      orgId.length > 0 &&
+      typeof timestamp === "string" &&
+      isIsoTimestamp(timestamp) &&
+      (inclusive === undefined || typeof inclusive === "boolean") &&
+      (chunk === undefined ||
+        (isRecord(chunk) &&
+          typeof chunk.key === "string" &&
+          chunk.key.length > 0 &&
+          typeof chunk.sha256 === "string" &&
+          chunk.sha256.length > 0)) &&
+      (entryCursor === undefined ||
+        (isRecord(entryCursor) &&
+          typeof entryCursor.timestamp === "string" &&
+          isIsoTimestamp(entryCursor.timestamp) &&
+          typeof entryCursor.id === "string" &&
+          entryCursor.id.length > 0)) &&
+      typeof filterKey === "string" &&
+      filterKey.length > 0
+      ? (normalizeAuditQueryCursor({
+          kind,
+          orgId,
+          timestamp,
+          ...(inclusive === true ? { inclusive } : {}),
+          ...(chunk
+            ? {
+                chunk: {
+                  key: chunk.key as string,
+                  sha256: chunk.sha256 as string,
+                },
+              }
+            : {}),
+          ...(entryCursor
+            ? {
+                entryCursor: {
+                  timestamp: entryCursor.timestamp as string,
+                  id: entryCursor.id as string,
+                },
+              }
+            : {}),
+          filterKey,
+        }) as Extract<AuditQueryCursor, { kind: "archive_partition" }>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 function toBase64Url(value: string): string {
-  return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 function fromBase64Url(value: string): string {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-  return atob(padded);
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    "=",
+  );
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
 export default auditQuery;

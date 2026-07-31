@@ -43,17 +43,28 @@ import type {
   IdentityChildSummary,
   IdentityStorage,
   IdentityStatusCounts,
+  IssuedTokenAudit,
+  IssuedTokenPairAudit,
+  IssuedTokenRotationAudit,
+  IssuedTokenRecord,
   ListIdentitiesOptions,
   OrganizationContextRecord,
   PolicyStorage,
   PolicyUpdate,
+  RevokedTokenAudit,
   RevocationStorage,
   RoleStorage,
+  StoredTokenRecord,
   TokenStorage,
   RoleUpdate,
   WorkspaceContextRecord,
 } from "./interface.js";
-import { StorageError } from "./interface.js";
+import {
+  normalizeAuditArchiveCursorBoundaries,
+  normalizeAuditQueryCursor,
+  normalizeAuditQueryTimestamp,
+  StorageError,
+} from "./interface.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 
 const DEFAULT_DB_PATH = ".relay/relayauth.db";
@@ -89,6 +100,11 @@ export type SqliteStorage = AuthStorage & {
   close(): Promise<void> | void;
 };
 
+export type SqliteStorageOptions = {
+  /** Select the pure in-memory fallback explicitly for backend parity tests. */
+  forceMemory?: boolean;
+};
+
 // Schema lives in packages/server/src/db/migrations/*.sql and is applied via
 // `@relayauth/migrate`.
 //
@@ -105,7 +121,9 @@ const MIGRATIONS_DIR = pathResolve(
 
 async function runBootstrapMigrations(db: {
   exec(sql: string): unknown;
-  prepare<Row extends Record<string, unknown> = Record<string, unknown>>(sql: string): {
+  prepare<Row extends Record<string, unknown> = Record<string, unknown>>(
+    sql: string,
+  ): {
     run(...params: unknown[]): unknown;
     get(...params: unknown[]): Row | undefined;
     all(...params: unknown[]): Row[];
@@ -412,6 +430,40 @@ const LIST_ACTIVE_TOKENS_SQL = `
   WHERE identity_id = ? AND status = 'active'
 `;
 
+const SELECT_TOKEN_BY_ID_SQL = `
+  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
+  FROM tokens
+  WHERE id = ? OR token_id = ? OR jti = ?
+  LIMIT 1
+`;
+
+const SELECT_TOKENS_BY_IDENTITY_SQL = `
+  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
+  FROM tokens
+  WHERE identity_id = ? AND status = 'active'
+`;
+
+const SELECT_TOKENS_BY_SESSION_SQL = `
+  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
+  FROM tokens
+  WHERE session_id = ? AND status = 'active'
+`;
+
+const INSERT_TOKEN_SQL = `
+  INSERT INTO tokens (
+    id,
+    token_id,
+    jti,
+    identity_id,
+    session_id,
+    issued_at,
+    expires_at,
+    status,
+    created_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+`;
+
 const UPSERT_REVOKED_TOKEN_SQL = `
   INSERT OR REPLACE INTO revoked_tokens (jti, expires_at)
   VALUES (?, ?)
@@ -602,8 +654,20 @@ type ChildIdentityRow = {
   sponsor_id?: string | null;
   created_at?: string | null;
 };
-type StatusCountRow = { status?: string | null; count?: number | string | null };
+type StatusCountRow = {
+  status?: string | null;
+  count?: number | string | null;
+};
 type ActiveTokenRow = { id?: string; jti?: string; token_id?: string };
+type TokenRow = {
+  id?: string | null;
+  token_id?: string | null;
+  jti?: string | null;
+  identity_id?: string | null;
+  status?: string | null;
+  session_id?: string | null;
+  expires_at?: number | string | null;
+};
 type ExistsRow = { found?: number | string | bigint | null };
 type RevokedTokenRow = { expires_at?: number | string | null };
 type TableInfoRow = { name?: string | null };
@@ -705,10 +769,13 @@ type BudgetPolicyResult = {
 
 type MemoryTokenRecord = {
   id: string;
-  tokenId?: string;
-  jti?: string;
+  tokenId: string;
+  jti: string;
   identityId: string;
   status: string;
+  sessionId?: string | null;
+  issuedAt: number;
+  expiresAt: number;
   createdAt: string;
 };
 
@@ -736,11 +803,20 @@ type BackendContext =
   | { kind: "sqlite"; db: SqliteDatabase }
   | { kind: "memory"; state: MemoryState };
 
-const dynamicImport = Function("specifier", "return import(specifier)") as DynamicImportFunction;
+const dynamicImport = Function(
+  "specifier",
+  "return import(specifier)",
+) as DynamicImportFunction;
 const MAX_REVOCATION_EXPIRY = 253402300799;
 
-export function createSqliteStorage(dbPath?: string): SqliteStorage {
-  const provider = new BackendProvider(dbPath ?? DEFAULT_DB_PATH);
+export function createSqliteStorage(
+  dbPath?: string,
+  options: SqliteStorageOptions = {},
+): SqliteStorage {
+  const provider = new BackendProvider(
+    dbPath ?? DEFAULT_DB_PATH,
+    options.forceMemory ?? false,
+  );
   const revocations = new SqliteRevocationStorage(provider);
   const storage: AuthStorage = {
     identities: new SqliteIdentityStorage(provider),
@@ -763,11 +839,16 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
             const backend = await provider.getBackend();
             if (backend.kind !== "sqlite") return { results: [] as T[] };
             const stmt = backend.db.prepare(sql);
-            return { results: (params.length ? stmt.all(...params) : stmt.all()) as T[] };
+            return {
+              results: (params.length
+                ? stmt.all(...params)
+                : stmt.all()) as T[],
+            };
           },
           async run() {
             const backend = await provider.getBackend();
-            if (backend.kind !== "sqlite") return { success: true, meta: { changes: 0 } };
+            if (backend.kind !== "sqlite")
+              return { success: true, meta: { changes: 0 } };
             const stmt = backend.db.prepare(sql);
             const result = params.length ? stmt.run(...params) : stmt.run();
             return { success: true, meta: { changes: result.changes ?? 0 } };
@@ -776,7 +857,9 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
             const backend = await provider.getBackend();
             if (backend.kind !== "sqlite") return null as T | null;
             const stmt = backend.db.prepare(sql);
-            return (params.length ? stmt.get(...params) : stmt.get()) as T | null;
+            return (
+              params.length ? stmt.get(...params) : stmt.get()
+            ) as T | null;
           },
         };
       }
@@ -799,7 +882,10 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
     revocations: Object.assign(revocations, {
       revoke: async (jti: string, expiresAt: number) => {
         const normalizedJti = requireString(jti, "jti is required");
-        const normalizedExpiresAt = requireUnixTimestamp(expiresAt, "expiresAt is required");
+        const normalizedExpiresAt = requireUnixTimestamp(
+          expiresAt,
+          "expiresAt is required",
+        );
         const backend = await provider.getBackend();
         pruneExpiredRevocations(backend);
 
@@ -814,17 +900,27 @@ export function createSqliteStorage(dbPath?: string): SqliteStorage {
         }
 
         if (backend.kind === "memory") {
-          backend.state.revokedTokens.set(normalizedJti, { expiresAt: normalizedExpiresAt });
+          backend.state.revokedTokens.set(normalizedJti, {
+            expiresAt: normalizedExpiresAt,
+          });
           for (const token of backend.state.tokens.values()) {
-            if (token.id === normalizedJti || token.jti === normalizedJti || token.tokenId === normalizedJti) {
+            if (
+              token.id === normalizedJti ||
+              token.jti === normalizedJti ||
+              token.tokenId === normalizedJti
+            ) {
               token.status = "revoked";
             }
           }
           return;
         }
 
-        backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL).run(normalizedJti, normalizedExpiresAt);
-        backend.db.prepare(UPDATE_TOKEN_STATUS_BY_TOKEN_SQL).run(normalizedJti, normalizedJti, normalizedJti);
+        backend.db
+          .prepare(UPSERT_REVOKED_TOKEN_SQL)
+          .run(normalizedJti, normalizedExpiresAt);
+        backend.db
+          .prepare(UPDATE_TOKEN_STATUS_BY_TOKEN_SQL)
+          .run(normalizedJti, normalizedJti, normalizedJti);
       },
     }),
     DB,
@@ -841,7 +937,10 @@ function normalizeRevocationKey(key: string): string {
 class BackendProvider {
   private backendPromise: Promise<BackendContext> | null = null;
 
-  constructor(private readonly dbPath: string) {}
+  constructor(
+    private readonly dbPath: string,
+    private readonly forceMemory: boolean,
+  ) {}
 
   async getBackend(): Promise<BackendContext> {
     if (!this.backendPromise) {
@@ -863,6 +962,10 @@ class BackendProvider {
   }
 
   private async initialize(): Promise<BackendContext> {
+    if (this.forceMemory) {
+      return createMemoryBackend();
+    }
+
     const candidates = await loadSqliteConstructors();
 
     for (const Database of candidates) {
@@ -887,7 +990,10 @@ class BackendProvider {
 class SqliteIdentityStorage implements IdentityStorage {
   constructor(private readonly provider: BackendProvider) {}
 
-  async list(orgId: string, options: ListIdentitiesOptions = {}): Promise<AgentIdentity[]> {
+  async list(
+    orgId: string,
+    options: ListIdentitiesOptions = {},
+  ): Promise<AgentIdentity[]> {
     const normalizedOrgId = requireString(orgId, "orgId is required");
     const limit = normalizeLimit(options.limit);
     const cursorId = normalizeOptionalString(options.cursorId);
@@ -896,7 +1002,9 @@ class SqliteIdentityStorage implements IdentityStorage {
     if (backend.kind === "memory") {
       return [...backend.state.identities.values()]
         .filter((identity) => identity.orgId === normalizedOrgId)
-        .filter((identity) => !options.status || identity.status === options.status)
+        .filter(
+          (identity) => !options.status || identity.status === options.status,
+        )
         .filter((identity) => !options.type || identity.type === options.type)
         .sort(compareIdentityDesc)
         .filter((identity) => {
@@ -904,19 +1012,28 @@ class SqliteIdentityStorage implements IdentityStorage {
             return true;
           }
 
-          return compareIdentityCursor(identity, backend.state.identities.get(cursorId) ?? null) < 0;
+          return (
+            compareIdentityCursor(
+              identity,
+              backend.state.identities.get(cursorId) ?? null,
+            ) < 0
+          );
         })
         .slice(0, limit)
         .map((identity) => toAgentIdentity(identity));
     }
 
-    const rows = backend.db.prepare<DataRow>(LIST_IDENTITIES_SQL).all(normalizedOrgId);
+    const rows = backend.db
+      .prepare<DataRow>(LIST_IDENTITIES_SQL)
+      .all(normalizedOrgId);
     const cursorIdentity = cursorId ? await this.get(cursorId) : null;
 
     return rows
       .map((row) => parseStoredIdentity(row.data))
       .filter((identity) => identity.orgId === normalizedOrgId)
-      .filter((identity) => !options.status || identity.status === options.status)
+      .filter(
+        (identity) => !options.status || identity.status === options.status,
+      )
       .filter((identity) => !options.type || identity.type === options.type)
       .sort(compareIdentityDesc)
       .filter((identity) => compareIdentityCursor(identity, cursorIdentity) < 0)
@@ -936,22 +1053,35 @@ class SqliteIdentityStorage implements IdentityStorage {
       return identity ? cloneStoredIdentity(identity) : null;
     }
 
-    const row = backend.db.prepare<DataRow>(SELECT_STORED_IDENTITY_SQL).get(identityId);
+    const row = backend.db
+      .prepare<DataRow>(SELECT_STORED_IDENTITY_SQL)
+      .get(identityId);
     return row ? parseStoredIdentity(row.data) : null;
   }
 
   async create(identity: StoredIdentity): Promise<StoredIdentity> {
     const normalized = normalizeStoredIdentity(identity, { generateId: true });
-    const budgetResult = applyBudgetPolicy(normalized, normalized, normalizeTimestamp(normalized.updatedAt));
+    const budgetResult = applyBudgetPolicy(
+      normalized,
+      normalized,
+      normalizeTimestamp(normalized.updatedAt),
+    );
     const finalIdentity = budgetResult.identity;
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
       if (backend.state.identities.has(finalIdentity.id)) {
-        throw new StorageError("identity_already_exists", 409, "identity_already_exists");
+        throw new StorageError(
+          "identity_already_exists",
+          409,
+          "identity_already_exists",
+        );
       }
 
-      backend.state.identities.set(finalIdentity.id, cloneStoredIdentity(finalIdentity));
+      backend.state.identities.set(
+        finalIdentity.id,
+        cloneStoredIdentity(finalIdentity),
+      );
       if (budgetResult.shouldWriteAuditEvent) {
         emitBudgetAlert(finalIdentity);
       }
@@ -959,10 +1089,16 @@ class SqliteIdentityStorage implements IdentityStorage {
     }
 
     if (await this.get(finalIdentity.id)) {
-      throw new StorageError("identity_already_exists", 409, "identity_already_exists");
+      throw new StorageError(
+        "identity_already_exists",
+        409,
+        "identity_already_exists",
+      );
     }
 
-    backend.db.prepare(INSERT_IDENTITY_SQL).run(...toIdentityParams(finalIdentity));
+    backend.db
+      .prepare(INSERT_IDENTITY_SQL)
+      .run(...toIdentityParams(finalIdentity));
     if (budgetResult.shouldWriteAuditEvent) {
       await this.writeBudgetAuditEvent(backend, finalIdentity);
       emitBudgetAlert(finalIdentity);
@@ -970,7 +1106,10 @@ class SqliteIdentityStorage implements IdentityStorage {
     return this.getRequired(finalIdentity.id);
   }
 
-  async update(id: string, patch: Partial<StoredIdentity>): Promise<StoredIdentity> {
+  async update(
+    id: string,
+    patch: Partial<StoredIdentity>,
+  ): Promise<StoredIdentity> {
     const current = await this.getRequired(id);
     const timestamp = nowIso();
     const merged = mergeStoredIdentity(current, patch, timestamp);
@@ -979,14 +1118,19 @@ class SqliteIdentityStorage implements IdentityStorage {
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
-      backend.state.identities.set(finalIdentity.id, cloneStoredIdentity(finalIdentity));
+      backend.state.identities.set(
+        finalIdentity.id,
+        cloneStoredIdentity(finalIdentity),
+      );
       if (budgetResult.shouldWriteAuditEvent) {
         emitBudgetAlert(finalIdentity);
       }
       return cloneStoredIdentity(finalIdentity);
     }
 
-    backend.db.prepare(UPDATE_IDENTITY_SQL).run(...toIdentityUpdateParams(finalIdentity), finalIdentity.id);
+    backend.db
+      .prepare(UPDATE_IDENTITY_SQL)
+      .run(...toIdentityUpdateParams(finalIdentity), finalIdentity.id);
     if (budgetResult.shouldWriteAuditEvent) {
       await this.writeBudgetAuditEvent(backend, finalIdentity);
       emitBudgetAlert(finalIdentity);
@@ -1009,10 +1153,18 @@ class SqliteIdentityStorage implements IdentityStorage {
   async suspend(id: string, reason: string): Promise<StoredIdentity> {
     const current = await this.getRequired(id);
     if (current.status === "suspended") {
-      throw new StorageError("Identity is already suspended", 409, "identity_conflict");
+      throw new StorageError(
+        "Identity is already suspended",
+        409,
+        "identity_conflict",
+      );
     }
     if (current.status === "retired") {
-      throw new StorageError("Retired identities cannot be suspended", 409, "identity_conflict");
+      throw new StorageError(
+        "Retired identities cannot be suspended",
+        409,
+        "identity_conflict",
+      );
     }
 
     const timestamp = nowIso();
@@ -1026,18 +1178,27 @@ class SqliteIdentityStorage implements IdentityStorage {
 
     const backend = await this.provider.getBackend();
     if (backend.kind === "memory") {
-      backend.state.identities.set(suspended.id, cloneStoredIdentity(suspended));
+      backend.state.identities.set(
+        suspended.id,
+        cloneStoredIdentity(suspended),
+      );
       return cloneStoredIdentity(suspended);
     }
 
-    backend.db.prepare(UPDATE_IDENTITY_SQL).run(...toIdentityUpdateParams(suspended), suspended.id);
+    backend.db
+      .prepare(UPDATE_IDENTITY_SQL)
+      .run(...toIdentityUpdateParams(suspended), suspended.id);
     return this.getRequired(suspended.id);
   }
 
   async retire(id: string, _reason?: string): Promise<StoredIdentity> {
     const current = await this.getRequired(id);
     if (current.status === "retired") {
-      throw new StorageError("Identity is already retired", 409, "identity_conflict");
+      throw new StorageError(
+        "Identity is already retired",
+        409,
+        "identity_conflict",
+      );
     }
     const timestamp = nowIso();
     const retired = normalizeStoredIdentity({
@@ -1054,17 +1215,27 @@ class SqliteIdentityStorage implements IdentityStorage {
       return cloneStoredIdentity(retired);
     }
 
-    backend.db.prepare(UPDATE_IDENTITY_SQL).run(...toIdentityUpdateParams(retired), retired.id);
+    backend.db
+      .prepare(UPDATE_IDENTITY_SQL)
+      .run(...toIdentityUpdateParams(retired), retired.id);
     return this.getRequired(retired.id);
   }
 
   async reactivate(id: string): Promise<StoredIdentity> {
     const current = await this.getRequired(id);
     if (current.status === "active") {
-      throw new StorageError("Identity is already active", 409, "identity_conflict");
+      throw new StorageError(
+        "Identity is already active",
+        409,
+        "identity_conflict",
+      );
     }
     if (current.status === "retired") {
-      throw new StorageError("Retired identities cannot be reactivated", 409, "identity_conflict");
+      throw new StorageError(
+        "Retired identities cannot be reactivated",
+        409,
+        "identity_conflict",
+      );
     }
 
     const timestamp = nowIso();
@@ -1078,29 +1249,46 @@ class SqliteIdentityStorage implements IdentityStorage {
 
     const backend = await this.provider.getBackend();
     if (backend.kind === "memory") {
-      backend.state.identities.set(reactivated.id, cloneStoredIdentity(reactivated));
+      backend.state.identities.set(
+        reactivated.id,
+        cloneStoredIdentity(reactivated),
+      );
       return cloneStoredIdentity(reactivated);
     }
 
-    backend.db.prepare(UPDATE_IDENTITY_SQL).run(...toIdentityUpdateParams(reactivated), reactivated.id);
+    backend.db
+      .prepare(UPDATE_IDENTITY_SQL)
+      .run(...toIdentityUpdateParams(reactivated), reactivated.id);
     return this.getRequired(reactivated.id);
   }
 
-  async findDuplicate(orgId: string, name: string): Promise<DuplicateIdentityRecord | null> {
+  async findDuplicate(
+    orgId: string,
+    name: string,
+  ): Promise<DuplicateIdentityRecord | null> {
     const normalizedOrgId = requireString(orgId, "orgId is required");
     const normalizedName = requireString(name, "name is required");
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
       for (const identity of backend.state.identities.values()) {
-        if (identity.orgId === normalizedOrgId && identity.name === normalizedName) {
-          return { id: identity.id, name: identity.name, orgId: identity.orgId };
+        if (
+          identity.orgId === normalizedOrgId &&
+          identity.name === normalizedName
+        ) {
+          return {
+            id: identity.id,
+            name: identity.name,
+            orgId: identity.orgId,
+          };
         }
       }
       return null;
     }
 
-    const row = backend.db.prepare<DuplicateIdentityRow>(FIND_DUPLICATE_IDENTITY_SQL).get(normalizedOrgId, normalizedName);
+    const row = backend.db
+      .prepare<DuplicateIdentityRow>(FIND_DUPLICATE_IDENTITY_SQL)
+      .get(normalizedOrgId, normalizedName);
     const id = normalizeOptionalString(row?.id);
     const duplicateOrgId = normalizeOptionalString(row?.org_id);
     return id && duplicateOrgId
@@ -1116,7 +1304,9 @@ class SqliteIdentityStorage implements IdentityStorage {
       return cloneOptionalJson(backend.state.orgBudgets.get(normalizedOrgId));
     }
 
-    const row = backend.db.prepare<OrgBudgetRow>(SELECT_ORG_BUDGET_SQL).get(normalizedOrgId);
+    const row = backend.db
+      .prepare<OrgBudgetRow>(SELECT_ORG_BUDGET_SQL)
+      .get(normalizedOrgId);
     if (!row) {
       return undefined;
     }
@@ -1132,12 +1322,19 @@ class SqliteIdentityStorage implements IdentityStorage {
 
   async listChildIds(orgId: string, sponsorId: string): Promise<string[]> {
     const normalizedOrgId = requireString(orgId, "orgId is required");
-    const normalizedSponsorId = requireString(sponsorId, "sponsorId is required");
+    const normalizedSponsorId = requireString(
+      sponsorId,
+      "sponsorId is required",
+    );
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
       return [...backend.state.identities.values()]
-        .filter((identity) => identity.orgId === normalizedOrgId && identity.sponsorId === normalizedSponsorId)
+        .filter(
+          (identity) =>
+            identity.orgId === normalizedOrgId &&
+            identity.sponsorId === normalizedSponsorId,
+        )
         .sort(compareIdentityDesc)
         .map((identity) => identity.id);
     }
@@ -1149,14 +1346,24 @@ class SqliteIdentityStorage implements IdentityStorage {
       .filter((id): id is string => Boolean(id));
   }
 
-  async listChildren(orgId: string, sponsorId: string): Promise<IdentityChildSummary[]> {
+  async listChildren(
+    orgId: string,
+    sponsorId: string,
+  ): Promise<IdentityChildSummary[]> {
     const normalizedOrgId = requireString(orgId, "orgId is required");
-    const normalizedSponsorId = requireString(sponsorId, "sponsorId is required");
+    const normalizedSponsorId = requireString(
+      sponsorId,
+      "sponsorId is required",
+    );
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
       return [...backend.state.identities.values()]
-        .filter((identity) => identity.orgId === normalizedOrgId && identity.sponsorId === normalizedSponsorId)
+        .filter(
+          (identity) =>
+            identity.orgId === normalizedOrgId &&
+            identity.sponsorId === normalizedSponsorId,
+        )
         .sort(compareIdentityDesc)
         .map((identity) => ({
           id: identity.id,
@@ -1197,7 +1404,9 @@ class SqliteIdentityStorage implements IdentityStorage {
       return { activeIdentities, suspendedIdentities };
     }
 
-    const rows = backend.db.prepare<StatusCountRow>(STATUS_COUNTS_SQL).all(normalizedOrgId);
+    const rows = backend.db
+      .prepare<StatusCountRow>(STATUS_COUNTS_SQL)
+      .all(normalizedOrgId);
     return summarizeIdentityCounts(rows);
   }
 
@@ -1210,7 +1419,10 @@ class SqliteIdentityStorage implements IdentityStorage {
     return identity;
   }
 
-  private async writeBudgetAuditEvent(backend: Extract<BackendContext, { kind: "sqlite" }>, identity: StoredIdentity): Promise<void> {
+  private async writeBudgetAuditEvent(
+    backend: Extract<BackendContext, { kind: "sqlite" }>,
+    identity: StoredIdentity,
+  ): Promise<void> {
     const payload = JSON.stringify({
       eventType: "budget.exceeded",
       status: identity.status,
@@ -1221,16 +1433,18 @@ class SqliteIdentityStorage implements IdentityStorage {
     });
 
     try {
-      backend.db.prepare(INSERT_AUDIT_EVENT_SQL).run(
-        crypto.randomUUID(),
-        identity.orgId,
-        identity.workspaceId,
-        identity.id,
-        "identity.suspended",
-        "budget_exceeded",
-        payload,
-        identity.updatedAt,
-      );
+      backend.db
+        .prepare(INSERT_AUDIT_EVENT_SQL)
+        .run(
+          crypto.randomUUID(),
+          identity.orgId,
+          identity.workspaceId,
+          identity.id,
+          "identity.suspended",
+          "budget_exceeded",
+          payload,
+          identity.updatedAt,
+        );
     } catch (error) {
       console.error("Failed to write budget audit event", error);
     }
@@ -1240,13 +1454,338 @@ class SqliteIdentityStorage implements IdentityStorage {
 class SqliteTokenStorage implements TokenStorage {
   constructor(private readonly provider: BackendProvider) {}
 
+  async persistIssued(token: IssuedTokenRecord): Promise<void> {
+    const backend = await this.provider.getBackend();
+
+    if (backend.kind === "memory") {
+      backend.state.tokens.set(token.id, {
+        ...token,
+        status: "active",
+      });
+      return;
+    }
+
+    backend.db
+      .prepare(INSERT_TOKEN_SQL)
+      .run(
+        token.id,
+        token.tokenId,
+        token.jti,
+        token.identityId,
+        token.sessionId ?? null,
+        token.issuedAt,
+        token.expiresAt,
+        token.createdAt,
+      );
+  }
+
+  async persistIssuedWithAudit(input: IssuedTokenAudit): Promise<void> {
+    const backend = await this.provider.getBackend();
+    const auditEntry = normalizeAuditWriteEntry(input.auditEntry);
+
+    if (backend.kind === "memory") {
+      if (
+        backend.state.tokens.has(input.token.id) ||
+        backend.state.auditLogs.some((entry) => entry.id === auditEntry.id)
+      ) {
+        throw new StorageError(
+          "token_already_exists",
+          409,
+          "token_already_exists",
+        );
+      }
+      backend.state.tokens.set(input.token.id, {
+        ...input.token,
+        status: "active",
+      });
+      backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return;
+    }
+
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      backend.db
+        .prepare(INSERT_TOKEN_SQL)
+        .run(
+          input.token.id,
+          input.token.tokenId,
+          input.token.jti,
+          input.token.identityId,
+          input.token.sessionId ?? null,
+          input.token.issuedAt,
+          input.token.expiresAt,
+          input.token.createdAt,
+        );
+      backend.db
+        .prepare(INSERT_AUDIT_LOG_SQL)
+        .run(...toAuditParams(auditEntry));
+      backend.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the originating storage error.
+      }
+      throw error;
+    }
+  }
+
+  async persistIssuedPairWithAudit(input: IssuedTokenPairAudit): Promise<void> {
+    const backend = await this.provider.getBackend();
+    const auditEntry = normalizeAuditWriteEntry(input.auditEntry);
+
+    if (backend.kind === "memory") {
+      if (
+        backend.state.tokens.has(input.accessToken.id) ||
+        backend.state.tokens.has(input.refreshToken.id) ||
+        backend.state.auditLogs.some((entry) => entry.id === auditEntry.id)
+      ) {
+        throw new StorageError(
+          "token_pair_already_exists",
+          409,
+          "token_pair_already_exists",
+        );
+      }
+
+      backend.state.tokens.set(input.accessToken.id, {
+        ...input.accessToken,
+        status: "active",
+      });
+      backend.state.tokens.set(input.refreshToken.id, {
+        ...input.refreshToken,
+        status: "active",
+      });
+      backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return;
+    }
+
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      const insertToken = backend.db.prepare(INSERT_TOKEN_SQL);
+      for (const token of [input.accessToken, input.refreshToken]) {
+        insertToken.run(
+          token.id,
+          token.tokenId,
+          token.jti,
+          token.identityId,
+          token.sessionId ?? null,
+          token.issuedAt,
+          token.expiresAt,
+          token.createdAt,
+        );
+      }
+      backend.db
+        .prepare(INSERT_AUDIT_LOG_SQL)
+        .run(...toAuditParams(auditEntry));
+      backend.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the originating storage error (for example SQLITE_FULL);
+        // rollback errors must not hide the retry/capacity classification.
+      }
+      throw error;
+    }
+  }
+
+  async rotateIssuedPairWithAudit(
+    input: IssuedTokenRotationAudit,
+  ): Promise<void> {
+    const backend = await this.provider.getBackend();
+    const refreshedAudit = normalizeAuditWriteEntry(input.refreshedAuditEntry);
+    const revokedAudit = normalizeAuditWriteEntry(input.revokedAuditEntry);
+    const previous = input.previousRefreshToken;
+
+    if (backend.kind === "memory") {
+      const previousToken = backend.state.tokens.get(previous.id);
+      if (
+        !previousToken ||
+        previousToken.identityId !== previous.identityId ||
+        previousToken.status !== "active"
+      ) {
+        throw new StorageError(
+          "refresh_token_not_active",
+          409,
+          "refresh_token_not_active",
+        );
+      }
+      if (
+        backend.state.tokens.has(input.accessToken.id) ||
+        backend.state.tokens.has(input.refreshToken.id) ||
+        backend.state.auditLogs.some(
+          (entry) =>
+            entry.id === refreshedAudit.id || entry.id === revokedAudit.id,
+        )
+      ) {
+        throw new StorageError(
+          "token_rotation_conflict",
+          409,
+          "token_rotation_conflict",
+        );
+      }
+      backend.state.tokens.set(input.accessToken.id, {
+        ...input.accessToken,
+        status: "active",
+      });
+      backend.state.tokens.set(input.refreshToken.id, {
+        ...input.refreshToken,
+        status: "active",
+      });
+      previousToken.status = "revoked";
+      backend.state.revokedTokens.set(previous.id, {
+        expiresAt: previous.expiresAt,
+        identityId: previous.identityId,
+        revokedAt: revokedAudit.timestamp,
+      });
+      backend.state.auditLogs.push(
+        cloneAuditEntryRecord(refreshedAudit),
+        cloneAuditEntryRecord(revokedAudit),
+      );
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return;
+    }
+
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      const insertToken = backend.db.prepare(INSERT_TOKEN_SQL);
+      for (const token of [input.accessToken, input.refreshToken]) {
+        insertToken.run(
+          token.id,
+          token.tokenId,
+          token.jti,
+          token.identityId,
+          token.sessionId ?? null,
+          token.issuedAt,
+          token.expiresAt,
+          token.createdAt,
+        );
+      }
+      const revoked = backend.db
+        .prepare(
+          `
+        UPDATE tokens
+        SET status = 'revoked'
+        WHERE identity_id = ?
+          AND status = 'active'
+          AND (id = ? OR token_id = ? OR jti = ?)
+      `,
+        )
+        .run(previous.identityId, previous.id, previous.id, previous.id);
+      if (Number(revoked.changes ?? 0) !== 1) {
+        throw new StorageError(
+          "refresh_token_not_active",
+          409,
+          "refresh_token_not_active",
+        );
+      }
+      backend.db
+        .prepare(UPSERT_REVOKED_TOKEN_SQL)
+        .run(previous.id, previous.expiresAt);
+      backend.db
+        .prepare(INSERT_AUDIT_LOG_SQL)
+        .run(...toAuditParams(refreshedAudit));
+      backend.db
+        .prepare(INSERT_AUDIT_LOG_SQL)
+        .run(...toAuditParams(revokedAudit));
+      backend.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the originating storage error.
+      }
+      throw error;
+    }
+  }
+
+  async getById(tokenId: string): Promise<StoredTokenRecord | null> {
+    const normalizedTokenId = normalizeOptionalString(tokenId);
+    if (!normalizedTokenId) {
+      return null;
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const token = [...backend.state.tokens.values()].find(
+        (candidate) =>
+          candidate.id === normalizedTokenId ||
+          candidate.tokenId === normalizedTokenId ||
+          candidate.jti === normalizedTokenId,
+      );
+      return token ? toStoredTokenRecord(token) : null;
+    }
+
+    const row = backend.db
+      .prepare<TokenRow>(SELECT_TOKEN_BY_ID_SQL)
+      .get(normalizedTokenId, normalizedTokenId, normalizedTokenId);
+    return row ? toStoredTokenRecord(row) : null;
+  }
+
+  async listActiveByIdentityId(
+    identityId: string,
+  ): Promise<StoredTokenRecord[]> {
+    const normalizedIdentityId = normalizeOptionalString(identityId);
+    if (!normalizedIdentityId) {
+      return [];
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      return [...backend.state.tokens.values()]
+        .filter(
+          (token) =>
+            token.identityId === normalizedIdentityId &&
+            token.status === "active",
+        )
+        .map(toStoredTokenRecord);
+    }
+
+    return backend.db
+      .prepare<TokenRow>(SELECT_TOKENS_BY_IDENTITY_SQL)
+      .all(normalizedIdentityId)
+      .map(toStoredTokenRecord);
+  }
+
+  async listActiveBySessionId(sessionId: string): Promise<StoredTokenRecord[]> {
+    const normalizedSessionId = normalizeOptionalString(sessionId);
+    if (!normalizedSessionId) {
+      return [];
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      return [...backend.state.tokens.values()]
+        .filter(
+          (token) =>
+            token.sessionId === normalizedSessionId &&
+            token.status === "active",
+        )
+        .map(toStoredTokenRecord);
+    }
+
+    return backend.db
+      .prepare<TokenRow>(SELECT_TOKENS_BY_SESSION_SQL)
+      .all(normalizedSessionId)
+      .map(toStoredTokenRecord);
+  }
+
   async listActiveIds(identityId: string): Promise<string[]> {
-    const normalizedIdentityId = requireString(identityId, "identityId is required");
+    const normalizedIdentityId = requireString(
+      identityId,
+      "identityId is required",
+    );
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
       return [...backend.state.tokens.values()]
-        .filter((token) => token.identityId === normalizedIdentityId && token.status === "active")
+        .filter(
+          (token) =>
+            token.identityId === normalizedIdentityId &&
+            token.status === "active",
+        )
         .map((token) => token.id || token.jti || token.tokenId || "")
         .filter(Boolean);
     }
@@ -1254,16 +1793,54 @@ class SqliteTokenStorage implements TokenStorage {
     return backend.db
       .prepare<ActiveTokenRow>(LIST_ACTIVE_TOKENS_SQL)
       .all(normalizedIdentityId)
-      .map((row) => normalizeOptionalString(row.id) ?? normalizeOptionalString(row.jti) ?? normalizeOptionalString(row.token_id))
+      .map(
+        (row) =>
+          normalizeOptionalString(row.id) ??
+          normalizeOptionalString(row.jti) ??
+          normalizeOptionalString(row.token_id),
+      )
       .filter((tokenId): tokenId is string => Boolean(tokenId));
   }
+}
+
+function toStoredTokenRecord(
+  token: TokenRow | MemoryTokenRecord,
+): StoredTokenRecord {
+  if ("identityId" in token) {
+    return {
+      id: token.id,
+      tokenId: token.tokenId,
+      jti: token.jti,
+      identityId: token.identityId,
+      status: token.status,
+      sessionId: token.sessionId ?? null,
+      expiresAt: token.expiresAt,
+    };
+  }
+
+  return {
+    id: token.id,
+    tokenId: token.token_id,
+    jti: token.jti,
+    identityId: token.identity_id,
+    status: token.status,
+    sessionId: token.session_id,
+    expiresAt: token.expires_at,
+  };
 }
 
 class SqliteRevocationStorage implements RevocationStorage {
   constructor(private readonly provider: BackendProvider) {}
 
-  async revokeIdentityTokens(identityId: string, tokenIds: string[], revokedAt: string): Promise<void> {
-    const normalizedIdentityId = requireString(identityId, "identityId is required");
+  async revokeIdentityTokens(
+    identityId: string,
+    tokenIds: string[],
+    revokedAt: string,
+  ): Promise<void> {
+    const normalizedIdentityId = requireString(
+      identityId,
+      "identityId is required",
+    );
     const normalizedTokenIds = normalizeStringArray(tokenIds);
     if (normalizedTokenIds.length === 0) {
       return;
@@ -1282,8 +1859,10 @@ class SqliteRevocationStorage implements RevocationStorage {
         });
         for (const token of backend.state.tokens.values()) {
           if (
-            token.identityId === normalizedIdentityId
-            && (token.id === tokenId || token.jti === tokenId || token.tokenId === tokenId)
+            token.identityId === normalizedIdentityId &&
+            (token.id === tokenId ||
+              token.jti === tokenId ||
+              token.tokenId === tokenId)
           ) {
             token.status = "revoked";
           }
@@ -1293,8 +1872,82 @@ class SqliteRevocationStorage implements RevocationStorage {
     }
 
     for (const tokenId of normalizedTokenIds) {
-      backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL).run(tokenId, MAX_REVOCATION_EXPIRY);
-      backend.db.prepare(UPDATE_TOKEN_STATUS_SQL).run(normalizedIdentityId, tokenId, tokenId, tokenId);
+      backend.db
+        .prepare(UPSERT_REVOKED_TOKEN_SQL)
+        .run(tokenId, MAX_REVOCATION_EXPIRY);
+      backend.db
+        .prepare(UPDATE_TOKEN_STATUS_SQL)
+        .run(normalizedIdentityId, tokenId, tokenId, tokenId);
+    }
+  }
+
+  async revokeIdentityTokensWithAudit(input: RevokedTokenAudit): Promise<void> {
+    const normalizedIdentityId = requireString(
+      input.identityId,
+      "identityId is required",
+    );
+    const normalizedTokenIds = normalizeStringArray(input.tokenIds);
+    if (normalizedTokenIds.length === 0) {
+      return;
+    }
+
+    const timestamp = normalizeTimestamp(input.revokedAt);
+    const auditEntry = normalizeAuditWriteEntry(input.auditEntry);
+    const backend = await this.provider.getBackend();
+    pruneExpiredRevocations(backend);
+
+    if (backend.kind === "memory") {
+      // Check every failure condition before changing memory state, preserving
+      // the same all-or-nothing contract as the SQLite transaction below.
+      if (backend.state.auditLogs.some((entry) => entry.id === auditEntry.id)) {
+        throw new StorageError(
+          "audit_entry_already_exists",
+          409,
+          "audit_entry_already_exists",
+        );
+      }
+
+      for (const tokenId of normalizedTokenIds) {
+        backend.state.revokedTokens.set(tokenId, {
+          expiresAt: MAX_REVOCATION_EXPIRY,
+          identityId: normalizedIdentityId,
+          revokedAt: timestamp,
+        });
+        for (const token of backend.state.tokens.values()) {
+          if (
+            token.identityId === normalizedIdentityId &&
+            (token.id === tokenId ||
+              token.jti === tokenId ||
+              token.tokenId === tokenId)
+          ) {
+            token.status = "revoked";
+          }
+        }
+      }
+      backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return;
+    }
+
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      const upsertRevokedToken = backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL);
+      const updateTokenStatus = backend.db.prepare(UPDATE_TOKEN_STATUS_SQL);
+      for (const tokenId of normalizedTokenIds) {
+        upsertRevokedToken.run(tokenId, MAX_REVOCATION_EXPIRY);
+        updateTokenStatus.run(normalizedIdentityId, tokenId, tokenId, tokenId);
+      }
+      backend.db
+        .prepare(INSERT_AUDIT_LOG_SQL)
+        .run(...toAuditParams(auditEntry));
+      backend.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the originating audit or storage failure.
+      }
+      throw error;
     }
   }
 
@@ -1311,7 +1964,9 @@ class SqliteRevocationStorage implements RevocationStorage {
     }
 
     pruneExpiredRevocations(backend);
-    const row = backend.db.prepare<ExistsRow>(SELECT_REVOKED_TOKEN_SQL).get(normalizedTokenId, nowUnixSeconds());
+    const row = backend.db
+      .prepare<ExistsRow>(SELECT_REVOKED_TOKEN_SQL)
+      .get(normalizedTokenId, nowUnixSeconds());
     return normalizeNumber(row?.found) > 0;
   }
 }
@@ -1351,7 +2006,9 @@ class SqliteApiKeyStorage implements ApiKeyStorage {
       return apiKey ? cloneApiKey(apiKey) : null;
     }
 
-    return hydrateApiKey(backend.db.prepare<ApiKeyRow>(SELECT_API_KEY_SQL).get(apiKeyId));
+    return hydrateApiKey(
+      backend.db.prepare<ApiKeyRow>(SELECT_API_KEY_SQL).get(apiKeyId),
+    );
   }
 
   async getByHash(keyHash: string): Promise<StoredApiKey | null> {
@@ -1373,7 +2030,9 @@ class SqliteApiKeyStorage implements ApiKeyStorage {
     }
 
     const apiKey = hydrateApiKey(
-      backend.db.prepare<ApiKeyRow>(SELECT_API_KEY_BY_HASH_SQL).get(normalizedKeyHash),
+      backend.db
+        .prepare<ApiKeyRow>(SELECT_API_KEY_BY_HASH_SQL)
+        .get(normalizedKeyHash),
     );
     if (!apiKey || !constantTimeEquals(normalizedKeyHash, apiKey.keyHash)) {
       return null;
@@ -1382,7 +2041,10 @@ class SqliteApiKeyStorage implements ApiKeyStorage {
     return apiKey;
   }
 
-  async list(orgId: string, options: ListApiKeysOptions = {}): Promise<StoredApiKey[]> {
+  async list(
+    orgId: string,
+    options: ListApiKeysOptions = {},
+  ): Promise<StoredApiKey[]> {
     const normalizedOrgId = requireString(orgId, "orgId is required");
     const limit = normalizeLimit(options.limit);
     const cursorId = normalizeOptionalString(options.cursorId);
@@ -1399,13 +2061,20 @@ class SqliteApiKeyStorage implements ApiKeyStorage {
             return true;
           }
 
-          return compareApiKeyCursor(apiKey, backend.state.apiKeys.get(cursorId) ?? null) < 0;
+          return (
+            compareApiKeyCursor(
+              apiKey,
+              backend.state.apiKeys.get(cursorId) ?? null,
+            ) < 0
+          );
         })
         .slice(0, limit)
         .map((apiKey) => cloneApiKey(apiKey));
     }
 
-    const rows = backend.db.prepare<ApiKeyRow>(LIST_API_KEYS_SQL).all(normalizedOrgId);
+    const rows = backend.db
+      .prepare<ApiKeyRow>(LIST_API_KEYS_SQL)
+      .all(normalizedOrgId);
     const cursorApiKey = cursorId ? await this.get(cursorId) : null;
 
     return rows
@@ -1437,7 +2106,9 @@ class SqliteApiKeyStorage implements ApiKeyStorage {
       return cloneApiKey(next);
     }
 
-    backend.db.prepare(UPDATE_API_KEY_REVOKED_SQL).run(timestamp, timestamp, next.id);
+    backend.db
+      .prepare(UPDATE_API_KEY_REVOKED_SQL)
+      .run(timestamp, timestamp, next.id);
     return this.getRequired(next.id);
   }
 
@@ -1459,15 +2130,22 @@ class SqliteApiKeyStorage implements ApiKeyStorage {
         return;
       }
 
-      backend.state.apiKeys.set(apiKeyId, cloneApiKey(normalizeStoredApiKey({
-        ...current,
-        updatedAt: timestamp,
-        lastUsedAt: timestamp,
-      })));
+      backend.state.apiKeys.set(
+        apiKeyId,
+        cloneApiKey(
+          normalizeStoredApiKey({
+            ...current,
+            updatedAt: timestamp,
+            lastUsedAt: timestamp,
+          }),
+        ),
+      );
       return;
     }
 
-    backend.db.prepare(UPDATE_API_KEY_LAST_USED_SQL).run(timestamp, timestamp, apiKeyId, threshold);
+    backend.db
+      .prepare(UPDATE_API_KEY_LAST_USED_SQL)
+      .run(timestamp, timestamp, apiKeyId, threshold);
   }
 
   private async getRequired(id: string): Promise<StoredApiKey> {
@@ -1524,13 +2202,20 @@ class SqliteRoleStorage implements RoleStorage {
     if (backend.kind === "memory") {
       return [...backend.state.roles.values()]
         .filter((role) => role.orgId === normalizedOrgId)
-        .filter((role) => !normalizedWorkspaceId || !role.workspaceId || role.workspaceId === normalizedWorkspaceId)
+        .filter(
+          (role) =>
+            !normalizedWorkspaceId ||
+            !role.workspaceId ||
+            role.workspaceId === normalizedWorkspaceId,
+        )
         .sort(compareRoleAsc)
         .map((role) => cloneRole(role));
     }
 
     const rows = normalizedWorkspaceId
-      ? backend.db.prepare<RoleRow>(LIST_ROLES_FOR_WORKSPACE_SQL).all(normalizedOrgId, normalizedWorkspaceId)
+      ? backend.db
+          .prepare<RoleRow>(LIST_ROLES_FOR_WORKSPACE_SQL)
+          .all(normalizedOrgId, normalizedWorkspaceId)
       : backend.db.prepare<RoleRow>(LIST_ROLES_SQL).all(normalizedOrgId);
 
     return rows
@@ -1543,7 +2228,9 @@ class SqliteRoleStorage implements RoleStorage {
     const next: Role = normalizeRole({
       ...current,
       ...(patch.name !== undefined ? { name: patch.name } : {}),
-      ...(patch.description !== undefined ? { description: patch.description } : {}),
+      ...(patch.description !== undefined
+        ? { description: patch.description }
+        : {}),
       ...(patch.scopes !== undefined ? { scopes: patch.scopes } : {}),
     });
     const backend = await this.provider.getBackend();
@@ -1583,7 +2270,9 @@ class SqliteRoleStorage implements RoleStorage {
         .map((role) => cloneRole(role));
     }
 
-    const roles = await Promise.all(normalizedIds.map((roleId) => this.get(roleId)));
+    const roles = await Promise.all(
+      normalizedIds.map((roleId) => this.get(roleId)),
+    );
     return roles.filter((role): role is Role => role !== null);
   }
 
@@ -1606,7 +2295,11 @@ class SqlitePolicyStorage implements PolicyStorage {
 
     if (backend.kind === "memory") {
       if (backend.state.policies.has(normalized.id)) {
-        throw new StorageError("policy_name_conflict", 409, "policy_name_conflict");
+        throw new StorageError(
+          "policy_name_conflict",
+          409,
+          "policy_name_conflict",
+        );
       }
 
       backend.state.policies.set(normalized.id, clonePolicy(normalized));
@@ -1641,13 +2334,20 @@ class SqlitePolicyStorage implements PolicyStorage {
     if (backend.kind === "memory") {
       return [...backend.state.policies.values()]
         .filter((policy) => policy.orgId === normalizedOrgId)
-        .filter((policy) => !normalizedWorkspaceId || !policy.workspaceId || policy.workspaceId === normalizedWorkspaceId)
+        .filter(
+          (policy) =>
+            !normalizedWorkspaceId ||
+            !policy.workspaceId ||
+            policy.workspaceId === normalizedWorkspaceId,
+        )
         .sort(comparePolicyDesc)
         .map((policy) => clonePolicy(policy));
     }
 
     const rows = normalizedWorkspaceId
-      ? backend.db.prepare<PolicyRow>(LIST_POLICIES_FOR_WORKSPACE_SQL).all(normalizedOrgId, normalizedWorkspaceId)
+      ? backend.db
+          .prepare<PolicyRow>(LIST_POLICIES_FOR_WORKSPACE_SQL)
+          .all(normalizedOrgId, normalizedWorkspaceId)
       : backend.db.prepare<PolicyRow>(LIST_POLICIES_SQL).all(normalizedOrgId);
 
     return rows
@@ -1662,7 +2362,9 @@ class SqlitePolicyStorage implements PolicyStorage {
       ...(patch.name !== undefined ? { name: patch.name } : {}),
       ...(patch.effect !== undefined ? { effect: patch.effect } : {}),
       ...(patch.scopes !== undefined ? { scopes: patch.scopes } : {}),
-      ...(patch.conditions !== undefined ? { conditions: patch.conditions } : {}),
+      ...(patch.conditions !== undefined
+        ? { conditions: patch.conditions }
+        : {}),
       ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
     });
     const backend = await this.provider.getBackend();
@@ -1685,7 +2387,9 @@ class SqlitePolicyStorage implements PolicyStorage {
       return;
     }
 
-    backend.db.prepare(DELETE_POLICY_SQL).run(new Date().toISOString(), policy.id, policy.orgId);
+    backend.db
+      .prepare(DELETE_POLICY_SQL)
+      .run(new Date().toISOString(), policy.id, policy.orgId);
   }
 
   private async getRequired(id: string): Promise<Policy> {
@@ -1720,55 +2424,75 @@ class SqliteAuditStorage implements AuditStorage {
     }
   }
 
-  async query(query: AuditQueryInput, options: AuditQueryOptions = {}): Promise<AuditEntryRecord[]> {
+  async query(query: AuditQueryInput, options: AuditQueryOptions = {}) {
     const normalized = normalizeAuditQuery(query);
     const backend = await this.provider.getBackend();
-    const limitWithOverflow = normalized.limit + (options.includeOverflowRow ?? true ? 1 : 0);
+    const limitWithOverflow =
+      normalized.limit + ((options.includeOverflowRow ?? true) ? 1 : 0);
 
     if (backend.kind === "memory") {
-      return backend.state.auditLogs
-        .filter((entry) => matchesAuditQuery(entry, normalized))
-        .sort(compareAuditRecordDesc)
-        .slice(0, limitWithOverflow)
-        .map((entry) => cloneAuditEntryRecord(entry));
+      return {
+        kind: "complete" as const,
+        entries: backend.state.auditLogs
+          .filter((entry) => matchesAuditQuery(entry, normalized))
+          .sort(compareAuditRecordDesc)
+          .slice(0, limitWithOverflow)
+          .map((entry) => cloneAuditEntryRecord(entry)),
+      };
     }
 
     const statement = buildAuditQuerySql(normalized, limitWithOverflow);
-    return backend.db
-      .prepare<AuditRow>(statement.sql)
-      .all(...statement.params)
-      .map((row) => hydrateAuditEntryRecord(row))
-      .filter((entry): entry is AuditEntryRecord => entry !== null);
-  }
-
-  async getActionCounts(orgId: string, query: DashboardAuditQuery): Promise<DashboardAuditCounts> {
-    const normalizedOrgId = requireString(orgId, "orgId is required");
-    const from = normalizeOptionalString(query.from);
-    const to = normalizeOptionalString(query.to);
-    const backend = await this.provider.getBackend();
-
-    if (backend.kind === "memory") {
-      return summarizeAuditCounts(
-        backend.state.auditLogs.filter((entry) =>
-          entry.orgId === normalizedOrgId
-          && (!from || entry.timestamp >= from)
-          && (!to || entry.timestamp < to),
-        ),
-      );
-    }
-
-    const statement = buildAuditCountsSql(normalizedOrgId, { from, to });
-    const row = backend.db.prepare<AuditCountRow>(statement.sql).get(...statement.params);
     return {
-      tokensIssued: normalizeNumber(row?.tokensIssued),
-      tokensRevoked: normalizeNumber(row?.tokensRevoked),
-      tokensRefreshed: normalizeNumber(row?.tokensRefreshed),
-      scopeChecks: normalizeNumber(row?.scopeChecks),
-      scopeDenials: normalizeNumber(row?.scopeDenials),
+      kind: "complete" as const,
+      entries: backend.db
+        .prepare<AuditRow>(statement.sql)
+        .all(...statement.params)
+        .map((row) => hydrateAuditEntryRecord(row))
+        .filter((entry): entry is AuditEntryRecord => entry !== null),
     };
   }
 
-  async writeIdentitySuspendedEvent(identity: StoredIdentity, reason: string, actorId: string): Promise<void> {
+  async getActionCounts(orgId: string, query: DashboardAuditQuery) {
+    const normalizedOrgId = requireString(orgId, "orgId is required");
+    const from = normalizeAuditQueryTimestamp(query.from, "from");
+    const to = normalizeAuditQueryTimestamp(query.to, "to");
+    const backend = await this.provider.getBackend();
+
+    if (backend.kind === "memory") {
+      return {
+        kind: "complete" as const,
+        counts: summarizeAuditCounts(
+          backend.state.auditLogs.filter(
+            (entry) =>
+              entry.orgId === normalizedOrgId &&
+              (!from || entry.timestamp >= from) &&
+              (!to || entry.timestamp < to),
+          ),
+        ),
+      };
+    }
+
+    const statement = buildAuditCountsSql(normalizedOrgId, { from, to });
+    const row = backend.db
+      .prepare<AuditCountRow>(statement.sql)
+      .get(...statement.params);
+    return {
+      kind: "complete" as const,
+      counts: {
+        tokensIssued: normalizeNumber(row?.tokensIssued),
+        tokensRevoked: normalizeNumber(row?.tokensRevoked),
+        tokensRefreshed: normalizeNumber(row?.tokensRefreshed),
+        scopeChecks: normalizeNumber(row?.scopeChecks),
+        scopeDenials: normalizeNumber(row?.scopeDenials),
+      },
+    };
+  }
+
+  async writeIdentitySuspendedEvent(
+    identity: StoredIdentity,
+    reason: string,
+    actorId: string,
+  ): Promise<void> {
     const normalizedReason = requireString(reason, "reason is required");
     const backend = await this.provider.getBackend();
     const payload = JSON.stringify({
@@ -1785,16 +2509,18 @@ class SqliteAuditStorage implements AuditStorage {
     }
 
     try {
-      backend.db.prepare(INSERT_AUDIT_EVENT_SQL).run(
-        crypto.randomUUID(),
-        identity.orgId,
-        identity.workspaceId,
-        identity.id,
-        "identity.suspended",
-        normalizedReason,
-        payload,
-        identity.updatedAt,
-      );
+      backend.db
+        .prepare(INSERT_AUDIT_EVENT_SQL)
+        .run(
+          crypto.randomUUID(),
+          identity.orgId,
+          identity.workspaceId,
+          identity.id,
+          "identity.suspended",
+          normalizedReason,
+          payload,
+          identity.updatedAt,
+        );
     } catch (error) {
       console.error("Failed to write identity suspended audit event", error);
     }
@@ -1809,19 +2535,24 @@ class SqliteAuditWebhookStorage implements AuditWebhookStorage {
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
-      backend.state.auditWebhooks.set(normalized.id, cloneAuditWebhook(normalized));
+      backend.state.auditWebhooks.set(
+        normalized.id,
+        cloneAuditWebhook(normalized),
+      );
       return cloneAuditWebhook(normalized);
     }
 
-    backend.db.prepare(INSERT_AUDIT_WEBHOOK_SQL).run(
-      normalized.id,
-      normalized.orgId,
-      normalized.url,
-      normalized.secret,
-      normalized.events ? JSON.stringify(normalized.events) : null,
-      normalized.createdAt,
-      normalized.updatedAt,
-    );
+    backend.db
+      .prepare(INSERT_AUDIT_WEBHOOK_SQL)
+      .run(
+        normalized.id,
+        normalized.orgId,
+        normalized.url,
+        normalized.secret,
+        normalized.events ? JSON.stringify(normalized.events) : null,
+        normalized.createdAt,
+        normalized.updatedAt,
+      );
 
     return cloneAuditWebhook(normalized);
   }
@@ -1857,14 +2588,18 @@ class SqliteAuditWebhookStorage implements AuditWebhookStorage {
       return;
     }
 
-    backend.db.prepare(DELETE_AUDIT_WEBHOOK_SQL).run(normalizedOrgId, normalizedId);
+    backend.db
+      .prepare(DELETE_AUDIT_WEBHOOK_SQL)
+      .run(normalizedOrgId, normalizedId);
   }
 }
 
 class SqliteContextStorage implements ContextStorage {
   constructor(private readonly provider: BackendProvider) {}
 
-  async getOrganization(orgId: string): Promise<OrganizationContextRecord | null> {
+  async getOrganization(
+    orgId: string,
+  ): Promise<OrganizationContextRecord | null> {
     const normalizedOrgId = normalizeOptionalString(orgId);
     if (!normalizedOrgId) {
       return null;
@@ -1876,11 +2611,15 @@ class SqliteContextStorage implements ContextStorage {
       return organization ? cloneOrganization(organization) : null;
     }
 
-    const row = backend.db.prepare<OrganizationRow>(SELECT_ORGANIZATION_SQL).get(normalizedOrgId);
+    const row = backend.db
+      .prepare<OrganizationRow>(SELECT_ORGANIZATION_SQL)
+      .get(normalizedOrgId);
     return hydrateOrganization(row);
   }
 
-  async getWorkspace(workspaceId: string): Promise<WorkspaceContextRecord | null> {
+  async getWorkspace(
+    workspaceId: string,
+  ): Promise<WorkspaceContextRecord | null> {
     const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
     if (!normalizedWorkspaceId) {
       return null;
@@ -1892,16 +2631,20 @@ class SqliteContextStorage implements ContextStorage {
       return workspace ? cloneWorkspace(workspace) : null;
     }
 
-    const row = backend.db.prepare<WorkspaceRow>(SELECT_WORKSPACE_SQL).get(normalizedWorkspaceId);
+    const row = backend.db
+      .prepare<WorkspaceRow>(SELECT_WORKSPACE_SQL)
+      .get(normalizedWorkspaceId);
     return hydrateWorkspace(row);
   }
 }
 
 async function loadSqliteConstructors(): Promise<SqliteDatabaseConstructor[]> {
   const constructors: SqliteDatabaseConstructor[] = [];
-  const moduleRecord = await importOptional<Record<string, unknown>>("better-sqlite3");
+  const moduleRecord =
+    await importOptional<Record<string, unknown>>("better-sqlite3");
   if (moduleRecord) {
-    const candidate = "default" in moduleRecord ? moduleRecord.default : moduleRecord;
+    const candidate =
+      "default" in moduleRecord ? moduleRecord.default : moduleRecord;
     if (typeof candidate === "function") {
       constructors.push(candidate as SqliteDatabaseConstructor);
     }
@@ -1921,29 +2664,33 @@ async function loadSqliteConstructors(): Promise<SqliteDatabaseConstructor[]> {
   if (sqliteModule?.DatabaseSync) {
     const NodeSqlite = sqliteModule.DatabaseSync;
 
-    constructors.push(class NodeSqliteAdapter {
-      private readonly db: InstanceType<typeof NodeSqlite>;
+    constructors.push(
+      class NodeSqliteAdapter {
+        private readonly db: InstanceType<typeof NodeSqlite>;
 
-      constructor(filename: string) {
-        this.db = new NodeSqlite(filename);
-      }
+        constructor(filename: string) {
+          this.db = new NodeSqlite(filename);
+        }
 
-      pragma(statement: string): void {
-        this.db.exec(`PRAGMA ${statement}`);
-      }
+        pragma(statement: string): void {
+          this.db.exec(`PRAGMA ${statement}`);
+        }
 
-      exec(sql: string): void {
-        this.db.exec(sql);
-      }
+        exec(sql: string): void {
+          this.db.exec(sql);
+        }
 
-      prepare<Row extends SqliteRow = SqliteRow>(sql: string): SqliteStatement<Row> {
-        return this.db.prepare(sql) as unknown as SqliteStatement<Row>;
-      }
+        prepare<Row extends SqliteRow = SqliteRow>(
+          sql: string,
+        ): SqliteStatement<Row> {
+          return this.db.prepare(sql) as unknown as SqliteStatement<Row>;
+        }
 
-      close(): void {
-        this.db.close();
-      }
-    } as unknown as SqliteDatabaseConstructor);
+        close(): void {
+          this.db.close();
+        }
+      } as unknown as SqliteDatabaseConstructor,
+    );
   }
 
   return constructors;
@@ -1955,7 +2702,9 @@ async function ensureDbDirectory(dbPath: string): Promise<void> {
   }
 
   const [fsModule, pathModule] = await Promise.all([
-    importOptional<{ mkdirSync?: (path: string, options?: { recursive?: boolean }) => void }>("node:fs"),
+    importOptional<{
+      mkdirSync?: (path: string, options?: { recursive?: boolean }) => void;
+    }>("node:fs"),
     importOptional<{ dirname?: (path: string) => string }>("node:path"),
   ]);
 
@@ -2001,7 +2750,10 @@ function createMemoryBackend(): BackendContext {
 async function getRevocationRecord(
   provider: BackendProvider,
   jti: string,
-): Promise<Pick<RevokedTokenRecord, "expiresAt" | "identityId" | "revokedAt"> | null> {
+): Promise<Pick<
+  RevokedTokenRecord,
+  "expiresAt" | "identityId" | "revokedAt"
+> | null> {
   const normalizedJti = normalizeOptionalString(jti);
   if (!normalizedJti) {
     return null;
@@ -2023,7 +2775,9 @@ async function getRevocationRecord(
     };
   }
 
-  const row = backend.db.prepare<RevokedTokenRow>(SELECT_REVOKED_TOKEN_RECORD_SQL).get(normalizedJti);
+  const row = backend.db
+    .prepare<RevokedTokenRow>(SELECT_REVOKED_TOKEN_RECORD_SQL)
+    .get(normalizedJti);
   const expiresAt = normalizeRevocationExpiry(row?.expires_at, undefined);
   if (expiresAt === undefined || expiresAt <= nowUnixSeconds()) {
     if (row) {
@@ -2047,12 +2801,16 @@ async function getRevocationRecord(
  * throw a clear error rather than silently reading/writing the wrong columns.
  */
 function ensureRevokedTokensSchema(db: SqliteDatabase): void {
-  const revokedTokensTable = db.prepare<TableInfoRow>(`
+  const revokedTokensTable = db
+    .prepare<TableInfoRow>(
+      `
     SELECT name
     FROM sqlite_master
     WHERE type = 'table' AND name = 'revoked_tokens'
     LIMIT 1
-  `).get();
+  `,
+    )
+    .get();
 
   // Post-migration, the table must exist. If it doesn't, the migration run
   // silently failed upstream; surface that rather than masking it.
@@ -2063,7 +2821,8 @@ function ensureRevokedTokensSchema(db: SqliteDatabase): void {
   }
 
   const columns = new Set(
-    db.prepare<TableInfoRow>("PRAGMA table_info(revoked_tokens)")
+    db
+      .prepare<TableInfoRow>("PRAGMA table_info(revoked_tokens)")
       .all()
       .map((row) => normalizeOptionalString(row.name))
       .filter((name): name is string => Boolean(name)),
@@ -2082,7 +2841,8 @@ function ensureRevokedTokensSchema(db: SqliteDatabase): void {
 
 function ensureTokensSchema(db: SqliteDatabase): void {
   const tokenColumns = new Set(
-    db.prepare<TableInfoRow>("PRAGMA table_info(tokens)")
+    db
+      .prepare<TableInfoRow>("PRAGMA table_info(tokens)")
       .all()
       .map((row) => normalizeOptionalString(row.name))
       .filter((name): name is string => Boolean(name)),
@@ -2121,7 +2881,9 @@ function normalizeStoredIdentity(
   options: { generateId?: boolean } = {},
 ): StoredIdentity {
   const providedId = normalizeOptionalString(identity.id);
-  const id = providedId ?? (options.generateId ? createGeneratedIdentityId() : undefined);
+  const id =
+    providedId ??
+    (options.generateId ? createGeneratedIdentityId() : undefined);
   if (!id) {
     throw new StorageError("id is required", 400, "invalid_input");
   }
@@ -2131,9 +2893,10 @@ function normalizeStoredIdentity(
     throw new StorageError("sponsorChain is required", 400, "invalid_identity");
   }
 
-  const normalizedSponsorChain = !providedId && options.generateId && sponsorChain.at(-1) !== id
-    ? [...sponsorChain, id]
-    : sponsorChain;
+  const normalizedSponsorChain =
+    !providedId && options.generateId && sponsorChain.at(-1) !== id
+      ? [...sponsorChain, id]
+      : sponsorChain;
 
   return {
     ...identity,
@@ -2150,11 +2913,19 @@ function normalizeStoredIdentity(
     metadata: normalizeRecord(identity.metadata),
     createdAt: normalizeTimestamp(identity.createdAt),
     updatedAt: normalizeTimestamp(identity.updatedAt),
-    ...(normalizeOptionalString(identity.lastActiveAt) ? { lastActiveAt: normalizeOptionalString(identity.lastActiveAt) } : {}),
-    ...(normalizeOptionalString(identity.suspendedAt) ? { suspendedAt: normalizeOptionalString(identity.suspendedAt) } : {}),
-    ...(normalizeOptionalString(identity.suspendReason) ? { suspendReason: normalizeOptionalString(identity.suspendReason) } : {}),
+    ...(normalizeOptionalString(identity.lastActiveAt)
+      ? { lastActiveAt: normalizeOptionalString(identity.lastActiveAt) }
+      : {}),
+    ...(normalizeOptionalString(identity.suspendedAt)
+      ? { suspendedAt: normalizeOptionalString(identity.suspendedAt) }
+      : {}),
+    ...(normalizeOptionalString(identity.suspendReason)
+      ? { suspendReason: normalizeOptionalString(identity.suspendReason) }
+      : {}),
     ...(identity.budget ? { budget: cloneOptionalJson(identity.budget)! } : {}),
-    ...(identity.budgetUsage ? { budgetUsage: cloneOptionalJson(identity.budgetUsage)! } : {}),
+    ...(identity.budgetUsage
+      ? { budgetUsage: cloneOptionalJson(identity.budgetUsage)! }
+      : {}),
   };
 }
 
@@ -2162,7 +2933,9 @@ function parseStoredIdentity(data: string): StoredIdentity {
   return normalizeStoredIdentity(JSON.parse(data) as StoredIdentity);
 }
 
-function hydrateStoredIdentityRow(row: StoredIdentityRow | undefined): StoredIdentity | null {
+function hydrateStoredIdentityRow(
+  row: StoredIdentityRow | undefined,
+): StoredIdentity | null {
   if (!row) {
     return null;
   }
@@ -2179,27 +2952,48 @@ function hydrateStoredIdentityRow(row: StoredIdentityRow | undefined): StoredIde
   const id = normalizeOptionalString(row.id);
   const name = normalizeOptionalString(row.name);
   const orgId = normalizeOptionalString(row.org_id ?? row.orgId);
-  const workspaceId = normalizeOptionalString(row.workspace_id ?? row.workspaceId);
+  const workspaceId = normalizeOptionalString(
+    row.workspace_id ?? row.workspaceId,
+  );
   const sponsorId = normalizeOptionalString(row.sponsor_id ?? row.sponsorId);
   const createdAt = normalizeOptionalString(row.created_at ?? row.createdAt);
   const updatedAt = normalizeOptionalString(row.updated_at ?? row.updatedAt);
   const sponsorChain = parseStringArrayField(
     row.sponsorChain ?? row.sponsor_chain,
-    typeof row.sponsor_chain === "string" ? row.sponsor_chain : row.sponsor_chain_json,
+    typeof row.sponsor_chain === "string"
+      ? row.sponsor_chain
+      : row.sponsor_chain_json,
   );
-  if (!id || !name || !orgId || !workspaceId || !sponsorId || !createdAt || !updatedAt || sponsorChain.length === 0) {
+  if (
+    !id ||
+    !name ||
+    !orgId ||
+    !workspaceId ||
+    !sponsorId ||
+    !createdAt ||
+    !updatedAt ||
+    sponsorChain.length === 0
+  ) {
     return null;
   }
 
-  const metadata = normalizeRecord(parseJsonObjectField(row.metadata, row.metadata_json) ?? {});
+  const metadata = normalizeRecord(
+    parseJsonObjectField(row.metadata, row.metadata_json) ?? {},
+  );
   const budget = row.budget ?? parseIdentityBudget(row.budget_json);
   const budgetUsage = parseJsonObjectField<IdentityBudgetUsage>(
     row.budgetUsage ?? row.budget_usage,
     row.budget_usage_json,
   );
-  const lastActiveAt = normalizeOptionalString(row.last_active_at ?? row.lastActiveAt);
-  const suspendedAt = normalizeOptionalString(row.suspended_at ?? row.suspendedAt);
-  const suspendReason = normalizeOptionalString(row.suspend_reason ?? row.suspendReason);
+  const lastActiveAt = normalizeOptionalString(
+    row.last_active_at ?? row.lastActiveAt,
+  );
+  const suspendedAt = normalizeOptionalString(
+    row.suspended_at ?? row.suspendedAt,
+  );
+  const suspendReason = normalizeOptionalString(
+    row.suspend_reason ?? row.suspendReason,
+  );
 
   return normalizeStoredIdentity({
     id,
@@ -2236,18 +3030,31 @@ function mergeStoredIdentity(
     id: current.id,
     orgId: current.orgId,
     createdAt: current.createdAt,
-    metadata: patch.metadata ? { ...current.metadata, ...normalizeRecord(patch.metadata) } : current.metadata,
+    metadata: patch.metadata
+      ? { ...current.metadata, ...normalizeRecord(patch.metadata) }
+      : current.metadata,
     scopes: patch.scopes ?? current.scopes,
     roles: patch.roles ?? current.roles,
-    sponsorChain: "sponsorChain" in patch ? normalizeStringArray(patch.sponsorChain) : current.sponsorChain,
+    sponsorChain:
+      "sponsorChain" in patch
+        ? normalizeStringArray(patch.sponsorChain)
+        : current.sponsorChain,
     budget: patch.budget ?? current.budget,
     budgetUsage: patch.budgetUsage ?? current.budgetUsage,
     updatedAt,
   });
 }
 
-function applyBudgetPolicy(previous: StoredIdentity, identity: StoredIdentity, timestamp: string): BudgetPolicyResult {
-  if (identity.status === "retired" || !identity.budget?.autoSuspend || !isBudgetExceeded(identity)) {
+function applyBudgetPolicy(
+  previous: StoredIdentity,
+  identity: StoredIdentity,
+  timestamp: string,
+): BudgetPolicyResult {
+  if (
+    identity.status === "retired" ||
+    !identity.budget?.autoSuspend ||
+    !isBudgetExceeded(identity)
+  ) {
     return {
       identity,
       shouldWriteAuditEvent: false,
@@ -2262,7 +3069,9 @@ function applyBudgetPolicy(previous: StoredIdentity, identity: StoredIdentity, t
       suspendedAt: identity.suspendedAt ?? timestamp,
       updatedAt: timestamp,
     },
-    shouldWriteAuditEvent: previous.status !== "suspended" || previous.suspendReason !== "budget_exceeded",
+    shouldWriteAuditEvent:
+      previous.status !== "suspended" ||
+      previous.suspendReason !== "budget_exceeded",
   };
 }
 
@@ -2274,11 +3083,11 @@ function isBudgetExceeded(identity: StoredIdentity): boolean {
   }
 
   const actionsExceeded =
-    typeof budget.maxActionsPerHour === "number"
-      && usage.actionsThisHour > budget.maxActionsPerHour;
+    typeof budget.maxActionsPerHour === "number" &&
+    usage.actionsThisHour > budget.maxActionsPerHour;
   const costExceeded =
-    typeof budget.maxCostPerDay === "number"
-      && usage.costToday > budget.maxCostPerDay;
+    typeof budget.maxCostPerDay === "number" &&
+    usage.costToday > budget.maxCostPerDay;
 
   return actionsExceeded || costExceeded;
 }
@@ -2301,7 +3110,9 @@ function emitBudgetAlert(identity: StoredIdentity): void {
   });
 }
 
-function getBudgetMetric(identity: StoredIdentity): { usage: number; limit: number; ratio: number } | undefined {
+function getBudgetMetric(
+  identity: StoredIdentity,
+): { usage: number; limit: number; ratio: number } | undefined {
   const budget = identity.budget;
   const usage = identity.budgetUsage;
   if (!budget || !usage) {
@@ -2309,7 +3120,10 @@ function getBudgetMetric(identity: StoredIdentity): { usage: number; limit: numb
   }
 
   const metrics: { usage: number; limit: number; ratio: number }[] = [];
-  if (typeof budget.maxActionsPerHour === "number" && budget.maxActionsPerHour > 0) {
+  if (
+    typeof budget.maxActionsPerHour === "number" &&
+    budget.maxActionsPerHour > 0
+  ) {
     metrics.push({
       usage: usage.actionsThisHour,
       limit: budget.maxActionsPerHour,
@@ -2370,15 +3184,26 @@ function toAgentIdentity(identity: StoredIdentity): AgentIdentity {
     updatedAt: identity.updatedAt,
     ...(identity.lastActiveAt ? { lastActiveAt: identity.lastActiveAt } : {}),
     ...(identity.suspendedAt ? { suspendedAt: identity.suspendedAt } : {}),
-    ...(identity.suspendReason ? { suspendReason: identity.suspendReason } : {}),
+    ...(identity.suspendReason
+      ? { suspendReason: identity.suspendReason }
+      : {}),
   };
 }
 
-function compareIdentityDesc(left: StoredIdentity, right: StoredIdentity): number {
-  return right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
+function compareIdentityDesc(
+  left: StoredIdentity,
+  right: StoredIdentity,
+): number {
+  return (
+    right.createdAt.localeCompare(left.createdAt) ||
+    right.id.localeCompare(left.id)
+  );
 }
 
-function compareIdentityCursor(identity: StoredIdentity, cursor: StoredIdentity | null): number {
+function compareIdentityCursor(
+  identity: StoredIdentity,
+  cursor: StoredIdentity | null,
+): number {
   if (!cursor) {
     return -1;
   }
@@ -2391,7 +3216,9 @@ function compareIdentityCursor(identity: StoredIdentity, cursor: StoredIdentity 
   return identity.id.localeCompare(cursor.id);
 }
 
-function hydrateChildIdentity(row: ChildIdentityRow): IdentityChildSummary | null {
+function hydrateChildIdentity(
+  row: ChildIdentityRow,
+): IdentityChildSummary | null {
   const id = normalizeOptionalString(row.id);
   const name = normalizeOptionalString(row.name);
   if (!id || !name) {
@@ -2402,8 +3229,12 @@ function hydrateChildIdentity(row: ChildIdentityRow): IdentityChildSummary | nul
     id,
     name,
     status: normalizeIdentityStatus(row.status) ?? "active",
-    ...(normalizeOptionalString(row.sponsor_id) ? { sponsorId: row.sponsor_id ?? undefined } : {}),
-    ...(normalizeOptionalString(row.created_at) ? { createdAt: row.created_at ?? undefined } : {}),
+    ...(normalizeOptionalString(row.sponsor_id)
+      ? { sponsorId: row.sponsor_id ?? undefined }
+      : {}),
+    ...(normalizeOptionalString(row.created_at)
+      ? { createdAt: row.created_at ?? undefined }
+      : {}),
   };
 }
 
@@ -2429,12 +3260,17 @@ function normalizeRole(role: Role): Role {
     ...role,
     id: requireString(role.id, "role id is required"),
     name: requireString(role.name, "role name is required"),
-    description: requireString(role.description, "role description is required"),
+    description: requireString(
+      role.description,
+      "role description is required",
+    ),
     orgId: requireString(role.orgId, "role orgId is required"),
     scopes: normalizeStringArray(role.scopes),
     builtIn: role.builtIn === true,
     createdAt: normalizeTimestamp(role.createdAt),
-    ...(normalizeOptionalString(role.workspaceId) ? { workspaceId: role.workspaceId } : {}),
+    ...(normalizeOptionalString(role.workspaceId)
+      ? { workspaceId: role.workspaceId }
+      : {}),
   };
 }
 
@@ -2506,7 +3342,9 @@ function normalizePolicy(policy: Policy): Policy {
     conditions: normalizePolicyConditions(policy.conditions),
     priority: Number.isInteger(policy.priority) ? policy.priority : 0,
     createdAt: normalizeTimestamp(policy.createdAt),
-    ...(normalizeOptionalString(policy.workspaceId) ? { workspaceId: policy.workspaceId } : {}),
+    ...(normalizeOptionalString(policy.workspaceId)
+      ? { workspaceId: policy.workspaceId }
+      : {}),
   };
 }
 
@@ -2526,7 +3364,10 @@ function hydratePolicy(row: PolicyRow | undefined): Policy | null {
     name,
     effect,
     scopes: parseStringArrayField(row?.scopes, row?.scopes_json),
-    conditions: parsePolicyConditionsField(row?.conditions, row?.conditions_json),
+    conditions: parsePolicyConditionsField(
+      row?.conditions,
+      row?.conditions_json,
+    ),
     priority: normalizeNumber(row?.priority),
     orgId,
     createdAt,
@@ -2583,9 +3424,13 @@ function normalizeStoredApiKey(apiKey: StoredApiKey): StoredApiKey {
     ...(workspaceId ? { workspaceId } : {}),
     createdAt: normalizeTimestamp(apiKey.createdAt),
     updatedAt: normalizeTimestamp(apiKey.updatedAt),
-    ...(normalizeOptionalString(apiKey.lastUsedAt) ? { lastUsedAt: apiKey.lastUsedAt } : {}),
+    ...(normalizeOptionalString(apiKey.lastUsedAt)
+      ? { lastUsedAt: apiKey.lastUsedAt }
+      : {}),
     ...(apiKey.revokedAt === null ? { revokedAt: null } : {}),
-    ...(normalizeOptionalString(apiKey.revokedAt ?? undefined) ? { revokedAt: apiKey.revokedAt ?? undefined } : {}),
+    ...(normalizeOptionalString(apiKey.revokedAt ?? undefined)
+      ? { revokedAt: apiKey.revokedAt ?? undefined }
+      : {}),
   };
 }
 
@@ -2597,7 +3442,15 @@ function hydrateApiKey(row: ApiKeyRow | undefined): StoredApiKey | null {
   const keyHash = normalizeOptionalString(row?.key_hash);
   const createdAt = normalizeOptionalString(row?.created_at);
   const updatedAt = normalizeOptionalString(row?.updated_at);
-  if (!id || !orgId || !name || !prefix || !keyHash || !createdAt || !updatedAt) {
+  if (
+    !id ||
+    !orgId ||
+    !name ||
+    !prefix ||
+    !keyHash ||
+    !createdAt ||
+    !updatedAt
+  ) {
     return null;
   }
 
@@ -2607,14 +3460,22 @@ function hydrateApiKey(row: ApiKeyRow | undefined): StoredApiKey | null {
     name,
     prefix,
     keyHash,
-    scopes: normalizeStringArray(parseJson<unknown[]>(row?.scopes_json ?? "[]", [])),
+    scopes: normalizeStringArray(
+      parseJson<unknown[]>(row?.scopes_json ?? "[]", []),
+    ),
     kind: normalizeApiKeyKind(row?.kind) ?? "api_key",
     createdAt,
     updatedAt,
-    ...(normalizeOptionalString(row?.workspace_id) ? { workspaceId: row?.workspace_id ?? undefined } : {}),
-    ...(normalizeOptionalString(row?.last_used_at) ? { lastUsedAt: row?.last_used_at ?? undefined } : {}),
+    ...(normalizeOptionalString(row?.workspace_id)
+      ? { workspaceId: row?.workspace_id ?? undefined }
+      : {}),
+    ...(normalizeOptionalString(row?.last_used_at)
+      ? { lastUsedAt: row?.last_used_at ?? undefined }
+      : {}),
     ...(row?.revoked_at === null ? { revokedAt: null } : {}),
-    ...(normalizeOptionalString(row?.revoked_at) ? { revokedAt: row?.revoked_at ?? undefined } : {}),
+    ...(normalizeOptionalString(row?.revoked_at)
+      ? { revokedAt: row?.revoked_at ?? undefined }
+      : {}),
   });
 }
 
@@ -2635,15 +3496,27 @@ function toApiKeyParams(apiKey: StoredApiKey): unknown[] {
   ];
 }
 
-function normalizeApiKeyKind(value: unknown): "api_key" | "workspace_token" | undefined {
-  return value === "workspace_token" ? "workspace_token" : value === "api_key" ? "api_key" : undefined;
+function normalizeApiKeyKind(
+  value: unknown,
+): "api_key" | "workspace_token" | undefined {
+  return value === "workspace_token"
+    ? "workspace_token"
+    : value === "api_key"
+      ? "api_key"
+      : undefined;
 }
 
 function compareApiKeyDesc(left: StoredApiKey, right: StoredApiKey): number {
-  return right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
+  return (
+    right.createdAt.localeCompare(left.createdAt) ||
+    right.id.localeCompare(left.id)
+  );
 }
 
-function compareApiKeyCursor(apiKey: StoredApiKey, cursor: StoredApiKey | null): number {
+function compareApiKeyCursor(
+  apiKey: StoredApiKey,
+  cursor: StoredApiKey | null,
+): number {
   if (!cursor) {
     return -1;
   }
@@ -2667,19 +3540,35 @@ function normalizeAuditWriteEntry(entry: AuditLogWriteEntry): AuditEntryRecord {
     result: entry.result,
     timestamp: normalizeTimestamp(entry.timestamp),
     createdAt,
-    ...(normalizeOptionalString(entry.workspaceId) ? { workspaceId: entry.workspaceId } : {}),
+    ...(normalizeOptionalString(entry.workspaceId)
+      ? { workspaceId: entry.workspaceId }
+      : {}),
     ...(normalizeOptionalString(entry.plane) ? { plane: entry.plane } : {}),
-    ...(normalizeOptionalString(entry.resource) ? { resource: entry.resource } : {}),
+    ...(normalizeOptionalString(entry.resource)
+      ? { resource: entry.resource }
+      : {}),
     ...(entry.metadata ? { metadata: normalizeRecord(entry.metadata) } : {}),
     ...(normalizeOptionalString(entry.ip) ? { ip: entry.ip } : {}),
-    ...(normalizeOptionalString(entry.userAgent) ? { userAgent: entry.userAgent } : {}),
+    ...(normalizeOptionalString(entry.userAgent)
+      ? { userAgent: entry.userAgent }
+      : {}),
   };
 }
 
 function normalizeAuditQuery(query: AuditQueryInput): AuditQueryInput {
+  const orgId = requireString(query.orgId, "orgId is required");
+  // Validate and canonicalize before the provider is opened so both SQL and
+  // in-memory scans compare the same UTC cursor values.
+  const cursor = query.cursor
+    ? normalizeAuditQueryCursor(query.cursor)
+    : undefined;
+
   return {
     ...query,
-    orgId: requireString(query.orgId, "orgId is required"),
+    orgId,
+    from: normalizeAuditQueryTimestamp(query.from, "from"),
+    to: normalizeAuditQueryTimestamp(query.to, "to"),
+    cursor,
     limit: normalizeAuditLimit(query.limit),
   };
 }
@@ -2701,7 +3590,10 @@ function toAuditParams(entry: AuditEntryRecord): unknown[] {
   ];
 }
 
-function buildAuditQuerySql(query: AuditQueryInput, limit: number): { sql: string; params: unknown[] } {
+function buildAuditQuerySql(
+  query: AuditQueryInput,
+  limit: number,
+): { sql: string; params: unknown[] } {
   const clauses = ["org_id = ?"];
   const params: unknown[] = [query.orgId];
 
@@ -2733,9 +3625,25 @@ function buildAuditQuerySql(query: AuditQueryInput, limit: number): { sql: strin
     clauses.push("(timestamp < ?)");
     params.push(query.to);
   }
-  if (query.cursor) {
+  if (query.cursor?.kind === "archive_partition") {
+    const boundaries = normalizeAuditArchiveCursorBoundaries(query.cursor);
+    clauses.push("timestamp < ?");
+    params.push(boundaries.upperBound);
+    if (query.cursor.entryCursor) {
+      clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
+      params.push(
+        boundaries.entryCursorTimestamp,
+        boundaries.entryCursorTimestamp,
+        query.cursor.entryCursor.id,
+      );
+    }
+  } else if (query.cursor) {
     clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
-    params.push(query.cursor.timestamp, query.cursor.timestamp, query.cursor.id);
+    params.push(
+      query.cursor.timestamp,
+      query.cursor.timestamp,
+      query.cursor.id,
+    );
   }
 
   params.push(limit);
@@ -2813,17 +3721,36 @@ function hydrateAuditEntryRecord(row: AuditRow): AuditEntryRecord | null {
     orgId,
     result: (row.result ?? "allowed") as AuditEntry["result"],
     timestamp,
-    ...(normalizeOptionalString(row.workspace_id) ? { workspaceId: row.workspace_id ?? undefined } : {}),
-    ...(normalizeOptionalString(row.plane) ? { plane: row.plane ?? undefined } : {}),
-    ...(normalizeOptionalString(row.resource) ? { resource: row.resource ?? undefined } : {}),
-    ...(row.metadata_json ? { metadata: normalizeRecord(parseJson<Record<string, unknown>>(row.metadata_json, {})) } : {}),
+    ...(normalizeOptionalString(row.workspace_id)
+      ? { workspaceId: row.workspace_id ?? undefined }
+      : {}),
+    ...(normalizeOptionalString(row.plane)
+      ? { plane: row.plane ?? undefined }
+      : {}),
+    ...(normalizeOptionalString(row.resource)
+      ? { resource: row.resource ?? undefined }
+      : {}),
+    ...(row.metadata_json
+      ? {
+          metadata: normalizeRecord(
+            parseJson<Record<string, unknown>>(row.metadata_json, {}),
+          ),
+        }
+      : {}),
     ...(normalizeOptionalString(row.ip) ? { ip: row.ip ?? undefined } : {}),
-    ...(normalizeOptionalString(row.user_agent) ? { userAgent: row.user_agent ?? undefined } : {}),
-    ...(normalizeOptionalString(row.created_at) ? { createdAt: row.created_at ?? undefined } : {}),
+    ...(normalizeOptionalString(row.user_agent)
+      ? { userAgent: row.user_agent ?? undefined }
+      : {}),
+    ...(normalizeOptionalString(row.created_at)
+      ? { createdAt: row.created_at ?? undefined }
+      : {}),
   };
 }
 
-function matchesAuditQuery(entry: AuditEntryRecord, query: AuditQueryInput): boolean {
+function matchesAuditQuery(
+  entry: AuditEntryRecord,
+  query: AuditQueryInput,
+): boolean {
   if (entry.orgId !== query.orgId) {
     return false;
   }
@@ -2848,11 +3775,28 @@ function matchesAuditQuery(entry: AuditEntryRecord, query: AuditQueryInput): boo
   if (query.to && entry.timestamp >= query.to) {
     return false;
   }
-  if (query.cursor) {
+  if (query.cursor?.kind === "archive_partition") {
+    const boundaries = normalizeAuditArchiveCursorBoundaries(query.cursor);
+    if (entry.timestamp >= boundaries.upperBound) {
+      return false;
+    }
+    if (
+      query.cursor.entryCursor &&
+      boundaries.entryCursorTimestamp &&
+      (entry.timestamp > boundaries.entryCursorTimestamp ||
+        (entry.timestamp === boundaries.entryCursorTimestamp &&
+          entry.id >= query.cursor.entryCursor.id))
+    ) {
+      return false;
+    }
+  } else if (query.cursor) {
     if (entry.timestamp > query.cursor.timestamp) {
       return false;
     }
-    if (entry.timestamp === query.cursor.timestamp && entry.id >= query.cursor.id) {
+    if (
+      entry.timestamp === query.cursor.timestamp &&
+      entry.id >= query.cursor.id
+    ) {
       return false;
     }
   }
@@ -2860,7 +3804,9 @@ function matchesAuditQuery(entry: AuditEntryRecord, query: AuditQueryInput): boo
   return true;
 }
 
-function summarizeAuditCounts(entries: AuditEntryRecord[]): DashboardAuditCounts {
+function summarizeAuditCounts(
+  entries: AuditEntryRecord[],
+): DashboardAuditCounts {
   let tokensIssued = 0;
   let tokensRevoked = 0;
   let tokensRefreshed = 0;
@@ -2891,14 +3837,28 @@ function summarizeAuditCounts(entries: AuditEntryRecord[]): DashboardAuditCounts
     }
   }
 
-  return { tokensIssued, tokensRevoked, tokensRefreshed, scopeChecks, scopeDenials };
+  return {
+    tokensIssued,
+    tokensRevoked,
+    tokensRefreshed,
+    scopeChecks,
+    scopeDenials,
+  };
 }
 
-function compareAuditRecordDesc(left: AuditEntryRecord, right: AuditEntryRecord): number {
-  return right.timestamp.localeCompare(left.timestamp) || right.id.localeCompare(left.id);
+function compareAuditRecordDesc(
+  left: AuditEntryRecord,
+  right: AuditEntryRecord,
+): number {
+  return (
+    right.timestamp.localeCompare(left.timestamp) ||
+    right.id.localeCompare(left.id)
+  );
 }
 
-function normalizeAuditWebhook(input: CreateAuditWebhookInput): AuditWebhookRecord {
+function normalizeAuditWebhook(
+  input: CreateAuditWebhookInput,
+): AuditWebhookRecord {
   const timestamp = new Date().toISOString();
 
   return {
@@ -2923,7 +3883,9 @@ function hydrateAuditWebhook(row: AuditWebhookRow): AuditWebhookRecord | null {
     return null;
   }
 
-  const events = row.events_json ? normalizeStringArray(parseJson<unknown[]>(row.events_json, [])) : undefined;
+  const events = row.events_json
+    ? normalizeStringArray(parseJson<unknown[]>(row.events_json, []))
+    : undefined;
 
   return {
     id,
@@ -2936,11 +3898,19 @@ function hydrateAuditWebhook(row: AuditWebhookRow): AuditWebhookRecord | null {
   };
 }
 
-function compareWebhookDesc(left: AuditWebhookRecord, right: AuditWebhookRecord): number {
-  return (right.createdAt ?? "").localeCompare(left.createdAt ?? "") || right.id.localeCompare(left.id);
+function compareWebhookDesc(
+  left: AuditWebhookRecord,
+  right: AuditWebhookRecord,
+): number {
+  return (
+    (right.createdAt ?? "").localeCompare(left.createdAt ?? "") ||
+    right.id.localeCompare(left.id)
+  );
 }
 
-function hydrateOrganization(row: OrganizationRow | undefined): OrganizationContextRecord | null {
+function hydrateOrganization(
+  row: OrganizationRow | undefined,
+): OrganizationContextRecord | null {
   const id = normalizeOptionalString(row?.id);
   if (!id) {
     return null;
@@ -2949,12 +3919,18 @@ function hydrateOrganization(row: OrganizationRow | undefined): OrganizationCont
   return {
     id,
     orgId: normalizeOptionalString(row?.org_id) ?? id,
-    scopes: normalizeStringArray(parseJson<unknown[]>(row?.scopes_json ?? "[]", [])),
-    roles: normalizeStringArray(parseJson<unknown[]>(row?.roles_json ?? "[]", [])),
+    scopes: normalizeStringArray(
+      parseJson<unknown[]>(row?.scopes_json ?? "[]", []),
+    ),
+    roles: normalizeStringArray(
+      parseJson<unknown[]>(row?.roles_json ?? "[]", []),
+    ),
   };
 }
 
-function hydrateWorkspace(row: WorkspaceRow | undefined): WorkspaceContextRecord | null {
+function hydrateWorkspace(
+  row: WorkspaceRow | undefined,
+): WorkspaceContextRecord | null {
   const id = normalizeOptionalString(row?.id);
   const orgId = normalizeOptionalString(row?.org_id);
   if (!id || !orgId) {
@@ -2965,8 +3941,12 @@ function hydrateWorkspace(row: WorkspaceRow | undefined): WorkspaceContextRecord
     id,
     workspaceId: normalizeOptionalString(row?.workspace_id) ?? id,
     orgId,
-    scopes: normalizeStringArray(parseJson<unknown[]>(row?.scopes_json ?? "[]", [])),
-    roles: normalizeStringArray(parseJson<unknown[]>(row?.roles_json ?? "[]", [])),
+    scopes: normalizeStringArray(
+      parseJson<unknown[]>(row?.scopes_json ?? "[]", []),
+    ),
+    roles: normalizeStringArray(
+      parseJson<unknown[]>(row?.roles_json ?? "[]", []),
+    ),
   };
 }
 
@@ -3002,7 +3982,9 @@ function normalizeIdentityType(value: unknown): IdentityType {
 }
 
 function normalizeIdentityStatus(value: unknown): IdentityStatus | undefined {
-  return value === "active" || value === "suspended" || value === "retired" ? value : undefined;
+  return value === "active" || value === "suspended" || value === "retired"
+    ? value
+    : undefined;
 }
 
 function normalizePolicyEffect(value: unknown): Policy["effect"] | undefined {
@@ -3017,7 +3999,10 @@ function normalizeStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string");
 }
 
-function parseStringArrayField(value: unknown, jsonValue?: string | null): string[] {
+function parseStringArrayField(
+  value: unknown,
+  jsonValue?: string | null,
+): string[] {
   if (Array.isArray(value)) {
     return normalizeStringArray(value);
   }
@@ -3026,18 +4011,28 @@ function parseStringArrayField(value: unknown, jsonValue?: string | null): strin
 }
 
 function normalizePolicyConditions(value: unknown): Policy["conditions"] {
-  return Array.isArray(value) ? cloneJsonArray(value as Policy["conditions"]) : [];
+  return Array.isArray(value)
+    ? cloneJsonArray(value as Policy["conditions"])
+    : [];
 }
 
-function parsePolicyConditionsField(value: unknown, jsonValue?: string | null): Policy["conditions"] {
+function parsePolicyConditionsField(
+  value: unknown,
+  jsonValue?: string | null,
+): Policy["conditions"] {
   if (Array.isArray(value)) {
     return normalizePolicyConditions(value);
   }
 
-  return normalizePolicyConditions(parseJson<unknown[]>(jsonValue ?? undefined, []));
+  return normalizePolicyConditions(
+    parseJson<unknown[]>(jsonValue ?? undefined, []),
+  );
 }
 
-function parseJsonObjectField<T extends object>(value: unknown, jsonValue?: string | null): T | undefined {
+function parseJsonObjectField<T extends object>(
+  value: unknown,
+  jsonValue?: string | null,
+): T | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return cloneOptionalJson(value as T);
   }
@@ -3056,7 +4051,9 @@ function normalizeRecord(value: unknown): Record<string, string> {
   }
 
   return Object.fromEntries(
-    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    Object.entries(value).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
   );
 }
 
@@ -3146,7 +4143,10 @@ function mergeRecordsById<T extends { id: string }>(
   return [...merged.values()].sort(compare);
 }
 
-function normalizeRevocationExpiry(value: unknown, fallback: number | undefined): number | undefined {
+function normalizeRevocationExpiry(
+  value: unknown,
+  fallback: number | undefined,
+): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
     return Math.max(0, Math.floor(value));
   }
@@ -3204,16 +4204,22 @@ function cloneAuditWebhook(webhook: AuditWebhookRecord): AuditWebhookRecord {
   return JSON.parse(JSON.stringify(webhook)) as AuditWebhookRecord;
 }
 
-function cloneOrganization(record: OrganizationContextRecord): OrganizationContextRecord {
+function cloneOrganization(
+  record: OrganizationContextRecord,
+): OrganizationContextRecord {
   return JSON.parse(JSON.stringify(record)) as OrganizationContextRecord;
 }
 
-function cloneWorkspace(record: WorkspaceContextRecord): WorkspaceContextRecord {
+function cloneWorkspace(
+  record: WorkspaceContextRecord,
+): WorkspaceContextRecord {
   return JSON.parse(JSON.stringify(record)) as WorkspaceContextRecord;
 }
 
 function cloneOptionalJson<T>(value: T | undefined): T | undefined {
-  return value === undefined ? undefined : (JSON.parse(JSON.stringify(value)) as T);
+  return value === undefined
+    ? undefined
+    : (JSON.parse(JSON.stringify(value)) as T);
 }
 
 function cloneJsonArray<T>(value: T[]): T[] {
@@ -3243,7 +4249,9 @@ function nowUnixSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-function parseTimestampMs(value: string | undefined | null): number | undefined {
+function parseTimestampMs(
+  value: string | undefined | null,
+): number | undefined {
   if (!value) {
     return undefined;
   }

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AuditAction, AuditEntry, RelayAuthTokenClaims } from "@relayauth/types";
+import type {
+  AuditAction,
+  AuditEntry,
+  RelayAuthTokenClaims,
+} from "@relayauth/types";
 import { Hono, type MiddlewareHandler } from "hono";
 
 import type { AppEnv } from "../env.js";
@@ -24,8 +28,14 @@ type AuditEntryInput = Omit<AuditEntry, "id" | "timestamp" | "action"> & {
 };
 
 type AuditLoggerModule = {
-  writeAuditEntry: (db: D1Database, entry: Partial<AuditEntryInput>) => Promise<void> | void;
-  flushAuditBatch: (db: D1Database, entries: Partial<AuditEntryInput>[]) => Promise<void> | void;
+  writeAuditEntry: (
+    db: D1Database,
+    entry: Partial<AuditEntryInput>,
+  ) => Promise<void> | void;
+  flushAuditBatch: (
+    db: D1Database,
+    entries: Partial<AuditEntryInput>[],
+  ) => Promise<void> | void;
   createAuditMiddleware: () => MiddlewareHandler<AppEnv>;
 };
 
@@ -51,7 +61,9 @@ function normalizeSql(query: string): string {
   return query.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-function createBindings(overrides: Partial<AppEnv["Bindings"]> = {}): AppEnv["Bindings"] {
+function createBindings(
+  overrides: Partial<AppEnv["Bindings"]> = {},
+): AppEnv["Bindings"] {
   return {
     INTERNAL_SECRET: "internal-test-secret",
     RELAYAUTH_SIGNING_KEY_PEM: TEST_RS256_PRIVATE_KEY_PEM,
@@ -150,7 +162,9 @@ function createRecordingD1(options: RecordingD1Options = {}): RecordingD1 {
           throw new Error("simulated D1 batch failure");
         }
 
-        return Promise.all(statements.map((statement) => statement.run())) as Awaited<T>;
+        return Promise.all(
+          statements.map((statement) => statement.run()),
+        ) as Awaited<T>;
       },
       exec: async () => ({
         count: 0,
@@ -162,7 +176,12 @@ function createRecordingD1(options: RecordingD1Options = {}): RecordingD1 {
 }
 
 type RecordingAuditStorage = {
-  storage: { audit: { write: (entry: unknown) => Promise<void>; writeBatch: (entries: unknown[]) => Promise<void> } };
+  storage: {
+    audit: {
+      write: (entry: unknown) => Promise<void>;
+      writeBatch: (entries: unknown[]) => Promise<void>;
+    };
+  };
   writes: unknown[];
 };
 
@@ -171,8 +190,12 @@ function createRecordingAuditStorage(): RecordingAuditStorage {
   return {
     storage: {
       audit: {
-        write: async (entry: unknown) => { writes.push(entry); },
-        writeBatch: async (entries: unknown[]) => { entries.forEach(e => writes.push(e)); },
+        write: async (entry: unknown) => {
+          writes.push(entry);
+        },
+        writeBatch: async (entries: unknown[]) => {
+          entries.forEach((e) => writes.push(e));
+        },
       },
     },
     writes,
@@ -183,14 +206,30 @@ async function loadAuditLogger(): Promise<AuditLoggerModule> {
   let moduleRecord: Record<string, unknown>;
 
   try {
-    moduleRecord = (await import("../engine/audit-logger.js")) as Record<string, unknown>;
+    moduleRecord = (await import("../engine/audit-logger.js")) as Record<
+      string,
+      unknown
+    >;
   } catch (error) {
-    const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-    assert.fail(`Expected audit logger module at ../engine/audit-logger.js: ${message}`);
+    const message =
+      error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error);
+    assert.fail(
+      `Expected audit logger module at ../engine/audit-logger.js: ${message}`,
+    );
   }
 
-  assert.equal(typeof moduleRecord.writeAuditEntry, "function", "audit logger should export writeAuditEntry()");
-  assert.equal(typeof moduleRecord.flushAuditBatch, "function", "audit logger should export flushAuditBatch()");
+  assert.equal(
+    typeof moduleRecord.writeAuditEntry,
+    "function",
+    "audit logger should export writeAuditEntry()",
+  );
+  assert.equal(
+    typeof moduleRecord.flushAuditBatch,
+    "function",
+    "audit logger should export flushAuditBatch()",
+  );
   assert.equal(
     typeof moduleRecord.createAuditMiddleware,
     "function",
@@ -213,7 +252,11 @@ function createBudgetExceededEntry(
     result: "denied",
     metadata: {
       sponsorId: "user_sponsor_1",
-      sponsorChain: JSON.stringify(["user_sponsor_1", "agent_root_1", "agent_budget_1"]),
+      sponsorChain: JSON.stringify([
+        "user_sponsor_1",
+        "agent_root_1",
+        "agent_budget_1",
+      ]),
       budgetConfig: JSON.stringify({
         maxActionsPerHour: 10,
         maxCostPerDay: 50,
@@ -241,10 +284,16 @@ function createAuditAlertEntry(
     workspaceId: overrides.workspaceId ?? "ws_alert_1",
     plane: overrides.plane ?? "relaycast",
     resource: overrides.resource ?? "channel:#ops",
-    result: overrides.result ?? (action === "scope.escalation_denied" ? "denied" : "allowed"),
+    result:
+      overrides.result ??
+      (action === "scope.escalation_denied" ? "denied" : "allowed"),
     metadata: {
       sponsorId: "user_sponsor_2",
-      sponsorChain: JSON.stringify(["user_sponsor_2", "agent_parent_2", overrides.identityId ?? "agent_alert_1"]),
+      sponsorChain: JSON.stringify([
+        "user_sponsor_2",
+        "agent_parent_2",
+        overrides.identityId ?? "agent_alert_1",
+      ]),
       budgetConfig: JSON.stringify({
         maxActionsPerHour: 100,
         maxCostPerDay: 250,
@@ -281,14 +330,17 @@ async function expectFailure(
 }
 
 function findAuditWrite(statements: RecordedStatement[]): RecordedStatement {
-  const statement = statements.find(({ query }) => /insert into audit_log(s)?/.test(query));
+  const statement = statements.find(({ query }) =>
+    /insert into audit_log(s)?/.test(query),
+  );
   assert.ok(statement, "expected an INSERT into audit_log or audit_logs");
   return statement;
 }
 
 function findAuditId(params: unknown[]): string {
   const auditId = params.find(
-    (param): param is string => typeof param === "string" && /^aud_[A-Za-z0-9_-]+$/.test(param),
+    (param): param is string =>
+      typeof param === "string" && /^aud_[A-Za-z0-9_-]+$/.test(param),
   );
 
   assert.ok(auditId, "expected a generated audit id with aud_ prefix");
@@ -328,10 +380,14 @@ function findMetadata(params: unknown[]): MetadataRecord {
     }
   }
 
-  assert.fail("expected serialized metadata containing sponsorId and sponsorChain");
+  assert.fail(
+    "expected serialized metadata containing sponsorId and sponsorChain",
+  );
 }
 
-function createAuthorizationHeader(claims: Partial<RelayAuthTokenClaims> = {}): HeadersInit {
+function createAuthorizationHeader(
+  claims: Partial<RelayAuthTokenClaims> = {},
+): HeadersInit {
   return {
     Authorization: `Bearer ${generateTestToken(claims)}`,
   };
@@ -346,8 +402,16 @@ test("writeAuditEntry() writes budget breach entries with sponsor and budget met
 
   assert.equal(writes.length, 1, "expected one audit write");
   const write = writes[0] as Record<string, unknown>;
-  assert.equal(write.action, "budget.exceeded", "expected the budget.exceeded action");
-  assert.equal(write.identityId, "agent_budget_1", "expected the entry identity id");
+  assert.equal(
+    write.action,
+    "budget.exceeded",
+    "expected the budget.exceeded action",
+  );
+  assert.equal(
+    write.identityId,
+    "agent_budget_1",
+    "expected the entry identity id",
+  );
   assert.equal(write.orgId, "org_budget_1", "expected the entry org id");
   assert.equal(write.result, "denied", "expected the entry result");
 
@@ -374,19 +438,39 @@ test("writeAuditEntry() generates a unique audit id and timestamp when they are 
   const { writeAuditEntry } = await loadAuditLogger();
   const { storage, writes } = createRecordingAuditStorage();
 
-  await writeAuditEntry(storage, createBudgetExceededEntry({ identityId: "agent_budget_1a" }));
-  await writeAuditEntry(storage, createBudgetExceededEntry({ identityId: "agent_budget_1b" }));
+  await writeAuditEntry(
+    storage,
+    createBudgetExceededEntry({ identityId: "agent_budget_1a" }),
+  );
+  await writeAuditEntry(
+    storage,
+    createBudgetExceededEntry({ identityId: "agent_budget_1b" }),
+  );
 
   assert.equal(writes.length, 2, "expected two writes");
 
   const first = writes[0] as Record<string, unknown>;
   const second = writes[1] as Record<string, unknown>;
 
-  assert.ok(typeof first.id === "string" && first.id.length > 0, "expected a generated id");
-  assert.ok(typeof second.id === "string" && second.id.length > 0, "expected a generated id");
+  assert.ok(
+    typeof first.id === "string" && first.id.length > 0,
+    "expected a generated id",
+  );
+  assert.ok(
+    typeof second.id === "string" && second.id.length > 0,
+    "expected a generated id",
+  );
   assert.notEqual(first.id, second.id, "expected unique generated ids");
-  assert.equal(Number.isNaN(Date.parse(first.timestamp as string)), false, "expected a valid timestamp");
-  assert.equal(Number.isNaN(Date.parse(second.timestamp as string)), false, "expected a valid timestamp");
+  assert.equal(
+    Number.isNaN(Date.parse(first.timestamp as string)),
+    false,
+    "expected a valid timestamp",
+  );
+  assert.equal(
+    Number.isNaN(Date.parse(second.timestamp as string)),
+    false,
+    "expected a valid timestamp",
+  );
 });
 
 test("writeAuditEntry() validates required fields and sponsor trace metadata", async (t) => {
@@ -395,7 +479,11 @@ test("writeAuditEntry() validates required fields and sponsor trace metadata", a
   await t.test("requires action", async () => {
     const { db, runs } = createRecordingD1();
     await expectFailure(
-      () => writeAuditEntry(db, { ...createBudgetExceededEntry(), action: undefined }),
+      () =>
+        writeAuditEntry(db, {
+          ...createBudgetExceededEntry(),
+          action: undefined,
+        }),
       /action/i,
     );
     assert.equal(runs.length, 0);
@@ -404,7 +492,11 @@ test("writeAuditEntry() validates required fields and sponsor trace metadata", a
   await t.test("requires identityId", async () => {
     const { db, runs } = createRecordingD1();
     await expectFailure(
-      () => writeAuditEntry(db, { ...createBudgetExceededEntry(), identityId: undefined }),
+      () =>
+        writeAuditEntry(db, {
+          ...createBudgetExceededEntry(),
+          identityId: undefined,
+        }),
       /identity/i,
     );
     assert.equal(runs.length, 0);
@@ -413,7 +505,11 @@ test("writeAuditEntry() validates required fields and sponsor trace metadata", a
   await t.test("requires orgId", async () => {
     const { db, runs } = createRecordingD1();
     await expectFailure(
-      () => writeAuditEntry(db, { ...createBudgetExceededEntry(), orgId: undefined }),
+      () =>
+        writeAuditEntry(db, {
+          ...createBudgetExceededEntry(),
+          orgId: undefined,
+        }),
       /org/i,
     );
     assert.equal(runs.length, 0);
@@ -422,7 +518,11 @@ test("writeAuditEntry() validates required fields and sponsor trace metadata", a
   await t.test("requires result", async () => {
     const { db, runs } = createRecordingD1();
     await expectFailure(
-      () => writeAuditEntry(db, { ...createBudgetExceededEntry(), result: undefined }),
+      () =>
+        writeAuditEntry(db, {
+          ...createBudgetExceededEntry(),
+          result: undefined,
+        }),
       /result/i,
     );
     assert.equal(runs.length, 0);
@@ -460,24 +560,23 @@ test("createAuditMiddleware() logs token validation events automatically", async
   app.get("/session", (c) => c.json({ ok: true }));
 
   const response = await app.request(
-    createTestRequest(
-      "GET",
-      "/session",
-      undefined,
-      {
-        ...createAuthorizationHeader({
-          sub: "agent_middleware_1",
-          org: "org_middleware_1",
-          wks: "ws_middleware_1",
-          scopes: ["relayauth:*"],
-          sponsorId: "user_middleware_1",
-          sponsorChain: ["user_middleware_1", "agent_root_1", "agent_middleware_1"],
-          jti: "tok_middleware_1",
-        }),
-        "User-Agent": "audit-tests/1.0",
-        "CF-Connecting-IP": "203.0.113.10",
-      },
-    ),
+    createTestRequest("GET", "/session", undefined, {
+      ...createAuthorizationHeader({
+        sub: "agent_middleware_1",
+        org: "org_middleware_1",
+        wks: "ws_middleware_1",
+        scopes: ["relayauth:*"],
+        sponsorId: "user_middleware_1",
+        sponsorChain: [
+          "user_middleware_1",
+          "agent_root_1",
+          "agent_middleware_1",
+        ],
+        jti: "tok_middleware_1",
+      }),
+      "User-Agent": "audit-tests/1.0",
+      "CF-Connecting-IP": "203.0.113.10",
+    }),
     undefined,
     createBindings(),
   );
@@ -485,16 +584,31 @@ test("createAuditMiddleware() logs token validation events automatically", async
   assert.equal(response.status, 200);
 
   // Query audit log from SQLite storage instead of D1 recording
-  const auditEntries = await sqliteStorage.audit.query({ orgId: "org_middleware_1" });
-  const entries = auditEntries.items ?? auditEntries;
+  const auditEntries = await sqliteStorage.audit.query({
+    orgId: "org_middleware_1",
+  });
+  const entries = auditEntries.entries;
   assert.ok(entries.length >= 1, "expected a token validation audit write");
 
-  const tokenValidated = entries.find((e: any) => e.action === "token.validated");
+  const tokenValidated = entries.find(
+    (e: any) => e.action === "token.validated",
+  );
   assert.ok(tokenValidated, "expected token.validated audit action");
-  assert.equal(tokenValidated.identityId, "agent_middleware_1", "expected request identity id");
-  assert.equal(tokenValidated.orgId, "org_middleware_1", "expected request org id");
+  assert.equal(
+    tokenValidated.identityId,
+    "agent_middleware_1",
+    "expected request identity id",
+  );
+  assert.equal(
+    tokenValidated.orgId,
+    "org_middleware_1",
+    "expected request org id",
+  );
 
-  const metadata = typeof tokenValidated.metadata === "string" ? JSON.parse(tokenValidated.metadata) : (tokenValidated.metadata ?? {});
+  const metadata =
+    typeof tokenValidated.metadata === "string"
+      ? JSON.parse(tokenValidated.metadata)
+      : (tokenValidated.metadata ?? {});
   assert.equal(metadata.sponsorId, "user_middleware_1");
   assert.deepEqual(JSON.parse(metadata.sponsorChain ?? "[]"), [
     "user_middleware_1",
@@ -516,7 +630,11 @@ test("flushAuditBatch() writes multiple audit entries", async () => {
       result: "denied",
       metadata: {
         sponsorId: "user_scope_1",
-        sponsorChain: JSON.stringify(["user_scope_1", "agent_parent_2", "agent_scope_1"]),
+        sponsorChain: JSON.stringify([
+          "user_scope_1",
+          "agent_parent_2",
+          "agent_scope_1",
+        ]),
         actionAttempted: "relaycast:workspace:admin:*",
         budgetConfig: JSON.stringify({ maxActionsPerHour: 100 }),
         actualUsage: JSON.stringify({ actionsThisHour: 101 }),
@@ -528,11 +646,23 @@ test("flushAuditBatch() writes multiple audit entries", async () => {
   assert.equal(writes.length, 2, "expected both entries to be written");
 
   const actions = writes.map((w) => (w as Record<string, unknown>).action);
-  assert.equal(actions.includes("budget.alert"), true, "expected support for the new budget.alert action");
-  assert.equal(actions.includes("scope.escalation_denied"), true, "expected support for scope.escalation_denied");
+  assert.equal(
+    actions.includes("budget.alert"),
+    true,
+    "expected support for the new budget.alert action",
+  );
+  assert.equal(
+    actions.includes("scope.escalation_denied"),
+    true,
+    "expected support for scope.escalation_denied",
+  );
 
-  const alertEntry = writes.find((w) => (w as Record<string, unknown>).action === "budget.alert") as Record<string, unknown>;
-  const escalationEntry = writes.find((w) => (w as Record<string, unknown>).action === "scope.escalation_denied") as Record<string, unknown>;
+  const alertEntry = writes.find(
+    (w) => (w as Record<string, unknown>).action === "budget.alert",
+  ) as Record<string, unknown>;
+  const escalationEntry = writes.find(
+    (w) => (w as Record<string, unknown>).action === "scope.escalation_denied",
+  ) as Record<string, unknown>;
 
   const alertMetadata = (alertEntry.metadata ?? {}) as MetadataRecord;
   const escalationMetadata = (escalationEntry.metadata ?? {}) as MetadataRecord;
@@ -549,7 +679,10 @@ test("flushAuditBatch() writes multiple audit entries", async () => {
     "agent_parent_2",
     "agent_scope_1",
   ]);
-  assert.equal(escalationMetadata.actionAttempted, "relaycast:workspace:admin:*");
+  assert.equal(
+    escalationMetadata.actionAttempted,
+    "relaycast:workspace:admin:*",
+  );
 });
 
 test("writeAuditEntry() handles D1 write failures gracefully by logging the error and not throwing", async (t) => {

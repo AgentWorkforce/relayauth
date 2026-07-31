@@ -6,7 +6,9 @@ import { RelayAuthClient } from "../client.js";
 type IdentityActivityOptions = Omit<AuditQuery, "identityId" | "orgId">;
 
 type AuditClient = RelayAuthClient & {
-  queryAudit(query: AuditQuery): Promise<{ entries: AuditEntry[]; cursor?: string }>;
+  queryAudit(
+    query: AuditQuery,
+  ): Promise<{ entries: AuditEntry[]; cursor?: string }>;
   getIdentityActivity(
     identityId: string,
     options?: IdentityActivityOptions,
@@ -66,7 +68,11 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function textResponse(body: string, status = 200, contentType = "text/plain"): Response {
+function textResponse(
+  body: string,
+  status = 200,
+  contentType = "text/plain",
+): Response {
   return new Response(body, {
     status,
     headers: {
@@ -75,7 +81,12 @@ function textResponse(body: string, status = 200, contentType = "text/plain"): R
   });
 }
 
-function mockFetch(responder: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>) {
+function mockFetch(
+  responder: (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ) => Response | Promise<Response>,
+) {
   const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
 
@@ -105,8 +116,12 @@ async function inspectCall(call: FetchCall): Promise<{
         ? new URL(call.input.toString())
         : new URL(call.input.url);
 
-  const method = call.init?.method ?? (call.input instanceof Request ? call.input.method : "GET");
-  const headers = new Headers(call.input instanceof Request ? call.input.headers : undefined);
+  const method =
+    call.init?.method ??
+    (call.input instanceof Request ? call.input.method : "GET");
+  const headers = new Headers(
+    call.input instanceof Request ? call.input.headers : undefined,
+  );
   if (call.init?.headers) {
     const overrideHeaders = new Headers(call.init.headers);
     for (const [name, value] of overrideHeaders.entries()) {
@@ -167,10 +182,40 @@ test("queryAudit sends audit filters as query params and maps nextCursor to curs
   assert.equal(request.url.searchParams.get("identityId"), "agent_123");
   assert.equal(request.url.searchParams.get("action"), "scope.denied");
   assert.equal(request.url.searchParams.get("result"), "denied");
-  assert.equal(request.url.searchParams.get("from"), "2026-03-25T09:00:00.000Z");
+  assert.equal(
+    request.url.searchParams.get("from"),
+    "2026-03-25T09:00:00.000Z",
+  );
   assert.equal(request.url.searchParams.get("to"), "2026-03-25T11:00:00.000Z");
   assert.equal(request.url.searchParams.get("cursor"), "cursor_start");
   assert.equal(request.url.searchParams.get("limit"), "50");
+});
+
+test("queryAudit preserves a typed archive work-budget continuation", async (t) => {
+  const client = createClient();
+  const workBudget = {
+    hotStorePages: 4,
+    hotStoreRows: 129,
+    archivePartitions: 128,
+    archiveReads: 128,
+  };
+  const fetchMock = mockFetch(() =>
+    jsonResponse({
+      entries: auditEntries.slice(0, 1),
+      nextCursor: "archive_partition_cursor",
+      hasMore: true,
+      partial: true,
+      workBudget,
+    }),
+  );
+  t.after(() => fetchMock.restore());
+
+  assert.deepEqual(await client.queryAudit({ orgId: "org_123" }), {
+    entries: auditEntries.slice(0, 1),
+    cursor: "archive_partition_cursor",
+    partial: true,
+    workBudget,
+  });
 });
 
 test("queryAudit returns an empty page when no audit entries match", async (t) => {
@@ -247,7 +292,10 @@ test("getIdentityActivity fetches a paginated activity feed with action and date
   assert.equal(request.body, "");
   assert.equal(request.url.searchParams.get("action"), "scope.denied");
   assert.equal(request.url.searchParams.get("result"), "denied");
-  assert.equal(request.url.searchParams.get("from"), "2026-03-25T09:00:00.000Z");
+  assert.equal(
+    request.url.searchParams.get("from"),
+    "2026-03-25T09:00:00.000Z",
+  );
   assert.equal(request.url.searchParams.get("to"), "2026-03-25T11:00:00.000Z");
   assert.equal(request.url.searchParams.get("cursor"), "cursor_activity_start");
   assert.equal(request.url.searchParams.get("limit"), "25");
@@ -267,7 +315,9 @@ test("exportAudit posts json export filters and returns the raw json payload", a
     limit: 100,
   };
   const exportPayload = JSON.stringify(auditEntries);
-  const fetchMock = mockFetch(() => textResponse(exportPayload, 200, "application/json"));
+  const fetchMock = mockFetch(() =>
+    textResponse(exportPayload, 200, "application/json"),
+  );
   t.after(() => fetchMock.restore());
 
   const result = await client.exportAudit(query, "json");
@@ -291,7 +341,9 @@ test("exportAudit returns raw csv data for csv exports", async (t) => {
   const csvExport =
     "id,action,identityId,orgId,result,timestamp\n" +
     "aud_002,scope.denied,agent_123,org_123,denied,2026-03-25T10:05:00.000Z\n";
-  const fetchMock = mockFetch(() => textResponse(csvExport, 200, "text/csv; charset=utf-8"));
+  const fetchMock = mockFetch(() =>
+    textResponse(csvExport, 200, "text/csv; charset=utf-8"),
+  );
   t.after(() => fetchMock.restore());
 
   const result = await client.exportAudit(

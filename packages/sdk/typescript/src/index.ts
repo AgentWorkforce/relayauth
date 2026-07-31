@@ -1,6 +1,13 @@
 export { RelayAuthClient } from "./client.js";
-export type { RelayAuthClientOptions } from "./client.js";
-export { AgentTokenSession, createAgentTokenSession } from "./agent-token-session.js";
+export type {
+  AuditQueryPage,
+  AuditQueryWorkBudget,
+  RelayAuthClientOptions,
+} from "./client.js";
+export {
+  AgentTokenSession,
+  createAgentTokenSession,
+} from "./agent-token-session.js";
 export type { AgentTokenSessionOptions } from "./agent-token-session.js";
 export type {
   AgentTokenIssueRequest,
@@ -42,11 +49,7 @@ export {
   configurationToAgentCard,
 } from "./a2a-bridge.js";
 export type { A2aAgentCard, A2aAgentSkill } from "./a2a-bridge.js";
-export {
-  parseScope,
-  parseScopes,
-  validateScope,
-} from "./scope-parser.js";
+export { parseScope, parseScopes, validateScope } from "./scope-parser.js";
 export {
   isSubsetOf,
   matchScope,

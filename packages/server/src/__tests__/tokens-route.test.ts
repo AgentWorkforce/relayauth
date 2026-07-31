@@ -86,11 +86,19 @@ function decodeJwtJsonSegment<T>(token: string, index: 0 | 1): T {
       ? token.slice("relay_pa_".length)
       : token;
   const segments = normalized.split(".");
-  assert.equal(segments.length, 3, "expected a compact JWT with exactly three segments");
-  return JSON.parse(Buffer.from(segments[index], "base64url").toString("utf8")) as T;
+  assert.equal(
+    segments.length,
+    3,
+    "expected a compact JWT with exactly three segments",
+  );
+  return JSON.parse(
+    Buffer.from(segments[index], "base64url").toString("utf8"),
+  ) as T;
 }
 
-function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredIdentity {
+function createStoredIdentity(
+  overrides: Partial<StoredIdentity> = {},
+): StoredIdentity {
   const base = generateTestIdentity(overrides);
   const sponsorId = overrides.sponsorId ?? "user_worker_owner";
 
@@ -100,11 +108,15 @@ function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredId
     sponsorChain: overrides.sponsorChain ?? [sponsorId, base.id],
     workspaceId: overrides.workspaceId ?? "ws_worker",
     ...(overrides.budget !== undefined ? { budget: overrides.budget } : {}),
-    ...(overrides.budgetUsage !== undefined ? { budgetUsage: overrides.budgetUsage } : {}),
+    ...(overrides.budgetUsage !== undefined
+      ? { budgetUsage: overrides.budgetUsage }
+      : {}),
   };
 }
 
-function createAuthToken(overrides: Partial<RelayAuthTokenClaims> = {}): string {
+function createAuthToken(
+  overrides: Partial<RelayAuthTokenClaims> = {},
+): string {
   const now = Math.floor(Date.now() / 1000);
   const sponsorId = overrides.sponsorId ?? "user_admin_worker";
   const sub = overrides.sub ?? "agent_admin_worker";
@@ -113,7 +125,11 @@ function createAuthToken(overrides: Partial<RelayAuthTokenClaims> = {}): string 
     sub,
     org: overrides.org ?? "org_tokens_route",
     wks: overrides.wks ?? "ws_tokens_route",
-    scopes: overrides.scopes ?? ["relayauth:token:create:*", "relayauth:token:manage:*", "relayauth:token:read:*"],
+    scopes: overrides.scopes ?? [
+      "relayauth:token:create:*",
+      "relayauth:token:manage:*",
+      "relayauth:token:read:*",
+    ],
     sponsorId,
     sponsorChain: overrides.sponsorChain ?? [sponsorId, sub],
     token_type: overrides.token_type ?? "access",
@@ -125,7 +141,9 @@ function createAuthToken(overrides: Partial<RelayAuthTokenClaims> = {}): string 
     ...(overrides.nbf !== undefined ? { nbf: overrides.nbf } : {}),
     ...(overrides.sid !== undefined ? { sid: overrides.sid } : {}),
     ...(overrides.meta !== undefined ? { meta: overrides.meta } : {}),
-    ...(overrides.parentTokenId !== undefined ? { parentTokenId: overrides.parentTokenId } : {}),
+    ...(overrides.parentTokenId !== undefined
+      ? { parentTokenId: overrides.parentTokenId }
+      : {}),
     ...(overrides.budget !== undefined ? { budget: overrides.budget } : {}),
   });
 }
@@ -256,7 +274,10 @@ function assertTokenClaimsMatchSpec(
   assert.equal(claims.sponsorId, expectedIdentity.sponsorId);
   assert.match(claims.sponsorId, /^user_[A-Za-z0-9_-]+$/);
   assert.deepEqual(claims.sponsorChain, expectedIdentity.sponsorChain);
-  assert.ok(claims.sponsorChain.length >= 2, "sponsorChain should include sponsor and agent");
+  assert.ok(
+    claims.sponsorChain.length >= 2,
+    "sponsorChain should include sponsor and agent",
+  );
   assert.equal(claims.sponsorChain[0], claims.sponsorId);
   assert.equal(claims.sponsorChain.at(-1), claims.sub);
   assert.equal(claims.iss, "https://relayauth.dev");
@@ -267,9 +288,21 @@ function assertTokenClaimsMatchSpec(
   assert.equal(typeof claims.iat, "number");
   assert.equal(typeof claims.exp, "number");
   assert.ok(claims.exp > claims.iat, "exp must be after iat");
-  assert.equal("workspace_id" in claims, false, "RS256 workspace_id alias should not be present");
-  assert.equal("agent_name" in claims, false, "RS256 agent_name alias should not be present");
-  assert.equal("sponsor" in claims, false, "RS256 sponsor claim should not be present");
+  assert.equal(
+    "workspace_id" in claims,
+    false,
+    "RS256 workspace_id alias should not be present",
+  );
+  assert.equal(
+    "agent_name" in claims,
+    false,
+    "RS256 agent_name alias should not be present",
+  );
+  assert.equal(
+    "sponsor" in claims,
+    false,
+    "RS256 sponsor claim should not be present",
+  );
 
   if (tokenType === "refresh") {
     assert.deepEqual(claims.aud, ["relayauth"]);
@@ -292,15 +325,17 @@ async function createHarness({
   deferTask?: (task: DeferredTask) => void;
 } = {}) {
   const app = createTestApp({}, { deferTask });
-  const storedIdentity = identity ?? createStoredIdentity({
-    id: "agent_tokens_subject",
-    name: "Tokens Subject",
-    orgId: authClaims?.org ?? "org_tokens_route",
-    workspaceId: authClaims?.wks ?? "ws_tokens_route",
-    sponsorId: "user_tokens_owner",
-    sponsorChain: ["user_tokens_owner", "agent_tokens_subject"],
-    scopes: ["specialist:invoke"],
-  });
+  const storedIdentity =
+    identity ??
+    createStoredIdentity({
+      id: "agent_tokens_subject",
+      name: "Tokens Subject",
+      orgId: authClaims?.org ?? "org_tokens_route",
+      workspaceId: authClaims?.wks ?? "ws_tokens_route",
+      sponsorId: "user_tokens_owner",
+      sponsorChain: ["user_tokens_owner", "agent_tokens_subject"],
+      scopes: ["specialist:invoke"],
+    });
   await seedStoredIdentity(app, storedIdentity);
 
   return {
@@ -400,24 +435,41 @@ async function fillDatabaseToCeiling(
       `INSERT INTO tokens (id, token_id, jti, identity_id, session_id, issued_at, expires_at, status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
     )
-      .bind(id, id, id, identityId, `sess_${id}`, expiresAt - 3_600, expiresAt, new Date().toISOString())
+      .bind(
+        id,
+        id,
+        id,
+        identityId,
+        `sess_${id}`,
+        expiresAt - 3_600,
+        expiresAt,
+        new Date().toISOString(),
+      )
       .run();
   };
 
   const expiredAt = Math.floor(Date.now() / 1_000) - 86_400;
   for (let index = 0; index < 400; index += 1) {
-    await insertToken(`tok_expired_${index}_${crypto.randomUUID().replace(/-/g, "")}`, expiredAt);
+    await insertToken(
+      `tok_expired_${index}_${crypto.randomUUID().replace(/-/g, "")}`,
+      expiredAt,
+    );
   }
 
-  const pageCountRow = await app.storage.DB
-    .prepare("PRAGMA page_count")
-    .first<{ page_count: number }>();
-  await app.storage.DB.exec(`PRAGMA max_page_count = ${Number(pageCountRow?.page_count ?? 0)}`);
+  const pageCountRow = await app.storage.DB.prepare("PRAGMA page_count").first<{
+    page_count: number;
+  }>();
+  await app.storage.DB.exec(
+    `PRAGMA max_page_count = ${Number(pageCountRow?.page_count ?? 0)}`,
+  );
 
   let full = false;
   for (let index = 0; index < 5_000 && !full; index += 1) {
     try {
-      await insertToken(`tok_filler_${index}_${crypto.randomUUID().replace(/-/g, "")}`, expiredAt);
+      await insertToken(
+        `tok_filler_${index}_${crypto.randomUUID().replace(/-/g, "")}`,
+        expiredAt,
+      );
     } catch (error) {
       if (!isStorageCapacityExhausted(error)) {
         throw error;
@@ -429,88 +481,103 @@ async function fillDatabaseToCeiling(
   assert.ok(full, "database must reach its page ceiling for this scenario");
 }
 
-async function countStoredTokens(app: ReturnType<typeof createTestApp>): Promise<number> {
-  const row = await app.storage.DB.prepare("SELECT COUNT(*) AS count FROM tokens").first<{ count: number }>();
+async function countStoredTokens(
+  app: ReturnType<typeof createTestApp>,
+): Promise<number> {
+  const row = await app.storage.DB.prepare(
+    "SELECT COUNT(*) AS count FROM tokens",
+  ).first<{ count: number }>();
   return Number(row?.count ?? 0);
 }
 
 test("POST /v1/tokens", async (t) => {
-  await t.test("issues a Phase 0 RS256 token pair with token-format claim shape", async () => {
-    const { app, identity, authHeaders } = await createHarness();
+  await t.test(
+    "issues a Phase 0 RS256 token pair with token-format claim shape",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
 
-    const response = await requestRoute(app, "POST", "/v1/tokens", {
-      body: {
-        identityId: identity.id,
-        scopes: ["specialist:invoke"],
-        audience: ["specialist"],
-        expiresIn: 3600,
-      },
-      headers: authHeaders,
-    });
-
-    const body = await assertJsonResponse<TokenPair>(response, 201);
-    assert.equal(body.tokenType, "Bearer");
-    assert.match(body.accessToken, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    assert.match(body.refreshToken, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    assert.equal(Number.isNaN(Date.parse(body.accessTokenExpiresAt)), false);
-    assert.equal(Number.isNaN(Date.parse(body.refreshTokenExpiresAt)), false);
-    assert.ok(
-      Date.parse(body.refreshTokenExpiresAt) > Date.parse(body.accessTokenExpiresAt),
-      "refresh expiry should be after access expiry",
-    );
-
-    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
-    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.refreshToken, 1);
-    assertTokenClaimsMatchSpec(accessClaims, {
-      tokenType: "access",
-      expectedIdentity: identity,
-      expectedAudience: ["specialist"],
-      expectedScopes: ["specialist:invoke"],
-    });
-    assertTokenClaimsMatchSpec(refreshClaims, {
-      tokenType: "refresh",
-      expectedIdentity: identity,
-      expectedAudience: ["relayauth"],
-      expectedScopes: ["relayauth:token:refresh"],
-    });
-
-    await assertRs256Algorithm(body.accessToken, ["specialist"]);
-    await assertRs256Algorithm(body.refreshToken, ["relayauth"]);
-  });
-
-  await t.test("returns the minted pair when a deferred batched audit insert fails", async () => {
-    const deferred: DeferredTask[] = [];
-    const { app, identity, authHeaders } = await createHarness({
-      deferTask: (task) => deferred.push(task),
-    });
-    let auditBatchAttempts = 0;
-    app.storage.audit.writeBatch = async () => {
-      auditBatchAttempts += 1;
-      throw new Error("audit insert failed");
-    };
-    const logged: unknown[][] = [];
-    const originalConsoleError = console.error;
-    console.error = (...args: unknown[]) => {
-      logged.push(args);
-    };
-
-    try {
       const response = await requestRoute(app, "POST", "/v1/tokens", {
-        body: { identityId: identity.id },
+        body: {
+          identityId: identity.id,
+          scopes: ["specialist:invoke"],
+          audience: ["specialist"],
+          expiresIn: 3600,
+        },
         headers: authHeaders,
       });
 
       const body = await assertJsonResponse<TokenPair>(response, 201);
-      assert.equal(typeof body.accessToken, "string");
-      assert.equal(deferred.length, 1, "audit work should be registered with the request lifecycle");
-      assert.equal(await countStoredTokens(app), 2, "essential token records must be committed before responding");
-      await Promise.all(deferred.map((task) => task()));
-      assert.equal(auditBatchAttempts, 1);
-      assert.ok(logged.some((args) => String(args[0]).includes("Deferred RelayAuth task failed")));
-    } finally {
-      console.error = originalConsoleError;
-    }
-  });
+      assert.equal(body.tokenType, "Bearer");
+      assert.match(
+        body.accessToken,
+        /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      assert.match(
+        body.refreshToken,
+        /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      assert.equal(Number.isNaN(Date.parse(body.accessTokenExpiresAt)), false);
+      assert.equal(Number.isNaN(Date.parse(body.refreshTokenExpiresAt)), false);
+      assert.ok(
+        Date.parse(body.refreshTokenExpiresAt) >
+          Date.parse(body.accessTokenExpiresAt),
+        "refresh expiry should be after access expiry",
+      );
+
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.refreshToken,
+        1,
+      );
+      assertTokenClaimsMatchSpec(accessClaims, {
+        tokenType: "access",
+        expectedIdentity: identity,
+        expectedAudience: ["specialist"],
+        expectedScopes: ["specialist:invoke"],
+      });
+      assertTokenClaimsMatchSpec(refreshClaims, {
+        tokenType: "refresh",
+        expectedIdentity: identity,
+        expectedAudience: ["relayauth"],
+        expectedScopes: ["relayauth:token:refresh"],
+      });
+
+      await assertRs256Algorithm(body.accessToken, ["specialist"]);
+      await assertRs256Algorithm(body.refreshToken, ["relayauth"]);
+    },
+  );
+
+  await t.test(
+    "fails closed without token rows when the atomic audit commit fails",
+    async () => {
+      const deferred: DeferredTask[] = [];
+      const { app, identity, authHeaders } = await createHarness({
+        deferTask: (task) => deferred.push(task),
+      });
+      let atomicCommitAttempts = 0;
+      app.storage.tokens.persistIssuedPairWithAudit = async () => {
+        atomicCommitAttempts += 1;
+        throw new Error("audit insert failed");
+      };
+
+      const response = await withSilencedConsoleError(() =>
+        requestRoute(app, "POST", "/v1/tokens", {
+          body: { identityId: identity.id },
+          headers: authHeaders,
+        }),
+      );
+
+      await assertJsonResponse<ErrorBody>(response, 500, (body) => {
+        assert.equal(body.code, "internal_error");
+      });
+      assert.equal(deferred.length, 0, "token mint audit must not be deferred");
+      assert.equal(atomicCommitAttempts, 1);
+      assert.equal(await countStoredTokens(app), 0);
+    },
+  );
 
   await t.test("returns 401 when Authorization is missing", async () => {
     const { app, identity } = await createHarness();
@@ -539,88 +606,117 @@ test("POST /v1/tokens", async (t) => {
     });
   });
 
-  await t.test("returns 400 when identityId is missing from the request body", async () => {
-    const { app, authHeaders } = await createHarness();
+  await t.test(
+    "returns 400 when identityId is missing from the request body",
+    async () => {
+      const { app, authHeaders } = await createHarness();
 
-    const response = await requestRoute(app, "POST", "/v1/tokens", {
-      body: {
-        scopes: ["specialist:invoke"],
-        audience: ["specialist"],
-      },
-      headers: authHeaders,
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens", {
+        body: {
+          scopes: ["specialist:invoke"],
+          audience: ["specialist"],
+        },
+        headers: authHeaders,
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
-      assert.match(JSON.stringify(body), /identityId/i);
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+        assert.match(JSON.stringify(body), /identityId/i);
+      });
+    },
+  );
 
-  await t.test("returns 404 when the requested identity does not exist", async () => {
-    const { app, authHeaders } = await createHarness();
+  await t.test(
+    "returns 404 when the requested identity does not exist",
+    async () => {
+      const { app, authHeaders } = await createHarness();
 
-    const response = await requestRoute(app, "POST", "/v1/tokens", {
-      body: {
-        identityId: "agent_missing_for_tokens",
-        scopes: ["specialist:invoke"],
-        audience: ["specialist"],
-      },
-      headers: authHeaders,
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens", {
+        body: {
+          identityId: "agent_missing_for_tokens",
+          scopes: ["specialist:invoke"],
+          audience: ["specialist"],
+        },
+        headers: authHeaders,
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 404, (body) => {
-      assert.match(JSON.stringify(body), /identity|not[_ -]?found/i);
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 404, (body) => {
+        assert.match(JSON.stringify(body), /identity|not[_ -]?found/i);
+      });
+    },
+  );
 
-  await t.test("returns 403 when requested scopes exceed the target identity grant", async () => {
-    const { app, identity, authHeaders } = await createHarness();
+  await t.test(
+    "returns 403 when requested scopes exceed the target identity grant",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
 
-    const response = await requestRoute(app, "POST", "/v1/tokens", {
-      body: {
-        identityId: identity.id,
-        scopes: ["relayauth:identity:manage:*"],
-        audience: ["relayauth"],
-      },
-      headers: authHeaders,
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens", {
+        body: {
+          identityId: identity.id,
+          scopes: ["relayauth:identity:manage:*"],
+          audience: ["relayauth"],
+        },
+        headers: authHeaders,
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 403, (body) => {
-      assert.equal(body.error, "insufficient_scope");
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+        assert.equal(body.error, "insufficient_scope");
+      });
+    },
+  );
 });
 
 test("POST /v1/tokens when the database cannot allocate", async (t) => {
-  await t.test("returns a typed capacity envelope instead of an unhandled 500", async () => {
-    const { app, identity, authHeaders } = await createHarness();
-    await fillDatabaseToCeiling(app, identity.id);
+  await t.test(
+    "returns a typed capacity envelope instead of an unhandled 500",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
+      await fillDatabaseToCeiling(app, identity.id);
 
-    const response = await withSilencedConsoleError(() => requestRoute(app, "POST", "/v1/tokens", {
-      body: { identityId: identity.id },
-      headers: authHeaders,
-    }));
+      const response = await withSilencedConsoleError(() =>
+        requestRoute(app, "POST", "/v1/tokens", {
+          body: { identityId: identity.id },
+          headers: authHeaders,
+        }),
+      );
 
-    assert.equal(response.headers.get("Retry-After"), "30");
-    await assertJsonResponse<ErrorBody & { retryable?: boolean }>(response, 503, (body) => {
-      assert.equal(body.code, "storage_capacity_exhausted");
-      assert.equal(body.error, "Storage is at capacity");
-      assert.equal(body.retryable, true);
-    });
-  });
+      assert.equal(response.headers.get("Retry-After"), "30");
+      await assertJsonResponse<ErrorBody & { retryable?: boolean }>(
+        response,
+        503,
+        (body) => {
+          assert.equal(body.code, "storage_capacity_exhausted");
+          assert.equal(body.error, "Storage is at capacity");
+          assert.equal(body.retryable, true);
+        },
+      );
+    },
+  );
 
   await t.test("mints again once retention reclaims space", async () => {
     const { app, identity, authHeaders } = await createHarness();
     await fillDatabaseToCeiling(app, identity.id);
 
-    const blocked = await withSilencedConsoleError(() => requestRoute(app, "POST", "/v1/tokens", {
-      body: { identityId: identity.id },
-      headers: authHeaders,
-    }));
+    const blocked = await withSilencedConsoleError(() =>
+      requestRoute(app, "POST", "/v1/tokens", {
+        body: { identityId: identity.id },
+        headers: authHeaders,
+      }),
+    );
     assert.equal(blocked.status, 503);
 
-    const window = await scanExpiredTokensWindow(app.storage.DB as never, { cursor: 0, limit: 1_000 });
-    const pruned = await pruneExpiredTokensWindow(app.storage.DB as never, window);
-    assert.ok(pruned.deletedCount > 0, "retention must reclaim the expired rows");
+    const window = await scanExpiredTokensWindow(app.storage.DB as never, {
+      cursor: 0,
+      limit: 1_000,
+    });
+    const pruned = await pruneExpiredTokensWindow(
+      app.storage.DB as never,
+      window,
+    );
+    assert.ok(
+      pruned.deletedCount > 0,
+      "retention must reclaim the expired rows",
+    );
 
     const recovered = await requestRoute(app, "POST", "/v1/tokens", {
       body: { identityId: identity.id },
@@ -632,58 +728,71 @@ test("POST /v1/tokens when the database cannot allocate", async (t) => {
     });
   });
 
-  await t.test("carries a hosted adapter's translated capacity error", async () => {
-    const { app, identity, authHeaders } = await createHarness();
-    app.storage.DB.prepare = () => {
-      throw new StorageCapacityExhaustedError("tokens.persist");
-    };
+  await t.test(
+    "carries a hosted adapter's translated capacity error",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
+      app.storage.tokens.persistIssuedPairWithAudit = async () => {
+        throw new StorageCapacityExhaustedError("tokens.persist");
+      };
 
-    const response = await withSilencedConsoleError(() => requestRoute(app, "POST", "/v1/tokens", {
-      body: { identityId: identity.id },
-      headers: authHeaders,
-    }));
+      const response = await withSilencedConsoleError(() =>
+        requestRoute(app, "POST", "/v1/tokens", {
+          body: { identityId: identity.id },
+          headers: authHeaders,
+        }),
+      );
 
-    await assertJsonResponse<ErrorBody>(response, 503, (body) => {
-      assert.equal(body.code, "storage_capacity_exhausted");
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 503, (body) => {
+        assert.equal(body.code, "storage_capacity_exhausted");
+      });
+    },
+  );
 
-  await t.test("leaves unrelated internal failures on the generic error envelope", async () => {
-    const { app, identity, authHeaders } = await createHarness();
-    app.storage.DB.prepare = () => {
-      throw new Error("unexpected mint failure");
-    };
+  await t.test(
+    "leaves unrelated internal failures on the generic error envelope",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
+      app.storage.tokens.persistIssuedPairWithAudit = async () => {
+        throw new Error("unexpected mint failure");
+      };
 
-    const response = await withSilencedConsoleError(() => requestRoute(app, "POST", "/v1/tokens", {
-      body: { identityId: identity.id },
-      headers: authHeaders,
-    }));
+      const response = await withSilencedConsoleError(() =>
+        requestRoute(app, "POST", "/v1/tokens", {
+          body: { identityId: identity.id },
+          headers: authHeaders,
+        }),
+      );
 
-    await assertJsonResponse<ErrorBody>(response, 500, (body) => {
-      assert.equal(body.code, "internal_error");
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 500, (body) => {
+        assert.equal(body.code, "internal_error");
+      });
+    },
+  );
 });
 
 test("POST /v1/tokens/workspace", async (t) => {
-  await t.test("issues a long-lived workspace token with a relay_ws_ prefix", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: [
-          "relayauth:api-key:manage:*",
-          "relayauth:token:create:*",
-          "relayauth:token:read:*",
-          "relayauth:role:read:*",
-        ],
-      },
-    });
+  await t.test(
+    "issues a long-lived workspace token with a relay_ws_ prefix",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayauth:token:read:*",
+            "relayauth:role:read:*",
+          ],
+        },
+      });
 
-    const body = await issueWorkspaceToken(app, authHeaders);
-    assert.equal(body.workspaceToken.kind, "workspace_token");
-    assert.equal(body.workspaceToken.workspaceId, "ws_tokens_route");
-    assert.match(body.key, /^relay_ws_[A-Za-z0-9_-]+$/);
-    assert.ok(body.key.startsWith(body.workspaceToken.prefix));
-  });
+      const body = await issueWorkspaceToken(app, authHeaders);
+      assert.equal(body.workspaceToken.kind, "workspace_token");
+      assert.equal(body.workspaceToken.workspaceId, "ws_tokens_route");
+      assert.match(body.key, /^relay_ws_[A-Za-z0-9_-]+$/);
+      assert.ok(body.key.startsWith(body.workspaceToken.prefix));
+    },
+  );
 
   await t.test("rejects scope escalation beyond the caller grant", async () => {
     const { app, authHeaders } = await createHarness({
@@ -708,168 +817,267 @@ test("POST /v1/tokens/workspace", async (t) => {
 });
 
 test("POST /v1/tokens/agent", async (t) => {
-  await t.test("exchanges a workspace token for a prefixed agent token pair", async () => {
-    const { app, identity, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: [
-          "relayauth:api-key:manage:*",
-          "relayauth:token:create:*",
-          "relayauth:token:read:*",
-          "relayauth:role:read:*",
-        ],
-      },
-      identity: createStoredIdentity({
-        id: "agent_runtime_roles",
-        orgId: "org_tokens_route",
-        workspaceId: "ws_tokens_route",
-        scopes: ["relayauth:role:read:*"],
-      }),
-    });
+  await t.test(
+    "exchanges a workspace token for a prefixed agent token pair",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayauth:token:read:*",
+            "relayauth:role:read:*",
+          ],
+        },
+        identity: createStoredIdentity({
+          id: "agent_runtime_roles",
+          orgId: "org_tokens_route",
+          workspaceId: "ws_tokens_route",
+          scopes: ["relayauth:role:read:*"],
+        }),
+      });
 
-    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
-    const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
-      body: {
-        agentId: identity.id,
-        scopes: ["relayauth:role:read:*"],
-        audience: ["relayauth"],
-        expiresIn: 7200,
-      },
-      headers: {
-        "x-api-key": workspaceToken.key,
-      },
-    });
+      const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayauth:role:read:*"],
+          audience: ["relayauth"],
+          expiresIn: 7200,
+        },
+        headers: {
+          "x-api-key": workspaceToken.key,
+        },
+      });
 
-    const body = await assertJsonResponse<AgentTokenPair>(response, 201);
-    assert.equal(body.agentId, identity.id);
-    assert.equal(body.workspaceId, identity.workspaceId);
-    assert.equal(body.tokenClass, "relay_ag");
-    assert.match(body.accessToken, /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    assert.match(body.refreshToken, /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+      const body = await assertJsonResponse<AgentTokenPair>(response, 201);
+      assert.equal(body.agentId, identity.id);
+      assert.equal(body.workspaceId, identity.workspaceId);
+      assert.equal(body.tokenClass, "relay_ag");
+      assert.match(
+        body.accessToken,
+        /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      assert.match(
+        body.refreshToken,
+        /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
 
-    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
-    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.refreshToken, 1);
-    assert.equal(accessClaims.meta?.tokenClass, "agent");
-    assert.equal(accessClaims.meta?.workspaceTokenId, workspaceToken.workspaceToken.id);
-    assert.deepEqual(JSON.parse(accessClaims.meta?.accessScopes ?? "[]"), ["relayauth:role:read:*"]);
-    assert.equal(accessClaims.parentTokenId, workspaceToken.workspaceToken.id);
-    assert.equal(refreshClaims.meta?.tokenClass, "agent");
-    assert.equal(refreshClaims.parentTokenId, workspaceToken.workspaceToken.id);
-    assert.ok(accessClaims.exp - accessClaims.iat <= 3600, "agent access TTL should cap at 1h");
-  });
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.refreshToken,
+        1,
+      );
+      assert.equal(accessClaims.meta?.tokenClass, "agent");
+      assert.equal(
+        accessClaims.meta?.workspaceTokenId,
+        workspaceToken.workspaceToken.id,
+      );
+      assert.deepEqual(JSON.parse(accessClaims.meta?.accessScopes ?? "[]"), [
+        "relayauth:role:read:*",
+      ]);
+      assert.equal(
+        accessClaims.parentTokenId,
+        workspaceToken.workspaceToken.id,
+      );
+      assert.equal(refreshClaims.meta?.tokenClass, "agent");
+      assert.equal(
+        refreshClaims.parentTokenId,
+        workspaceToken.workspaceToken.id,
+      );
+      assert.ok(
+        accessClaims.exp - accessClaims.iat <= 3600,
+        "agent access TTL should cap at 1h",
+      );
+    },
+  );
 
-  await t.test("rejects bearer auth when a workspace token is required", async () => {
-    const { app, identity, authHeaders } = await createHarness();
-    const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
-      body: {
-        agentId: identity.id,
-      },
-      headers: authHeaders,
-    });
+  await t.test(
+    "rejects bearer auth when a workspace token is required",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+        },
+        headers: authHeaders,
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 401, (body) => {
-      assert.equal(body.code, "workspace_token_required");
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 401, (body) => {
+        assert.equal(body.code, "workspace_token_required");
+      });
+    },
+  );
 });
 
 test("POST /v1/tokens/path", async (t) => {
-  await t.test("mints a relay_pa token pair from a workspace token", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
+  await t.test(
+    "mints a relay_pa token pair from a workspace token",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
         scopes: [
-          "relayauth:api-key:manage:*",
           "relayauth:token:create:*",
           "relayfile:fs:read:*",
           "relayfile:fs:write:*",
         ],
-      },
-    });
-    const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
-      scopes: ["relayauth:token:create:*", "relayfile:fs:read:*", "relayfile:fs:write:*"],
-    });
-    const delegationNotAfter = new Date((Math.floor(Date.now() / 1000) + 30 * 60) * 1000).toISOString();
+      });
+      const delegationNotAfter = new Date(
+        (Math.floor(Date.now() / 1000) + 30 * 60) * 1000,
+      ).toISOString();
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/path", {
-      body: {
-        workspaceId: "ws_tokens_route",
-        agentName: "cloud-orchestrator",
-        paths: ["/linear/issues/**"],
-        ttlSeconds: 7200,
+      const response = await requestRoute(app, "POST", "/v1/tokens/path", {
+        body: {
+          workspaceId: "ws_tokens_route",
+          agentName: "cloud-orchestrator",
+          paths: ["/linear/issues/**"],
+          ttlSeconds: 7200,
+          delegationNotAfter,
+        },
+        headers: {
+          Authorization: `Bearer ${workspaceToken.key}`,
+        },
+      });
+
+      const body = await assertJsonResponse<PathTokenPair>(response, 201);
+      assert.equal(body.agentId, "agent_cloud-orchestrator");
+      assert.equal(body.agentName, "cloud-orchestrator");
+      assert.equal(body.workspaceId, "ws_tokens_route");
+      assert.equal(body.tokenClass, "relay_pa");
+      assert.deepEqual(body.paths, ["/linear/issues/*"]);
+      assert.equal(body.delegationNotAfter, delegationNotAfter);
+      assert.match(
+        body.accessToken,
+        /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      assert.match(
+        body.refreshToken,
+        /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      assert.ok(
+        Date.parse(body.accessTokenExpiresAt) <= Date.parse(delegationNotAfter),
+      );
+      assert.ok(
+        Date.parse(body.refreshTokenExpiresAt) <=
+          Date.parse(delegationNotAfter),
+      );
+
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.refreshToken,
+        1,
+      );
+      assert.equal(accessClaims.sub, "agent_cloud-orchestrator");
+      assert.equal(accessClaims.meta?.tokenClass, "path");
+      assert.equal(
+        accessClaims.meta?.workspaceTokenId,
+        workspaceToken.workspaceToken.id,
+      );
+      assert.equal(accessClaims.meta?.agentName, "cloud-orchestrator");
+      assert.equal(accessClaims.meta?.delegationNotAfter, delegationNotAfter);
+      assert.equal(refreshClaims.meta?.delegationNotAfter, delegationNotAfter);
+      assert.deepEqual(JSON.parse(accessClaims.meta?.paths ?? "[]"), [
+        "/linear/issues/*",
+      ]);
+      assert.deepEqual(accessClaims.scopes, [
+        "relayfile:fs:read:/linear/issues/*",
+        "relayfile:fs:write:/linear/issues/*",
+      ]);
+      assert.deepEqual(accessClaims.aud, ["relayfile"]);
+      assert.ok(
+        accessClaims.exp - accessClaims.iat <= 3600,
+        "path access TTL should cap at 1h",
+      );
+
+      const refreshResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/refresh",
+        {
+          body: {
+            refreshToken: body.refreshToken,
+          },
+        },
+      );
+      const refreshed = await assertJsonResponse<TokenPair>(
+        refreshResponse,
+        200,
+      );
+      assert.match(
+        refreshed.accessToken,
+        /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      assert.match(
+        refreshed.refreshToken,
+        /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      assert.ok(
+        Date.parse(refreshed.accessTokenExpiresAt) <=
+          Date.parse(delegationNotAfter),
+      );
+      assert.ok(
+        Date.parse(refreshed.refreshTokenExpiresAt) <=
+          Date.parse(delegationNotAfter),
+      );
+      const refreshedClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        refreshed.accessToken,
+        1,
+      );
+      assert.equal(refreshedClaims.meta?.tokenClass, "path");
+      assert.equal(
+        refreshedClaims.meta?.delegationNotAfter,
         delegationNotAfter,
-      },
-      headers: {
-        Authorization: `Bearer ${workspaceToken.key}`,
-      },
-    });
+      );
+      assert.deepEqual(refreshedClaims.scopes, accessClaims.scopes);
+    },
+  );
 
-    const body = await assertJsonResponse<PathTokenPair>(response, 201);
-    assert.equal(body.agentId, "agent_cloud-orchestrator");
-    assert.equal(body.agentName, "cloud-orchestrator");
-    assert.equal(body.workspaceId, "ws_tokens_route");
-    assert.equal(body.tokenClass, "relay_pa");
-    assert.deepEqual(body.paths, ["/linear/issues/*"]);
-    assert.equal(body.delegationNotAfter, delegationNotAfter);
-    assert.match(body.accessToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    assert.match(body.refreshToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    assert.ok(Date.parse(body.accessTokenExpiresAt) <= Date.parse(delegationNotAfter));
-    assert.ok(Date.parse(body.refreshTokenExpiresAt) <= Date.parse(delegationNotAfter));
+  await t.test(
+    "rejects path scopes outside the workspace token grant",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayfile:fs:read:*",
+          ],
+        },
+      });
+      const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
+        scopes: ["relayauth:token:create:*", "relayfile:fs:read:*"],
+      });
 
-    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
-    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.refreshToken, 1);
-    assert.equal(accessClaims.sub, "agent_cloud-orchestrator");
-    assert.equal(accessClaims.meta?.tokenClass, "path");
-    assert.equal(accessClaims.meta?.workspaceTokenId, workspaceToken.workspaceToken.id);
-    assert.equal(accessClaims.meta?.agentName, "cloud-orchestrator");
-    assert.equal(accessClaims.meta?.delegationNotAfter, delegationNotAfter);
-    assert.equal(refreshClaims.meta?.delegationNotAfter, delegationNotAfter);
-    assert.deepEqual(JSON.parse(accessClaims.meta?.paths ?? "[]"), ["/linear/issues/*"]);
-    assert.deepEqual(accessClaims.scopes, [
-      "relayfile:fs:read:/linear/issues/*",
-      "relayfile:fs:write:/linear/issues/*",
-    ]);
-    assert.deepEqual(accessClaims.aud, ["relayfile"]);
-    assert.ok(accessClaims.exp - accessClaims.iat <= 3600, "path access TTL should cap at 1h");
+      const response = await requestRoute(app, "POST", "/v1/tokens/path", {
+        body: {
+          agentId: "agent_path_subject",
+          paths: ["/linear/issues/**"],
+        },
+        headers: {
+          "x-api-key": workspaceToken.key,
+        },
+      });
 
-    const refreshResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: {
-        refreshToken: body.refreshToken,
-      },
-    });
-    const refreshed = await assertJsonResponse<TokenPair>(refreshResponse, 200);
-    assert.match(refreshed.accessToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    assert.match(refreshed.refreshToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    assert.ok(Date.parse(refreshed.accessTokenExpiresAt) <= Date.parse(delegationNotAfter));
-    assert.ok(Date.parse(refreshed.refreshTokenExpiresAt) <= Date.parse(delegationNotAfter));
-    const refreshedClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(refreshed.accessToken, 1);
-    assert.equal(refreshedClaims.meta?.tokenClass, "path");
-    assert.equal(refreshedClaims.meta?.delegationNotAfter, delegationNotAfter);
-    assert.deepEqual(refreshedClaims.scopes, accessClaims.scopes);
-  });
-
-  await t.test("rejects path scopes outside the workspace token grant", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayfile:fs:read:*"],
-      },
-    });
-    const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
-      scopes: ["relayauth:token:create:*", "relayfile:fs:read:*"],
-    });
-
-    const response = await requestRoute(app, "POST", "/v1/tokens/path", {
-      body: {
-        agentId: "agent_path_subject",
-        paths: ["/linear/issues/**"],
-      },
-      headers: {
-        "x-api-key": workspaceToken.key,
-      },
-    });
-
-    await assertJsonResponse<ErrorBody>(response, 403, (body) => {
-      assert.equal(body.code, "insufficient_scope");
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+        assert.equal(body.code, "insufficient_scope");
+      });
+    },
+  );
 });
 
 test("POST /v1/tokens/workspace-path", async (t) => {
@@ -889,256 +1097,374 @@ test("POST /v1/tokens/workspace-path", async (t) => {
       "relayfile:fs:write:*",
     ]);
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-      body: {
-        paths: ["/github/repos/AgentWorkforce/cloud/issues/123/**"],
-        scopes: ["relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/**"],
+    const response = await requestRoute(
+      app,
+      "POST",
+      "/v1/tokens/workspace-path",
+      {
+        body: {
+          paths: ["/github/repos/AgentWorkforce/cloud/issues/123/**"],
+          scopes: [
+            "relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/**",
+          ],
+        },
+        headers: {
+          "x-api-key": orgApiKey.key,
+        },
       },
-      headers: {
-        "x-api-key": orgApiKey.key,
-      },
-    });
+    );
 
     await assertJsonResponse<ErrorBody>(response, 400, (body) => {
       assert.equal(body.code, "workspaceId_required");
     });
   });
 
-  await t.test("mints a short-lived relay_pa directly from an org api key without a seeded workspace row", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: [
-          "relayauth:api-key:manage:*",
-          "relayfile:fs:read:*",
-          "relayfile:fs:write:*",
-        ],
-      },
-    });
-    const orgApiKey = await issueApiKey(app, authHeaders, [
-      "relayauth:api-key:manage:*",
-      "relayfile:fs:read:*",
-      "relayfile:fs:write:*",
-    ]);
-
-    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-      body: {
-        workspaceId: "  ws_tokens_route  ",
-        agentName: "cloud-team-member",
-        paths: ["/github/repos/AgentWorkforce/cloud/issues/123/**"],
-        scopes: ["relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/**"],
-        ttlSeconds: 120,
-      },
-      headers: {
-        "x-api-key": orgApiKey.key,
-      },
-    });
-
-    const body = await assertJsonResponse<WorkspacePathTokenPair>(response, 201);
-    assert.equal(body.agentId, "agent_cloud-team-member");
-    assert.equal(body.agentName, "cloud-team-member");
-    assert.equal(body.workspaceId, "ws_tokens_route");
-    assert.equal(body.tokenClass, "relay_pa");
-    assert.deepEqual(body.paths, ["/github/repos/AgentWorkforce/cloud/issues/123/*"]);
-    assert.match(body.accessToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    assert.match(body.refreshToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    assert.equal("issuedViaWorkspaceTokenId" in body, false);
-    assert.equal("workspaceToken" in body, false);
-    assert.equal("key" in body, false);
-
-    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
-    assert.equal(accessClaims.sub, "agent_cloud-team-member");
-    assert.equal(accessClaims.wks, "ws_tokens_route");
-    assert.equal(accessClaims.org, "org_tokens_route");
-    assert.equal(accessClaims.meta?.tokenClass, "path");
-    assert.equal(accessClaims.meta?.workspaceTokenId, undefined);
-    assert.equal(accessClaims.parentTokenId, undefined);
-    assert.deepEqual(JSON.parse(accessClaims.meta?.paths ?? "[]"), ["/github/repos/AgentWorkforce/cloud/issues/123/*"]);
-    assert.deepEqual(accessClaims.scopes, [
-      "relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/*",
-    ]);
-    assert.deepEqual(accessClaims.aud, ["relayfile"]);
-    assert.ok(accessClaims.exp - accessClaims.iat <= 120, "direct path access TTL should honor short ttlSeconds");
-  });
-
-  await t.test("mints a provider-subtree scope for a narrower writeback path", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: [
-          "relayauth:api-key:manage:*",
-          "relayfile:fs:read:*",
-          "relayfile:fs:write:*",
-        ],
-      },
-    });
-    const orgApiKey = await issueApiKey(app, authHeaders, [
-      "relayauth:api-key:manage:*",
-      "relayfile:fs:read:*",
-      "relayfile:fs:write:*",
-    ]);
-
-    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-      body: {
-        workspaceId: "ws_tokens_route",
-        agentName: "relayfile-writeback",
-        paths: ["/linear/issues/issue-55.json"],
-        scopes: ["relayfile:fs:write:/linear/**"],
-      },
-      headers: {
-        "x-api-key": orgApiKey.key,
-      },
-    });
-
-    const body = await assertJsonResponse<WorkspacePathTokenPair>(response, 201);
-    assert.deepEqual(body.paths, ["/linear/issues/issue-55.json"]);
-
-    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
-    assert.deepEqual(JSON.parse(accessClaims.meta?.paths ?? "[]"), ["/linear/issues/issue-55.json"]);
-    assert.deepEqual(accessClaims.scopes, ["relayfile:fs:write:/linear/*"]);
-  });
-
-  await t.test("stamps the authenticated org even when the workspaceId is associated with another org", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        org: "org_a",
-        scopes: [
-          "relayauth:api-key:manage:*",
-          "relayfile:fs:read:*",
-          "relayfile:fs:write:*",
-        ],
-      },
-    });
-    await seedWorkspaceContext(app, {
-      id: "ws_owned_by_org_b",
-      workspaceId: "ws_owned_by_org_b",
-      orgId: "org_b",
-      scopes: [],
-      roles: [],
-    });
-    const orgApiKey = await issueApiKey(app, authHeaders, [
-      "relayauth:api-key:manage:*",
-      "relayfile:fs:read:*",
-      "relayfile:fs:write:*",
-    ]);
-
-    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-      body: {
-        workspaceId: "ws_owned_by_org_b",
-        paths: ["/github/repos/AgentWorkforce/cloud/issues/123/*"],
-        scopes: ["relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/*"],
-      },
-      headers: {
-        "x-api-key": orgApiKey.key,
-      },
-    });
-
-    const body = await assertJsonResponse<WorkspacePathTokenPair>(response, 201);
-    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
-    assert.equal(accessClaims.org, "org_a");
-    assert.equal(accessClaims.wks, "ws_owned_by_org_b");
-    assert.equal(body.workspaceId, "ws_owned_by_org_b");
-  });
-
-  await t.test("caps direct path token TTL at the agent-token maximum", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: [
-          "relayauth:api-key:manage:*",
-          "relayfile:fs:read:*",
-          "relayfile:fs:write:*",
-        ],
-      },
-    });
-
-    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-      body: {
-        workspaceId: "ws_tokens_route",
-        paths: ["/github/repos/AgentWorkforce/cloud/issues/123/*"],
-        ttlSeconds: 7200,
-      },
-      headers: authHeaders,
-    });
-
-    const body = await assertJsonResponse<WorkspacePathTokenPair>(response, 201);
-    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
-    assert.ok(accessClaims.exp - accessClaims.iat <= 3600, "direct path access TTL should cap at 1h");
-  });
-
-  await t.test("rejects requested scopes outside the org api-key grant", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: ["relayauth:api-key:manage:*", "relayfile:fs:read:*"],
-      },
-    });
-
-    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-      body: {
-        workspaceId: "ws_tokens_route",
-        paths: ["/github/repos/AgentWorkforce/cloud/issues/123/*"],
-        scopes: ["relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/*"],
-      },
-      headers: authHeaders,
-    });
-
-    await assertJsonResponse<ErrorBody>(response, 403, (body) => {
-      assert.equal(body.code, "insufficient_scope");
-    });
-  });
-
-  await t.test("rejects whole-tree scopes even with a narrow requested path", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: ["relayauth:api-key:manage:*", "relayfile:fs:write:*"],
-      },
-    });
-
-    const wholeTreeScopes = [
-      "relayfile:fs:write:*",
-      "relayfile:fs:write:/",
-      "relayfile:fs:write:/*",
-      "relayfile:fs:write:/**",
-      "relayfile:fs:write://",
-      "relayfile:fs:write://**",
-      "relayfile:fs:write:////",
-      "relayfile:fs:write:/./",
-      "relayfile:fs:write:/./**",
-    ];
-
-    for (const scope of wholeTreeScopes) {
-      const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-        body: {
-          workspaceId: "ws_tokens_route",
-          paths: ["/linear/issues/issue-55.json"],
-          scopes: [scope],
+  await t.test(
+    "mints a short-lived relay_pa directly from an org api key without a seeded workspace row",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
         },
-        headers: authHeaders,
       });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const response = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "  ws_tokens_route  ",
+            agentName: "cloud-team-member",
+            paths: ["/github/repos/AgentWorkforce/cloud/issues/123/**"],
+            scopes: [
+              "relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/**",
+            ],
+            ttlSeconds: 120,
+          },
+          headers: {
+            "x-api-key": orgApiKey.key,
+          },
+        },
+      );
+
+      const body = await assertJsonResponse<WorkspacePathTokenPair>(
+        response,
+        201,
+      );
+      assert.equal(body.agentId, "agent_cloud-team-member");
+      assert.equal(body.agentName, "cloud-team-member");
+      assert.equal(body.workspaceId, "ws_tokens_route");
+      assert.equal(body.tokenClass, "relay_pa");
+      assert.deepEqual(body.paths, [
+        "/github/repos/AgentWorkforce/cloud/issues/123/*",
+      ]);
+      assert.match(
+        body.accessToken,
+        /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      assert.match(
+        body.refreshToken,
+        /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      assert.equal("issuedViaWorkspaceTokenId" in body, false);
+      assert.equal("workspaceToken" in body, false);
+      assert.equal("key" in body, false);
+
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      assert.equal(accessClaims.sub, "agent_cloud-team-member");
+      assert.equal(accessClaims.wks, "ws_tokens_route");
+      assert.equal(accessClaims.org, "org_tokens_route");
+      assert.equal(accessClaims.meta?.tokenClass, "path");
+      assert.equal(accessClaims.meta?.workspaceTokenId, undefined);
+      assert.equal(accessClaims.parentTokenId, undefined);
+      assert.deepEqual(JSON.parse(accessClaims.meta?.paths ?? "[]"), [
+        "/github/repos/AgentWorkforce/cloud/issues/123/*",
+      ]);
+      assert.deepEqual(accessClaims.scopes, [
+        "relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/*",
+      ]);
+      assert.deepEqual(accessClaims.aud, ["relayfile"]);
+      assert.ok(
+        accessClaims.exp - accessClaims.iat <= 120,
+        "direct path access TTL should honor short ttlSeconds",
+      );
+    },
+  );
+
+  await t.test(
+    "mints a provider-subtree scope for a narrower writeback path",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const response = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "relayfile-writeback",
+            paths: ["/linear/issues/issue-55.json"],
+            scopes: ["relayfile:fs:write:/linear/**"],
+          },
+          headers: {
+            "x-api-key": orgApiKey.key,
+          },
+        },
+      );
+
+      const body = await assertJsonResponse<WorkspacePathTokenPair>(
+        response,
+        201,
+      );
+      assert.deepEqual(body.paths, ["/linear/issues/issue-55.json"]);
+
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      assert.deepEqual(JSON.parse(accessClaims.meta?.paths ?? "[]"), [
+        "/linear/issues/issue-55.json",
+      ]);
+      assert.deepEqual(accessClaims.scopes, ["relayfile:fs:write:/linear/*"]);
+    },
+  );
+
+  await t.test(
+    "stamps the authenticated org even when the workspaceId is associated with another org",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          org: "org_a",
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      await seedWorkspaceContext(app, {
+        id: "ws_owned_by_org_b",
+        workspaceId: "ws_owned_by_org_b",
+        orgId: "org_b",
+        scopes: [],
+        roles: [],
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const response = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_owned_by_org_b",
+            paths: ["/github/repos/AgentWorkforce/cloud/issues/123/*"],
+            scopes: [
+              "relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/*",
+            ],
+          },
+          headers: {
+            "x-api-key": orgApiKey.key,
+          },
+        },
+      );
+
+      const body = await assertJsonResponse<WorkspacePathTokenPair>(
+        response,
+        201,
+      );
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      assert.equal(accessClaims.org, "org_a");
+      assert.equal(accessClaims.wks, "ws_owned_by_org_b");
+      assert.equal(body.workspaceId, "ws_owned_by_org_b");
+    },
+  );
+
+  await t.test(
+    "caps direct path token TTL at the agent-token maximum",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+
+      const response = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            paths: ["/github/repos/AgentWorkforce/cloud/issues/123/*"],
+            ttlSeconds: 7200,
+          },
+          headers: authHeaders,
+        },
+      );
+
+      const body = await assertJsonResponse<WorkspacePathTokenPair>(
+        response,
+        201,
+      );
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      assert.ok(
+        accessClaims.exp - accessClaims.iat <= 3600,
+        "direct path access TTL should cap at 1h",
+      );
+    },
+  );
+
+  await t.test(
+    "rejects requested scopes outside the org api-key grant",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: ["relayauth:api-key:manage:*", "relayfile:fs:read:*"],
+        },
+      });
+
+      const response = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            paths: ["/github/repos/AgentWorkforce/cloud/issues/123/*"],
+            scopes: [
+              "relayfile:fs:write:/github/repos/AgentWorkforce/cloud/issues/123/*",
+            ],
+          },
+          headers: authHeaders,
+        },
+      );
+
+      await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+        assert.equal(body.code, "insufficient_scope");
+      });
+    },
+  );
+
+  await t.test(
+    "rejects whole-tree scopes even with a narrow requested path",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: ["relayauth:api-key:manage:*", "relayfile:fs:write:*"],
+        },
+      });
+
+      const wholeTreeScopes = [
+        "relayfile:fs:write:*",
+        "relayfile:fs:write:/",
+        "relayfile:fs:write:/*",
+        "relayfile:fs:write:/**",
+        "relayfile:fs:write://",
+        "relayfile:fs:write://**",
+        "relayfile:fs:write:////",
+        "relayfile:fs:write:/./",
+        "relayfile:fs:write:/./**",
+      ];
+
+      for (const scope of wholeTreeScopes) {
+        const response = await requestRoute(
+          app,
+          "POST",
+          "/v1/tokens/workspace-path",
+          {
+            body: {
+              workspaceId: "ws_tokens_route",
+              paths: ["/linear/issues/issue-55.json"],
+              scopes: [scope],
+            },
+            headers: authHeaders,
+          },
+        );
+
+        await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+          assert.equal(
+            body.code,
+            "invalid_scope",
+            `expected ${scope} to be rejected`,
+          );
+        });
+      }
+    },
+  );
+
+  await t.test(
+    "rejects provider-subtree scopes that do not cover every requested path",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: ["relayauth:api-key:manage:*", "relayfile:fs:write:*"],
+        },
+      });
+
+      const response = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            paths: [
+              "/linear/issues/issue-55.json",
+              "/github/issues/issue-55.json",
+            ],
+            scopes: ["relayfile:fs:write:/linear/**"],
+          },
+          headers: authHeaders,
+        },
+      );
 
       await assertJsonResponse<ErrorBody>(response, 400, (body) => {
-        assert.equal(body.code, "invalid_scope", `expected ${scope} to be rejected`);
+        assert.equal(body.code, "invalid_scope");
       });
-    }
-  });
-
-  await t.test("rejects provider-subtree scopes that do not cover every requested path", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: ["relayauth:api-key:manage:*", "relayfile:fs:write:*"],
-      },
-    });
-
-    const response = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-      body: {
-        workspaceId: "ws_tokens_route",
-        paths: ["/linear/issues/issue-55.json", "/github/issues/issue-55.json"],
-        scopes: ["relayfile:fs:write:/linear/**"],
-      },
-      headers: authHeaders,
-    });
-
-    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
-      assert.equal(body.code, "invalid_scope");
-    });
-  });
+    },
+  );
 
   await t.test("rejects degenerate or traversal paths", async () => {
     const { app, authHeaders } = await createHarness({
@@ -1147,24 +1473,34 @@ test("POST /v1/tokens/workspace-path", async (t) => {
       },
     });
 
-    const degenerate = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-      body: {
-        workspaceId: "ws_tokens_route",
-        paths: ["/"],
+    const degenerate = await requestRoute(
+      app,
+      "POST",
+      "/v1/tokens/workspace-path",
+      {
+        body: {
+          workspaceId: "ws_tokens_route",
+          paths: ["/"],
+        },
+        headers: authHeaders,
       },
-      headers: authHeaders,
-    });
+    );
     await assertJsonResponse<ErrorBody>(degenerate, 400, (body) => {
       assert.equal(body.code, "invalid_paths");
     });
 
-    const traversal = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-      body: {
-        workspaceId: "ws_tokens_route",
-        paths: ["/github/repos/AgentWorkforce/cloud/issues/../secrets/*"],
+    const traversal = await requestRoute(
+      app,
+      "POST",
+      "/v1/tokens/workspace-path",
+      {
+        body: {
+          workspaceId: "ws_tokens_route",
+          paths: ["/github/repos/AgentWorkforce/cloud/issues/../secrets/*"],
+        },
+        headers: authHeaders,
       },
-      headers: authHeaders,
-    });
+    );
     await assertJsonResponse<ErrorBody>(traversal, 400, (body) => {
       assert.equal(body.code, "invalid_paths");
     });
@@ -1178,195 +1514,404 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
     assertionScope,
   ];
 
-  async function issueAssertionKey(app: ReturnType<typeof createTestApp>, headers: HeadersInit) {
+  async function issueAssertionKey(
+    app: ReturnType<typeof createTestApp>,
+    headers: HeadersInit,
+  ) {
     return issueApiKey(app, headers, [assertionScope]);
   }
 
-  await t.test("mints a short-lived access-only relayhistory assertion from a dedicated api key", async () => {
-    const deferred: DeferredTask[] = [];
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: assertionKeyIssuerScopes,
-      },
-      deferTask: (task) => deferred.push(task),
-    });
-    const assertionKey = await issueAssertionKey(app, authHeaders);
+  await t.test(
+    "mints a short-lived access-only relayhistory assertion from a dedicated api key",
+    async () => {
+      const deferred: DeferredTask[] = [];
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: assertionKeyIssuerScopes,
+        },
+        deferTask: (task) => deferred.push(task),
+      });
+      const assertionKey = await issueAssertionKey(app, authHeaders);
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
-      body: {
-        orgId: "org_relayhistory_target",
+      const response = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/relayhistory-assertion",
+        {
+          body: {
+            orgId: "org_relayhistory_target",
+            workspaceId: "ws_relayhistory_target",
+            sponsorId: "user_cloud_login",
+            scopes: ["rth:sync", "rth:read"],
+            expiresIn: 45,
+          },
+          headers: {
+            "x-api-key": assertionKey.key,
+          },
+        },
+      );
+
+      const body = await assertJsonResponse<RelayhistoryAssertionResponse>(
+        response,
+        201,
+      );
+      assert.equal(body.tokenType, "Bearer");
+      assert.equal(
+        "refreshToken" in body,
+        false,
+        "relayhistory assertions must not issue refresh tokens",
+      );
+
+      const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      assert.equal(claims.sub, "agent_relayhistory_assertion");
+      assert.equal(claims.org, "org_relayhistory_target");
+      assert.equal(claims.wks, "ws_relayhistory_target");
+      assert.equal(claims.sponsorId, "user_cloud_login");
+      assert.deepEqual(claims.sponsorChain, [
+        "user_cloud_login",
+        "agent_relayhistory_assertion",
+      ]);
+      assert.deepEqual(claims.aud, ["relayhistory"]);
+      assert.deepEqual(claims.scopes, ["rth:read", "rth:sync"]);
+      assert.equal(claims.token_type, "access");
+      assert.equal(claims.exp - claims.iat, 45);
+      assert.match(claims.jti, /^tok_[A-Za-z0-9_-]+$/);
+      assert.deepEqual(claims.meta, {
+        tokenClass: "relayhistory_assertion",
+        actorId: "api_key:" + assertionKey.apiKey.id,
+        actorOrgId: "org_tokens_route",
+        requestedOrgId: "org_relayhistory_target",
         workspaceId: "ws_relayhistory_target",
-        sponsorId: "user_cloud_login",
-        scopes: ["rth:sync", "rth:read"],
-        expiresIn: 45,
-      },
-      headers: {
-        "x-api-key": assertionKey.key,
-      },
-    });
+        grantedScopes: JSON.stringify(["rth:read", "rth:sync"]),
+      });
+      assert.equal(
+        await countStoredTokens(app),
+        1,
+        "only the access assertion should be persisted",
+      );
 
-    const body = await assertJsonResponse<RelayhistoryAssertionResponse>(response, 201);
-    assert.equal(body.tokenType, "Bearer");
-    assert.equal("refreshToken" in body, false, "relayhistory assertions must not issue refresh tokens");
-
-    const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
-    assert.equal(claims.sub, "agent_relayhistory_assertion");
-    assert.equal(claims.org, "org_relayhistory_target");
-    assert.equal(claims.wks, "ws_relayhistory_target");
-    assert.equal(claims.sponsorId, "user_cloud_login");
-    assert.deepEqual(claims.sponsorChain, ["user_cloud_login", "agent_relayhistory_assertion"]);
-    assert.deepEqual(claims.aud, ["relayhistory"]);
-    assert.deepEqual(claims.scopes, ["rth:read", "rth:sync"]);
-    assert.equal(claims.token_type, "access");
-    assert.equal(claims.exp - claims.iat, 45);
-    assert.match(claims.jti, /^tok_[A-Za-z0-9_-]+$/);
-    assert.deepEqual(claims.meta, {
-      tokenClass: "relayhistory_assertion",
-      actorId: "api_key:" + assertionKey.apiKey.id,
-      actorOrgId: "org_tokens_route",
-      requestedOrgId: "org_relayhistory_target",
-      workspaceId: "ws_relayhistory_target",
-      grantedScopes: JSON.stringify(["rth:read", "rth:sync"]),
-    });
-    assert.equal(await countStoredTokens(app), 1, "only the access assertion should be persisted");
-    await Promise.all(deferred.map((task) => task()));
-
-    const auditRow = await app.storage.DB.prepare(`
+      const auditRow = await app.storage.DB.prepare(
+        `
       SELECT action, identity_id, org_id, workspace_id, resource, metadata_json
       FROM audit_logs
       WHERE resource = 'relayhistory-assertion'
       LIMIT 1
-    `).first<{
-      action: string;
-      identity_id: string;
-      org_id: string;
-      workspace_id: string;
-      resource: string;
-      metadata_json: string;
-    }>();
-    assert.equal(auditRow?.action, "token.issued");
-    assert.equal(auditRow?.identity_id, "api_key:" + assertionKey.apiKey.id);
-    assert.equal(auditRow?.org_id, "org_relayhistory_target");
-    assert.equal(auditRow?.workspace_id, "ws_relayhistory_target");
-    assert.deepEqual(JSON.parse(auditRow?.metadata_json ?? "{}"), {
-      tokenId: claims.jti,
-      actorOrgId: "org_tokens_route",
-      sponsorId: "user_cloud_login",
-      grantedScopes: JSON.stringify(["rth:read", "rth:sync"]),
-    });
-  });
-
-  await t.test("requires the dedicated api-key path even when a bearer has the assertion scope", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: [assertionScope],
-      },
-    });
-
-    const response = await requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
-      body: {
-        orgId: "org_relayhistory_target",
-        workspaceId: "ws_relayhistory_target",
+    `,
+      ).first<{
+        action: string;
+        identity_id: string;
+        org_id: string;
+        workspace_id: string;
+        resource: string;
+        metadata_json: string;
+      }>();
+      assert.equal(auditRow?.action, "token.issued");
+      assert.equal(auditRow?.identity_id, "api_key:" + assertionKey.apiKey.id);
+      assert.equal(auditRow?.org_id, "org_relayhistory_target");
+      assert.equal(auditRow?.workspace_id, "ws_relayhistory_target");
+      assert.deepEqual(JSON.parse(auditRow?.metadata_json ?? "{}"), {
+        tokenId: claims.jti,
+        actorOrgId: "org_tokens_route",
         sponsorId: "user_cloud_login",
-        scopes: ["rth:read"],
-      },
-      headers: authHeaders,
-    });
+        grantedScopes: JSON.stringify(["rth:read", "rth:sync"]),
+      });
+    },
+  );
 
-    await assertJsonResponse<ErrorBody>(response, 403, (body) => {
-      assert.equal(body.code, "assertion_key_required");
-    });
-  });
+  await t.test(
+    "fails closed without an assertion token when its audit cannot commit",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: assertionKeyIssuerScopes,
+        },
+      });
+      const assertionKey = await issueAssertionKey(app, authHeaders);
+      app.storage.tokens.persistIssuedWithAudit = async () => {
+        throw new Error("fault: assertion audit");
+      };
 
-  await t.test("strict-rejects non-relayhistory scopes instead of silently dropping them", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: assertionKeyIssuerScopes,
-      },
-    });
-    const assertionKey = await issueAssertionKey(app, authHeaders);
+      const response = await withSilencedConsoleError(() =>
+        requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
+          body: {
+            orgId: "org_relayhistory_target",
+            workspaceId: "ws_relayhistory_target",
+            sponsorId: "user_cloud_login",
+            scopes: ["rth:read"],
+          },
+          headers: { "x-api-key": assertionKey.key },
+        }),
+      );
+      await assertJsonResponse<ErrorBody>(response, 500, (body) => {
+        assert.equal(body.code, "internal_error");
+      });
+      assert.equal(await countStoredTokens(app), 0);
+    },
+  );
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
-      body: {
-        orgId: "org_relayhistory_target",
-        workspaceId: "ws_relayhistory_target",
-        sponsorId: "user_cloud_login",
-        scopes: ["rth:read", "rth:admin"],
-      },
-      headers: {
-        "x-api-key": assertionKey.key,
-      },
-    });
+  await t.test(
+    "requires the dedicated api-key path even when a bearer has the assertion scope",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [assertionScope],
+        },
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
-      assert.equal(body.code, "invalid_scope");
-    });
-  });
+      const response = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/relayhistory-assertion",
+        {
+          body: {
+            orgId: "org_relayhistory_target",
+            workspaceId: "ws_relayhistory_target",
+            sponsorId: "user_cloud_login",
+            scopes: ["rth:read"],
+          },
+          headers: authHeaders,
+        },
+      );
 
-  await t.test("strict-rejects ttl requests above the 60 second ceiling", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: assertionKeyIssuerScopes,
-      },
-    });
-    const assertionKey = await issueAssertionKey(app, authHeaders);
+      await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+        assert.equal(body.code, "assertion_key_required");
+      });
+    },
+  );
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
-      body: {
-        orgId: "org_relayhistory_target",
-        workspaceId: "ws_relayhistory_target",
-        sponsorId: "user_cloud_login",
-        scopes: ["rth:read"],
-        expiresIn: 61,
-      },
-      headers: {
-        "x-api-key": assertionKey.key,
-      },
-    });
+  await t.test(
+    "strict-rejects non-relayhistory scopes instead of silently dropping them",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: assertionKeyIssuerScopes,
+        },
+      });
+      const assertionKey = await issueAssertionKey(app, authHeaders);
 
-    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
-      assert.equal(body.code, "invalid_expires_in");
-    });
-  });
+      const response = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/relayhistory-assertion",
+        {
+          body: {
+            orgId: "org_relayhistory_target",
+            workspaceId: "ws_relayhistory_target",
+            sponsorId: "user_cloud_login",
+            scopes: ["rth:read", "rth:admin"],
+          },
+          headers: {
+            "x-api-key": assertionKey.key,
+          },
+        },
+      );
+
+      await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+        assert.equal(body.code, "invalid_scope");
+      });
+    },
+  );
+
+  await t.test(
+    "strict-rejects ttl requests above the 60 second ceiling",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: assertionKeyIssuerScopes,
+        },
+      });
+      const assertionKey = await issueAssertionKey(app, authHeaders);
+
+      const response = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/relayhistory-assertion",
+        {
+          body: {
+            orgId: "org_relayhistory_target",
+            workspaceId: "ws_relayhistory_target",
+            sponsorId: "user_cloud_login",
+            scopes: ["rth:read"],
+            expiresIn: 61,
+          },
+          headers: {
+            "x-api-key": assertionKey.key,
+          },
+        },
+      );
+
+      await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+        assert.equal(body.code, "invalid_expires_in");
+      });
+    },
+  );
 });
 
 test("POST /v1/tokens/refresh", async (t) => {
-  await t.test("refreshes a RS256 token pair without requiring a bearer token", async () => {
-    const { app, identity } = await createHarness();
-    const { pair, accessClaims, refreshClaims } = createRs256TokenPair(identity);
-    await seedActiveTokens(app, identity.id, [accessClaims.jti, refreshClaims.jti]);
+  await t.test(
+    "refreshes a RS256 token pair without requiring a bearer token",
+    async () => {
+      const { app, identity } = await createHarness();
+      const { pair, accessClaims, refreshClaims } =
+        createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [
+        accessClaims.jti,
+        refreshClaims.jti,
+      ]);
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: {
-        refreshToken: pair.refreshToken,
-      },
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+        body: {
+          refreshToken: pair.refreshToken,
+        },
+      });
 
-    const body = await assertJsonResponse<TokenPair>(response, 200);
-    assert.equal(body.tokenType, "Bearer");
-    assert.notEqual(body.accessToken, pair.accessToken);
-    assert.notEqual(body.refreshToken, pair.refreshToken);
+      const body = await assertJsonResponse<TokenPair>(response, 200);
+      assert.equal(body.tokenType, "Bearer");
+      assert.notEqual(body.accessToken, pair.accessToken);
+      assert.notEqual(body.refreshToken, pair.refreshToken);
 
-    const nextAccessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
-    const nextRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.refreshToken, 1);
-    assertTokenClaimsMatchSpec(nextAccessClaims, {
-      tokenType: "access",
-      expectedIdentity: identity,
-      expectedAudience: ["specialist"],
-      expectedScopes: ["specialist:invoke"],
-    });
-    assertTokenClaimsMatchSpec(nextRefreshClaims, {
-      tokenType: "refresh",
-      expectedIdentity: identity,
-      expectedAudience: ["relayauth"],
-      expectedScopes: ["relayauth:token:refresh"],
-    });
-    assert.notEqual(nextAccessClaims.jti, accessClaims.jti);
-    assert.notEqual(nextRefreshClaims.jti, refreshClaims.jti);
+      const nextAccessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      const nextRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.refreshToken,
+        1,
+      );
+      assertTokenClaimsMatchSpec(nextAccessClaims, {
+        tokenType: "access",
+        expectedIdentity: identity,
+        expectedAudience: ["specialist"],
+        expectedScopes: ["specialist:invoke"],
+      });
+      assertTokenClaimsMatchSpec(nextRefreshClaims, {
+        tokenType: "refresh",
+        expectedIdentity: identity,
+        expectedAudience: ["relayauth"],
+        expectedScopes: ["relayauth:token:refresh"],
+      });
+      assert.notEqual(nextAccessClaims.jti, accessClaims.jti);
+      assert.notEqual(nextRefreshClaims.jti, refreshClaims.jti);
 
-    await assertRs256Algorithm(body.accessToken, ["specialist"]);
-    await assertRs256Algorithm(body.refreshToken, ["relayauth"]);
-  });
+      await assertRs256Algorithm(body.accessToken, ["specialist"]);
+      await assertRs256Algorithm(body.refreshToken, ["relayauth"]);
+    },
+  );
+
+  await t.test(
+    "treats a concurrent refresh rotation loser as reuse and leaves no active session",
+    async () => {
+      const { app, identity } = await createHarness();
+      const { pair, accessClaims, refreshClaims } =
+        createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [
+        accessClaims.jti,
+        refreshClaims.jti,
+      ]);
+      await app.storage.DB.prepare(
+        "UPDATE tokens SET session_id = ? WHERE identity_id = ?",
+      )
+        .bind(refreshClaims.sid, identity.id)
+        .run();
+
+      const rotate = app.storage.tokens.rotateIssuedPairWithAudit.bind(
+        app.storage.tokens,
+      );
+      let waitingRotations = 0;
+      let releaseRotations!: () => void;
+      const bothAtRotation = new Promise<void>((resolve) => {
+        releaseRotations = resolve;
+      });
+      app.storage.tokens.rotateIssuedPairWithAudit = async (input) => {
+        waitingRotations += 1;
+        if (waitingRotations === 2) {
+          releaseRotations();
+        }
+        await bothAtRotation;
+        await rotate(input);
+      };
+
+      const responses = await Promise.all([
+        requestRoute(app, "POST", "/v1/tokens/refresh", {
+          body: { refreshToken: pair.refreshToken },
+        }),
+        requestRoute(app, "POST", "/v1/tokens/refresh", {
+          body: { refreshToken: pair.refreshToken },
+        }),
+      ]);
+      assert.equal(waitingRotations, 2);
+
+      const successful = responses.find((response) => response.status === 200);
+      const rejected = responses.find((response) => response.status === 401);
+      assert.ok(successful, "one concurrent refresh must win the rotation");
+      assert.ok(rejected, "the losing refresh must enter the reuse cascade");
+      assert.deepEqual(await rejected.json(), {
+        error: "Refresh token has been revoked",
+      });
+
+      const winningPair = (await successful.json()) as TokenPair;
+      const winningAccess = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        winningPair.accessToken,
+        1,
+      );
+      const winningRefresh = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        winningPair.refreshToken,
+        1,
+      );
+      assert.deepEqual(
+        await app.storage.tokens.listActiveBySessionId(refreshClaims.sid!),
+        [],
+        "the reuse cascade must revoke every token in the raced session",
+      );
+      for (const tokenId of [
+        accessClaims.jti,
+        refreshClaims.jti,
+        winningAccess.jti,
+        winningRefresh.jti,
+      ]) {
+        assert.equal(
+          (await app.storage.tokens.getById(tokenId))?.status,
+          "revoked",
+          `${tokenId} must not remain active after concurrent reuse`,
+        );
+      }
+    },
+  );
+
+  await t.test(
+    "rolls back the new pair and leaves the old JTI active when rotation audit fails",
+    async () => {
+      const { app, identity } = await createHarness();
+      const { pair, accessClaims, refreshClaims } =
+        createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [
+        accessClaims.jti,
+        refreshClaims.jti,
+      ]);
+      const beforeCount = await countStoredTokens(app);
+      app.storage.tokens.rotateIssuedPairWithAudit = async () => {
+        throw new Error("fault: rotation audit");
+      };
+
+      const response = await withSilencedConsoleError(() =>
+        requestRoute(app, "POST", "/v1/tokens/refresh", {
+          body: { refreshToken: pair.refreshToken },
+        }),
+      );
+      await assertJsonResponse<ErrorBody>(response, 500, (body) => {
+        assert.equal(body.code, "internal_error");
+      });
+      assert.equal(await countStoredTokens(app), beforeCount);
+      assert.equal(
+        (await app.storage.tokens.getById(refreshClaims.jti))?.status,
+        "active",
+      );
+      assert.deepEqual(await listRevokedTokenIds(app), []);
+    },
+  );
 
   await t.test("returns 400 when refreshToken is missing", async () => {
     const { app } = await createHarness();
@@ -1396,7 +1941,7 @@ test("POST /v1/tokens/refresh", async (t) => {
 
   await t.test("returns 401 when the refresh token is expired", async () => {
     const { app, identity } = await createHarness();
-    const now = Math.floor(Date.now() / 1000) - (2 * 3600);
+    const now = Math.floor(Date.now() / 1000) - 2 * 3600;
     const { pair, refreshClaims } = createRs256TokenPair(identity, {
       issuedAt: now,
       accessExpiresInSeconds: 60,
@@ -1415,403 +1960,589 @@ test("POST /v1/tokens/refresh", async (t) => {
     });
   });
 
-  await t.test("returns 401 when the refresh token has been revoked", async () => {
-    const { app, identity } = await createHarness();
-    const { pair, refreshClaims } = createRs256TokenPair(identity);
-    await seedActiveTokens(app, identity.id, [refreshClaims.jti]);
+  await t.test(
+    "returns 401 when the refresh token has been revoked",
+    async () => {
+      const { app, identity } = await createHarness();
+      const { pair, refreshClaims } = createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [refreshClaims.jti]);
 
-    const revocations = app.storage.revocations as typeof app.storage.revocations & {
-      revoke(jti: string, expiresAt: number): Promise<void>;
-    };
-    await revocations.revoke(refreshClaims.jti, refreshClaims.exp);
+      const revocations = app.storage
+        .revocations as typeof app.storage.revocations & {
+        revoke(jti: string, expiresAt: number): Promise<void>;
+      };
+      await revocations.revoke(refreshClaims.jti, refreshClaims.exp);
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: {
-        refreshToken: pair.refreshToken,
-      },
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+        body: {
+          refreshToken: pair.refreshToken,
+        },
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 401, (body) => {
-      assert.match(JSON.stringify(body), /revoked/i);
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 401, (body) => {
+        assert.match(JSON.stringify(body), /revoked/i);
+      });
+    },
+  );
 
-  await t.test("revokes the old refresh JTI after a successful refresh", async () => {
-    const { app, identity } = await createHarness();
-    const { pair, accessClaims, refreshClaims } = createRs256TokenPair(identity);
-    await seedActiveTokens(app, identity.id, [accessClaims.jti, refreshClaims.jti]);
+  await t.test(
+    "revokes the old refresh JTI after a successful refresh",
+    async () => {
+      const { app, identity } = await createHarness();
+      const { pair, accessClaims, refreshClaims } =
+        createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [
+        accessClaims.jti,
+        refreshClaims.jti,
+      ]);
 
-    assert.deepEqual(await listRevokedTokenIds(app), []);
+      assert.deepEqual(await listRevokedTokenIds(app), []);
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken: pair.refreshToken },
-    });
-    await assertJsonResponse<TokenPair>(response, 200);
+      const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+        body: { refreshToken: pair.refreshToken },
+      });
+      await assertJsonResponse<TokenPair>(response, 200);
 
-    const revoked = await listRevokedTokenIds(app);
-    assert.ok(
-      revoked.includes(refreshClaims.jti),
-      `old refresh JTI ${refreshClaims.jti} should be in the revocation list but got ${JSON.stringify(revoked)}`,
-    );
-  });
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        revoked.includes(refreshClaims.jti),
+        `old refresh JTI ${refreshClaims.jti} should be in the revocation list but got ${JSON.stringify(revoked)}`,
+      );
+    },
+  );
 
-  await t.test("detects refresh-token re-use and cascade-revokes the session", async () => {
-    const { app, identity } = await createHarness();
-    const { pair, accessClaims, refreshClaims } = createRs256TokenPair(identity);
-    await seedActiveTokens(app, identity.id, [accessClaims.jti, refreshClaims.jti]);
+  await t.test(
+    "detects refresh-token re-use and cascade-revokes the session",
+    async () => {
+      const { app, identity } = await createHarness();
+      const { pair, accessClaims, refreshClaims } =
+        createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [
+        accessClaims.jti,
+        refreshClaims.jti,
+      ]);
+      const atomicRevocations =
+        app.storage.revocations.revokeIdentityTokensWithAudit.bind(
+          app.storage.revocations,
+        );
+      const atomicCascadeCalls: Parameters<typeof atomicRevocations>[0][] = [];
+      app.storage.revocations.revokeIdentityTokensWithAudit = async (input) => {
+        atomicCascadeCalls.push(input);
+        await atomicRevocations(input);
+      };
+      app.storage.revocations.revokeIdentityTokens = async () => {
+        throw new Error(
+          "refresh-reuse cascade must use revokeIdentityTokensWithAudit",
+        );
+      };
 
-    const firstResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken: pair.refreshToken },
-    });
-    const firstBody = await assertJsonResponse<TokenPair>(firstResponse, 200);
-    const secondRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(firstBody.refreshToken, 1);
+      const firstResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/refresh",
+        {
+          body: { refreshToken: pair.refreshToken },
+        },
+      );
+      const firstBody = await assertJsonResponse<TokenPair>(firstResponse, 200);
+      const secondAccessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        firstBody.accessToken,
+        1,
+      );
+      const secondRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        firstBody.refreshToken,
+        1,
+      );
 
-    // Replay the original refresh token (single-use violation).
-    const replayResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken: pair.refreshToken },
-    });
-    await assertJsonResponse<ErrorBody>(replayResponse, 401, (body) => {
-      assert.match(JSON.stringify(body), /revoked/i);
-    });
+      // Replay the original refresh token (single-use violation).
+      const replayResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/refresh",
+        {
+          body: { refreshToken: pair.refreshToken },
+        },
+      );
+      await assertJsonResponse<ErrorBody>(replayResponse, 401, (body) => {
+        assert.match(JSON.stringify(body), /revoked/i);
+      });
+      assert.equal(atomicCascadeCalls.length, 1);
+      assert.deepEqual(
+        [...atomicCascadeCalls[0]!.tokenIds].sort(),
+        [
+          refreshClaims.jti,
+          secondAccessClaims.jti,
+          secondRefreshClaims.jti,
+        ].sort(),
+      );
+      assert.equal(atomicCascadeCalls[0]!.identityId, identity.id);
+      assert.match(atomicCascadeCalls[0]!.revokedAt, /^\d{4}-\d{2}-\d{2}T/);
+      assert.deepEqual(atomicCascadeCalls[0]!.auditEntry, {
+        id: atomicCascadeCalls[0]!.auditEntry.id,
+        action: "token.revoked",
+        identityId: identity.id,
+        orgId: identity.orgId,
+        workspaceId: identity.workspaceId,
+        plane: "relayauth",
+        resource: "tokens",
+        result: "allowed",
+        metadata: {
+          tokenId: refreshClaims.jti,
+          actorId: "refresh_reuse_detected",
+        },
+        timestamp: atomicCascadeCalls[0]!.auditEntry.timestamp,
+      });
 
-    // The newly issued refresh token should ALSO be unusable now because the
-    // session was cascade-revoked.
-    const followupResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken: firstBody.refreshToken },
-    });
-    await assertJsonResponse<ErrorBody>(followupResponse, 401);
+      // The newly issued refresh token should ALSO be unusable now because the
+      // session was cascade-revoked.
+      const followupResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/refresh",
+        {
+          body: { refreshToken: firstBody.refreshToken },
+        },
+      );
+      await assertJsonResponse<ErrorBody>(followupResponse, 401);
+      assert.equal(atomicCascadeCalls.length, 2);
+      assert.deepEqual(atomicCascadeCalls[1]!.tokenIds, [
+        secondRefreshClaims.jti,
+      ]);
+      assert.equal(atomicCascadeCalls[1]!.identityId, identity.id);
+      assert.match(atomicCascadeCalls[1]!.revokedAt, /^\d{4}-\d{2}-\d{2}T/);
+      assert.deepEqual(atomicCascadeCalls[1]!.auditEntry, {
+        id: atomicCascadeCalls[1]!.auditEntry.id,
+        action: "token.revoked",
+        identityId: identity.id,
+        orgId: identity.orgId,
+        workspaceId: identity.workspaceId,
+        plane: "relayauth",
+        resource: "tokens",
+        result: "allowed",
+        metadata: {
+          tokenId: secondRefreshClaims.jti,
+          actorId: "refresh_reuse_detected",
+        },
+        timestamp: atomicCascadeCalls[1]!.auditEntry.timestamp,
+      });
 
-    const revoked = await listRevokedTokenIds(app);
-    assert.ok(revoked.includes(refreshClaims.jti), "original refresh JTI must be revoked");
-    assert.ok(
-      revoked.includes(secondRefreshClaims.jti),
-      `second refresh JTI ${secondRefreshClaims.jti} must be revoked after re-use detection (got ${JSON.stringify(revoked)})`,
-    );
-  });
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        revoked.includes(refreshClaims.jti),
+        "original refresh JTI must be revoked",
+      );
+      assert.ok(
+        revoked.includes(secondRefreshClaims.jti),
+        `second refresh JTI ${secondRefreshClaims.jti} must be revoked after re-use detection (got ${JSON.stringify(revoked)})`,
+      );
+    },
+  );
 
-  await t.test("rejects a refresh token signed with the wrong issuer", async () => {
-    const { app, identity } = await createHarness();
-    const now = Math.floor(Date.now() / 1000);
-    const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
-    const jti = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
-    await seedActiveTokens(app, identity.id, [jti]);
+  await t.test(
+    "rejects a refresh token signed with the wrong issuer",
+    async () => {
+      const { app, identity } = await createHarness();
+      const now = Math.floor(Date.now() / 1000);
+      const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
+      const jti = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
+      await seedActiveTokens(app, identity.id, [jti]);
 
-    const evilRefresh = signRs256Jwt({
-      sub: identity.id,
-      org: identity.orgId,
-      wks: identity.workspaceId,
-      scopes: ["relayauth:token:refresh"],
-      sponsorId: identity.sponsorId,
-      sponsorChain: [...identity.sponsorChain],
-      token_type: "refresh",
-      iss: "https://evil.example",
-      aud: ["relayauth"],
-      exp: now + 3600,
-      iat: now,
-      jti,
-      sid,
-    });
+      const evilRefresh = signRs256Jwt({
+        sub: identity.id,
+        org: identity.orgId,
+        wks: identity.workspaceId,
+        scopes: ["relayauth:token:refresh"],
+        sponsorId: identity.sponsorId,
+        sponsorChain: [...identity.sponsorChain],
+        token_type: "refresh",
+        iss: "https://evil.example",
+        aud: ["relayauth"],
+        exp: now + 3600,
+        iat: now,
+        jti,
+        sid,
+      });
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken: evilRefresh },
-    });
-    await assertJsonResponse<ErrorBody>(response, 401);
-  });
+      const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+        body: { refreshToken: evilRefresh },
+      });
+      await assertJsonResponse<ErrorBody>(response, 401);
+    },
+  );
 
-  await t.test("rejects a refresh token with a non-relayauth audience", async () => {
-    const { app, identity } = await createHarness();
-    const now = Math.floor(Date.now() / 1000);
-    const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
-    const jti = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
-    await seedActiveTokens(app, identity.id, [jti]);
+  await t.test(
+    "rejects a refresh token with a non-relayauth audience",
+    async () => {
+      const { app, identity } = await createHarness();
+      const now = Math.floor(Date.now() / 1000);
+      const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
+      const jti = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
+      await seedActiveTokens(app, identity.id, [jti]);
 
-    const wrongAudRefresh = signRs256Jwt({
-      sub: identity.id,
-      org: identity.orgId,
-      wks: identity.workspaceId,
-      scopes: ["relayauth:token:refresh"],
-      sponsorId: identity.sponsorId,
-      sponsorChain: [...identity.sponsorChain],
-      token_type: "refresh",
-      iss: "https://relayauth.dev",
-      aud: ["not-relayauth"],
-      exp: now + 3600,
-      iat: now,
-      jti,
-      sid,
-    });
+      const wrongAudRefresh = signRs256Jwt({
+        sub: identity.id,
+        org: identity.orgId,
+        wks: identity.workspaceId,
+        scopes: ["relayauth:token:refresh"],
+        sponsorId: identity.sponsorId,
+        sponsorChain: [...identity.sponsorChain],
+        token_type: "refresh",
+        iss: "https://relayauth.dev",
+        aud: ["not-relayauth"],
+        exp: now + 3600,
+        iat: now,
+        jti,
+        sid,
+      });
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken: wrongAudRefresh },
-    });
-    await assertJsonResponse<ErrorBody>(response, 401);
-  });
+      const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+        body: { refreshToken: wrongAudRefresh },
+      });
+      await assertJsonResponse<ErrorBody>(response, 401);
+    },
+  );
 
-  await t.test("rejects a refresh token whose exp is beyond clock-skew in the past", async () => {
-    const { app, identity } = await createHarness();
-    const past = Math.floor(Date.now() / 1000) - 1000;
-    const expiredRefresh = signRs256Jwt({
-      sub: identity.id,
-      org: identity.orgId,
-      wks: identity.workspaceId,
-      scopes: ["relayauth:token:refresh"],
-      sponsorId: identity.sponsorId,
-      sponsorChain: [...identity.sponsorChain],
-      token_type: "refresh",
-      iss: "https://relayauth.dev",
-      aud: ["relayauth"],
-      exp: past + 60, // exp 120s before "now"
-      iat: past,
-      jti: `tok_${crypto.randomUUID().replace(/-/g, "")}`,
-    });
+  await t.test(
+    "rejects a refresh token whose exp is beyond clock-skew in the past",
+    async () => {
+      const { app, identity } = await createHarness();
+      const past = Math.floor(Date.now() / 1000) - 1000;
+      const expiredRefresh = signRs256Jwt({
+        sub: identity.id,
+        org: identity.orgId,
+        wks: identity.workspaceId,
+        scopes: ["relayauth:token:refresh"],
+        sponsorId: identity.sponsorId,
+        sponsorChain: [...identity.sponsorChain],
+        token_type: "refresh",
+        iss: "https://relayauth.dev",
+        aud: ["relayauth"],
+        exp: past + 60, // exp 120s before "now"
+        iat: past,
+        jti: `tok_${crypto.randomUUID().replace(/-/g, "")}`,
+      });
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken: expiredRefresh },
-    });
-    await assertJsonResponse<ErrorBody>(response, 401, (body) => {
-      assert.match(JSON.stringify(body), /expired|invalid/i);
-    });
-  });
+      const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+        body: { refreshToken: expiredRefresh },
+      });
+      await assertJsonResponse<ErrorBody>(response, 401, (body) => {
+        assert.match(JSON.stringify(body), /expired|invalid/i);
+      });
+    },
+  );
 
-  await t.test("accepts a refresh token whose exp is within the 60s clock-skew allowance", async () => {
-    const { app, identity } = await createHarness();
-    const now = Math.floor(Date.now() / 1000);
-    const jti = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
-    const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
-    await seedActiveTokens(app, identity.id, [jti]);
+  await t.test(
+    "accepts a refresh token whose exp is within the 60s clock-skew allowance",
+    async () => {
+      const { app, identity } = await createHarness();
+      const now = Math.floor(Date.now() / 1000);
+      const jti = `tok_${crypto.randomUUID().replace(/-/g, "")}`;
+      const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
+      await seedActiveTokens(app, identity.id, [jti]);
 
-    const skewedRefresh = signRs256Jwt({
-      sub: identity.id,
-      org: identity.orgId,
-      wks: identity.workspaceId,
-      scopes: ["relayauth:token:refresh"],
-      sponsorId: identity.sponsorId,
-      sponsorChain: [...identity.sponsorChain],
-      token_type: "refresh",
-      iss: "https://relayauth.dev",
-      aud: ["relayauth"],
-      exp: now - 20, // 20s past exp, should be accepted within verifier and route skew
-      iat: now - 120,
-      jti,
-      sid,
-    });
+      const skewedRefresh = signRs256Jwt({
+        sub: identity.id,
+        org: identity.orgId,
+        wks: identity.workspaceId,
+        scopes: ["relayauth:token:refresh"],
+        sponsorId: identity.sponsorId,
+        sponsorChain: [...identity.sponsorChain],
+        token_type: "refresh",
+        iss: "https://relayauth.dev",
+        aud: ["relayauth"],
+        exp: now - 20, // 20s past exp, should be accepted within verifier and route skew
+        iat: now - 120,
+        jti,
+        sid,
+      });
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken: skewedRefresh },
-    });
-    await assertJsonResponse<TokenPair>(response, 200);
-  });
+      const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+        body: { refreshToken: skewedRefresh },
+      });
+      await assertJsonResponse<TokenPair>(response, 200);
+    },
+  );
 
-  await t.test("rejects path token refresh at the delegation horizon without persisting a new pair", async () => {
-    const { app } = await createHarness();
-    const now = Math.floor(Date.now() / 1000);
-    const jti = `relay_pa_${crypto.randomUUID().replace(/-/g, "")}`;
-    const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
-    const refreshToken = signRs256Jwt({
-      sub: "agent_path_horizon",
-      org: "org_tokens_route",
-      wks: "ws_tokens_route",
-      scopes: ["relayauth:token:refresh"],
-      sponsorId: "user_tokens_owner",
-      sponsorChain: ["user_tokens_owner", "agent_path_horizon"],
-      token_type: "refresh",
-      iss: "https://relayauth.dev",
-      aud: ["relayauth"],
-      exp: now + 3600,
-      iat: now - 60,
-      jti,
-      sid,
-      meta: {
-        tokenClass: "path",
-        agentName: "path-horizon",
-        paths: JSON.stringify(["/linear/issues/*"]),
-        accessScopes: JSON.stringify(["relayfile:fs:read:/linear/issues/*"]),
-        accessAudience: JSON.stringify(["relayfile"]),
-        delegationNotAfter: new Date((now - 10) * 1000).toISOString(),
-      },
-    });
-    await seedActiveTokens(app, "agent_path_horizon", [jti]);
-    const beforeCount = await countStoredTokens(app);
+  await t.test(
+    "rejects path token refresh at the delegation horizon without persisting a new pair",
+    async () => {
+      const { app } = await createHarness();
+      const now = Math.floor(Date.now() / 1000);
+      const jti = `relay_pa_${crypto.randomUUID().replace(/-/g, "")}`;
+      const sid = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
+      const refreshToken = signRs256Jwt({
+        sub: "agent_path_horizon",
+        org: "org_tokens_route",
+        wks: "ws_tokens_route",
+        scopes: ["relayauth:token:refresh"],
+        sponsorId: "user_tokens_owner",
+        sponsorChain: ["user_tokens_owner", "agent_path_horizon"],
+        token_type: "refresh",
+        iss: "https://relayauth.dev",
+        aud: ["relayauth"],
+        exp: now + 3600,
+        iat: now - 60,
+        jti,
+        sid,
+        meta: {
+          tokenClass: "path",
+          agentName: "path-horizon",
+          paths: JSON.stringify(["/linear/issues/*"]),
+          accessScopes: JSON.stringify(["relayfile:fs:read:/linear/issues/*"]),
+          accessAudience: JSON.stringify(["relayfile"]),
+          delegationNotAfter: new Date((now - 10) * 1000).toISOString(),
+        },
+      });
+      await seedActiveTokens(app, "agent_path_horizon", [jti]);
+      const beforeCount = await countStoredTokens(app);
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken },
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+        body: { refreshToken },
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 401, (body) => {
-      assert.equal(body.code, "delegation_expired");
-    });
-    assert.equal(await countStoredTokens(app), beforeCount);
-  });
+      await assertJsonResponse<ErrorBody>(response, 401, (body) => {
+        assert.equal(body.code, "delegation_expired");
+      });
+      assert.equal(await countStoredTokens(app), beforeCount);
+    },
+  );
 
-  await t.test("workspace token revocation wins over an expired delegation horizon", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayfile:fs:read:*"],
-      },
-    });
-    const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
-      scopes: ["relayauth:token:create:*", "relayfile:fs:read:*"],
-    });
-    const revokeResponse = await requestRoute(
-      app,
-      "POST",
-      `/v1/api-keys/${workspaceToken.workspaceToken.id}/revoke`,
-      { body: {}, headers: authHeaders },
-    );
-    assert.equal(revokeResponse.status, 200);
+  await t.test(
+    "workspace token revocation wins over an expired delegation horizon",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayfile:fs:read:*",
+          ],
+        },
+      });
+      const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
+        scopes: ["relayauth:token:create:*", "relayfile:fs:read:*"],
+      });
+      const revokeResponse = await requestRoute(
+        app,
+        "POST",
+        `/v1/api-keys/${workspaceToken.workspaceToken.id}/revoke`,
+        { body: {}, headers: authHeaders },
+      );
+      assert.equal(revokeResponse.status, 200);
 
-    const now = Math.floor(Date.now() / 1000);
-    const jti = `relay_pa_${crypto.randomUUID().replace(/-/g, "")}`;
-    const refreshToken = signRs256Jwt({
-      sub: "agent_path_revoked_horizon",
-      org: "org_tokens_route",
-      wks: "ws_tokens_route",
-      scopes: ["relayauth:token:refresh"],
-      sponsorId: "user_tokens_owner",
-      sponsorChain: ["user_tokens_owner", "agent_path_revoked_horizon"],
-      token_type: "refresh",
-      iss: "https://relayauth.dev",
-      aud: ["relayauth"],
-      exp: now + 3600,
-      iat: now - 60,
-      jti,
-      sid: `sess_${crypto.randomUUID().replace(/-/g, "")}`,
-      parentTokenId: workspaceToken.workspaceToken.id,
-      meta: {
-        tokenClass: "path",
-        workspaceTokenId: workspaceToken.workspaceToken.id,
-        agentName: "path-revoked-horizon",
-        paths: JSON.stringify(["/linear/issues/*"]),
-        accessScopes: JSON.stringify(["relayfile:fs:read:/linear/issues/*"]),
-        accessAudience: JSON.stringify(["relayfile"]),
-        delegationNotAfter: new Date((now - 10) * 1000).toISOString(),
-      },
-    });
-    await seedActiveTokens(app, "agent_path_revoked_horizon", [jti]);
+      const now = Math.floor(Date.now() / 1000);
+      const jti = `relay_pa_${crypto.randomUUID().replace(/-/g, "")}`;
+      const refreshToken = signRs256Jwt({
+        sub: "agent_path_revoked_horizon",
+        org: "org_tokens_route",
+        wks: "ws_tokens_route",
+        scopes: ["relayauth:token:refresh"],
+        sponsorId: "user_tokens_owner",
+        sponsorChain: ["user_tokens_owner", "agent_path_revoked_horizon"],
+        token_type: "refresh",
+        iss: "https://relayauth.dev",
+        aud: ["relayauth"],
+        exp: now + 3600,
+        iat: now - 60,
+        jti,
+        sid: `sess_${crypto.randomUUID().replace(/-/g, "")}`,
+        parentTokenId: workspaceToken.workspaceToken.id,
+        meta: {
+          tokenClass: "path",
+          workspaceTokenId: workspaceToken.workspaceToken.id,
+          agentName: "path-revoked-horizon",
+          paths: JSON.stringify(["/linear/issues/*"]),
+          accessScopes: JSON.stringify(["relayfile:fs:read:/linear/issues/*"]),
+          accessAudience: JSON.stringify(["relayfile"]),
+          delegationNotAfter: new Date((now - 10) * 1000).toISOString(),
+        },
+      });
+      await seedActiveTokens(app, "agent_path_revoked_horizon", [jti]);
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken },
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+        body: { refreshToken },
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 401, (body) => {
-      assert.equal(body.code, "workspace_token_revoked");
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 401, (body) => {
+        assert.equal(body.code, "workspace_token_revoked");
+      });
+    },
+  );
 
-  await t.test("preserves prefixed agent token shape and narrowed scopes on refresh", async () => {
-    const { app, identity, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
-      },
-      identity: createStoredIdentity({
-        id: "agent_runtime_refresh",
-        orgId: "org_tokens_route",
-        workspaceId: "ws_tokens_route",
-        scopes: ["relayauth:role:read:*"],
-      }),
-    });
-    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
-    const issueResponse = await requestRoute(app, "POST", "/v1/tokens/agent", {
-      body: {
-        agentId: identity.id,
-        scopes: ["relayauth:role:read:*"],
-      },
-      headers: {
-        "x-api-key": workspaceToken.key,
-      },
-    });
-    const issued = await assertJsonResponse<AgentTokenPair>(issueResponse, 201);
+  await t.test(
+    "preserves prefixed agent token shape and narrowed scopes on refresh",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayauth:role:read:*",
+          ],
+        },
+        identity: createStoredIdentity({
+          id: "agent_runtime_refresh",
+          orgId: "org_tokens_route",
+          workspaceId: "ws_tokens_route",
+          scopes: ["relayauth:role:read:*"],
+        }),
+      });
+      const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+      const issueResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/agent",
+        {
+          body: {
+            agentId: identity.id,
+            scopes: ["relayauth:role:read:*"],
+          },
+          headers: {
+            "x-api-key": workspaceToken.key,
+          },
+        },
+      );
+      const issued = await assertJsonResponse<AgentTokenPair>(
+        issueResponse,
+        201,
+      );
 
-    const refreshResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: {
-        refreshToken: issued.refreshToken,
-      },
-    });
-    const refreshed = await assertJsonResponse<TokenPair>(refreshResponse, 200);
+      const refreshResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/refresh",
+        {
+          body: {
+            refreshToken: issued.refreshToken,
+          },
+        },
+      );
+      const refreshed = await assertJsonResponse<TokenPair>(
+        refreshResponse,
+        200,
+      );
 
-    assert.match(refreshed.accessToken, /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    assert.match(refreshed.refreshToken, /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    const refreshedAccessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(refreshed.accessToken, 1);
-    assert.equal(refreshedAccessClaims.meta?.tokenClass, "agent");
-    assert.deepEqual(JSON.parse(refreshedAccessClaims.meta?.accessScopes ?? "[]"), ["relayauth:role:read:*"]);
-  });
+      assert.match(
+        refreshed.accessToken,
+        /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      assert.match(
+        refreshed.refreshToken,
+        /^relay_ag_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      const refreshedAccessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        refreshed.accessToken,
+        1,
+      );
+      assert.equal(refreshedAccessClaims.meta?.tokenClass, "agent");
+      assert.deepEqual(
+        JSON.parse(refreshedAccessClaims.meta?.accessScopes ?? "[]"),
+        ["relayauth:role:read:*"],
+      );
+    },
+  );
 
-  await t.test("rejects refreshing an agent token after its workspace token is revoked", async () => {
-    const { app, identity, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
-      },
-      identity: createStoredIdentity({
-        id: "agent_runtime_revoked_refresh",
-        orgId: "org_tokens_route",
-        workspaceId: "ws_tokens_route",
-        scopes: ["relayauth:role:read:*"],
-      }),
-    });
-    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
-    const issueResponse = await requestRoute(app, "POST", "/v1/tokens/agent", {
-      body: {
-        agentId: identity.id,
-        scopes: ["relayauth:role:read:*"],
-      },
-      headers: {
-        "x-api-key": workspaceToken.key,
-      },
-    });
-    const issued = await assertJsonResponse<AgentTokenPair>(issueResponse, 201);
+  await t.test(
+    "rejects refreshing an agent token after its workspace token is revoked",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayauth:role:read:*",
+          ],
+        },
+        identity: createStoredIdentity({
+          id: "agent_runtime_revoked_refresh",
+          orgId: "org_tokens_route",
+          workspaceId: "ws_tokens_route",
+          scopes: ["relayauth:role:read:*"],
+        }),
+      });
+      const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+      const issueResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/agent",
+        {
+          body: {
+            agentId: identity.id,
+            scopes: ["relayauth:role:read:*"],
+          },
+          headers: {
+            "x-api-key": workspaceToken.key,
+          },
+        },
+      );
+      const issued = await assertJsonResponse<AgentTokenPair>(
+        issueResponse,
+        201,
+      );
 
-    const revokeResponse = await requestRoute(
-      app,
-      "POST",
-      `/v1/api-keys/${workspaceToken.workspaceToken.id}/revoke`,
-      {
-        body: {},
-        headers: authHeaders,
-      },
-    );
-    assert.equal(revokeResponse.status, 200);
+      const revokeResponse = await requestRoute(
+        app,
+        "POST",
+        `/v1/api-keys/${workspaceToken.workspaceToken.id}/revoke`,
+        {
+          body: {},
+          headers: authHeaders,
+        },
+      );
+      assert.equal(revokeResponse.status, 200);
 
-    const refreshResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: {
-        refreshToken: issued.refreshToken,
-      },
-    });
-    await assertJsonResponse<ErrorBody>(refreshResponse, 401, (body) => {
-      assert.equal(body.code, "workspace_token_revoked");
-    });
-  });
+      const refreshResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/refresh",
+        {
+          body: {
+            refreshToken: issued.refreshToken,
+          },
+        },
+      );
+      await assertJsonResponse<ErrorBody>(refreshResponse, 401, (body) => {
+        assert.equal(body.code, "workspace_token_revoked");
+      });
+    },
+  );
 });
 
 test("POST /v1/tokens enforces max sponsor-chain depth", async (t) => {
-  await t.test("rejects issuance when identity.sponsorChain exceeds 10", async () => {
-    const deepChain = Array.from({ length: 11 }, (_, index) =>
-      index === 10 ? "agent_deep_subject" : `user_ancestor_${index}`,
-    );
-    const deepIdentity = createStoredIdentity({
-      id: "agent_deep_subject",
-      name: "Deep Subject",
-      orgId: "org_tokens_route",
-      workspaceId: "ws_tokens_route",
-      sponsorId: "user_ancestor_0",
-      sponsorChain: deepChain,
-      scopes: ["specialist:invoke"],
-    });
-
-    const { app, authHeaders } = await createHarness({ identity: deepIdentity });
-
-    const response = await requestRoute(app, "POST", "/v1/tokens", {
-      body: {
-        identityId: deepIdentity.id,
+  await t.test(
+    "rejects issuance when identity.sponsorChain exceeds 10",
+    async () => {
+      const deepChain = Array.from({ length: 11 }, (_, index) =>
+        index === 10 ? "agent_deep_subject" : `user_ancestor_${index}`,
+      );
+      const deepIdentity = createStoredIdentity({
+        id: "agent_deep_subject",
+        name: "Deep Subject",
+        orgId: "org_tokens_route",
+        workspaceId: "ws_tokens_route",
+        sponsorId: "user_ancestor_0",
+        sponsorChain: deepChain,
         scopes: ["specialist:invoke"],
-        audience: ["specialist"],
-      },
-      headers: authHeaders,
-    });
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
-      assert.match(JSON.stringify(body), /delegation|depth|chain/i);
-    });
-  });
+      const { app, authHeaders } = await createHarness({
+        identity: deepIdentity,
+      });
+
+      const response = await requestRoute(app, "POST", "/v1/tokens", {
+        body: {
+          identityId: deepIdentity.id,
+          scopes: ["specialist:invoke"],
+          audience: ["specialist"],
+        },
+        headers: authHeaders,
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+        assert.match(JSON.stringify(body), /delegation|depth|chain/i);
+      });
+    },
+  );
 });
 
 test("POST /v1/tokens/revoke", async (t) => {
@@ -1819,6 +2550,18 @@ test("POST /v1/tokens/revoke", async (t) => {
     const { app, identity, authHeaders } = await createHarness();
     const { accessClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti]);
+    const atomicRevocations =
+      app.storage.revocations.revokeIdentityTokensWithAudit.bind(
+        app.storage.revocations,
+      );
+    let atomicRevokeCalls = 0;
+    app.storage.revocations.revokeIdentityTokensWithAudit = async (input) => {
+      atomicRevokeCalls += 1;
+      await atomicRevocations(input);
+    };
+    app.storage.revocations.revokeIdentityTokens = async () => {
+      throw new Error("public revoke must use revokeIdentityTokensWithAudit");
+    };
 
     const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
       body: {
@@ -1829,6 +2572,7 @@ test("POST /v1/tokens/revoke", async (t) => {
 
     assert.equal(response.status, 204);
     assert.deepEqual(await listRevokedTokenIds(app), [accessClaims.jti]);
+    assert.equal(atomicRevokeCalls, 1);
   });
 
   await t.test("returns 401 when Authorization is missing", async () => {
@@ -1845,37 +2589,43 @@ test("POST /v1/tokens/revoke", async (t) => {
     });
   });
 
-  await t.test("returns 403 when the caller lacks relayauth:token:manage scope", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: ["relayauth:identity:read:*"],
-      },
-    });
+  await t.test(
+    "returns 403 when the caller lacks relayauth:token:manage scope",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: ["relayauth:identity:read:*"],
+        },
+      });
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
-      body: {
-        tokenId: "tok_forbidden_revoke",
-      },
-      headers: authHeaders,
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: {
+          tokenId: "tok_forbidden_revoke",
+        },
+        headers: authHeaders,
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 403, (body) => {
-      assert.match(JSON.stringify(body), /scope/i);
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+        assert.match(JSON.stringify(body), /scope/i);
+      });
+    },
+  );
 
-  await t.test("returns 400 when tokenId, identityId, and sessionId are all missing", async () => {
-    const { app, authHeaders } = await createHarness();
+  await t.test(
+    "returns 400 when tokenId, identityId, and sessionId are all missing",
+    async () => {
+      const { app, authHeaders } = await createHarness();
 
-    const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
-      body: {},
-      headers: authHeaders,
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: {},
+        headers: authHeaders,
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
-      assert.match(JSON.stringify(body), /tokenId|identityId|sessionId/i);
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+        assert.match(JSON.stringify(body), /tokenId|identityId|sessionId/i);
+      });
+    },
+  );
 
   await t.test("returns 404 when the target token does not exist", async () => {
     const { app, authHeaders } = await createHarness();
@@ -1921,28 +2671,35 @@ test("GET /v1/tokens/introspect", async (t) => {
   await t.test("returns 401 when Authorization is missing", async () => {
     const { app } = await createHarness();
 
-    const response = await requestRoute(app, "GET", "/v1/tokens/introspect?token=abc");
+    const response = await requestRoute(
+      app,
+      "GET",
+      "/v1/tokens/introspect?token=abc",
+    );
 
     await assertJsonResponse<ErrorBody>(response, 401, (body) => {
       assert.equal(body.code, "missing_authorization");
     });
   });
 
-  await t.test("returns 400 when the token query parameter is missing", async () => {
-    const { app, authHeaders } = await createHarness();
+  await t.test(
+    "returns 400 when the token query parameter is missing",
+    async () => {
+      const { app, authHeaders } = await createHarness();
 
-    const response = await requestRoute(app, "GET", "/v1/tokens/introspect", {
-      headers: authHeaders,
-    });
+      const response = await requestRoute(app, "GET", "/v1/tokens/introspect", {
+        headers: authHeaders,
+      });
 
-    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
-      assert.match(JSON.stringify(body), /token/i);
-    });
-  });
+      await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+        assert.match(JSON.stringify(body), /token/i);
+      });
+    },
+  );
 
   await t.test("returns null for an expired access token", async () => {
     const { app, identity, authHeaders } = await createHarness();
-    const now = Math.floor(Date.now() / 1000) - (2 * 3600);
+    const now = Math.floor(Date.now() / 1000) - 2 * 3600;
     const { pair, accessClaims } = createRs256TokenPair(identity, {
       issuedAt: now,
       accessExpiresInSeconds: 60,
@@ -1958,7 +2715,10 @@ test("GET /v1/tokens/introspect", async (t) => {
       },
     );
 
-    const body = await assertJsonResponse<RelayAuthTokenClaims | null>(response, 200);
+    const body = await assertJsonResponse<RelayAuthTokenClaims | null>(
+      response,
+      200,
+    );
     assert.equal(body, null);
   });
 
@@ -1967,7 +2727,8 @@ test("GET /v1/tokens/introspect", async (t) => {
     const { pair, accessClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti]);
 
-    const revocations = app.storage.revocations as typeof app.storage.revocations & {
+    const revocations = app.storage
+      .revocations as typeof app.storage.revocations & {
       revoke(jti: string, expiresAt: number): Promise<void>;
     };
     await revocations.revoke(accessClaims.jti, accessClaims.exp);
@@ -1981,265 +2742,396 @@ test("GET /v1/tokens/introspect", async (t) => {
       },
     );
 
-    const body = await assertJsonResponse<RelayAuthTokenClaims | null>(response, 200);
+    const body = await assertJsonResponse<RelayAuthTokenClaims | null>(
+      response,
+      200,
+    );
     assert.equal(body, null);
   });
 
-  await t.test("returns null for an agent token after its workspace token is revoked", async () => {
-    const { app, identity, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: [
-          "relayauth:api-key:manage:*",
-          "relayauth:token:create:*",
-          "relayauth:token:read:*",
-          "relayauth:role:read:*",
-        ],
-      },
-      identity: createStoredIdentity({
-        id: "agent_runtime_introspect_after_revoke",
-        orgId: "org_tokens_route",
-        workspaceId: "ws_tokens_route",
-        scopes: ["relayauth:role:read:*"],
-      }),
-    });
-    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
-    const issueResponse = await requestRoute(app, "POST", "/v1/tokens/agent", {
-      body: {
-        agentId: identity.id,
-        scopes: ["relayauth:role:read:*"],
-      },
-      headers: {
-        "x-api-key": workspaceToken.key,
-      },
-    });
-    const issued = await assertJsonResponse<AgentTokenPair>(issueResponse, 201);
+  await t.test(
+    "returns null for an agent token after its workspace token is revoked",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayauth:token:read:*",
+            "relayauth:role:read:*",
+          ],
+        },
+        identity: createStoredIdentity({
+          id: "agent_runtime_introspect_after_revoke",
+          orgId: "org_tokens_route",
+          workspaceId: "ws_tokens_route",
+          scopes: ["relayauth:role:read:*"],
+        }),
+      });
+      const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+      const issueResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/agent",
+        {
+          body: {
+            agentId: identity.id,
+            scopes: ["relayauth:role:read:*"],
+          },
+          headers: {
+            "x-api-key": workspaceToken.key,
+          },
+        },
+      );
+      const issued = await assertJsonResponse<AgentTokenPair>(
+        issueResponse,
+        201,
+      );
 
-    const revokeResponse = await requestRoute(
-      app,
-      "POST",
-      `/v1/api-keys/${workspaceToken.workspaceToken.id}/revoke`,
-      {
-        body: {},
-        headers: authHeaders,
-      },
-    );
-    assert.equal(revokeResponse.status, 200);
+      const revokeResponse = await requestRoute(
+        app,
+        "POST",
+        `/v1/api-keys/${workspaceToken.workspaceToken.id}/revoke`,
+        {
+          body: {},
+          headers: authHeaders,
+        },
+      );
+      assert.equal(revokeResponse.status, 200);
 
-    const response = await requestRoute(
-      app,
-      "GET",
-      `/v1/tokens/introspect?token=${encodeURIComponent(issued.accessToken)}`,
-      {
-        headers: authHeaders,
-      },
-    );
+      const response = await requestRoute(
+        app,
+        "GET",
+        `/v1/tokens/introspect?token=${encodeURIComponent(issued.accessToken)}`,
+        {
+          headers: authHeaders,
+        },
+      );
 
-    const body = await assertJsonResponse<RelayAuthTokenClaims | null>(response, 200);
-    assert.equal(body, null);
-  });
+      const body = await assertJsonResponse<RelayAuthTokenClaims | null>(
+        response,
+        200,
+      );
+      assert.equal(body, null);
+    },
+  );
 });
 
 test("derived agent bearer auth", async (t) => {
-  await t.test("closes derived agent tokens after workspace-token revocation", async () => {
-    const { app, identity, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
-      },
-      identity: createStoredIdentity({
-        id: "agent_runtime_roles_after_revoke",
-        orgId: "org_tokens_route",
-        workspaceId: "ws_tokens_route",
-        scopes: ["relayauth:role:read:*"],
-      }),
-    });
-    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
-    const issueResponse = await requestRoute(app, "POST", "/v1/tokens/agent", {
-      body: {
-        agentId: identity.id,
-        scopes: ["relayauth:role:read:*"],
-      },
-      headers: {
-        "x-api-key": workspaceToken.key,
-      },
-    });
-    const issued = await assertJsonResponse<AgentTokenPair>(issueResponse, 201);
+  await t.test(
+    "closes derived agent tokens after workspace-token revocation",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayauth:role:read:*",
+          ],
+        },
+        identity: createStoredIdentity({
+          id: "agent_runtime_roles_after_revoke",
+          orgId: "org_tokens_route",
+          workspaceId: "ws_tokens_route",
+          scopes: ["relayauth:role:read:*"],
+        }),
+      });
+      const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+      const issueResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/agent",
+        {
+          body: {
+            agentId: identity.id,
+            scopes: ["relayauth:role:read:*"],
+          },
+          headers: {
+            "x-api-key": workspaceToken.key,
+          },
+        },
+      );
+      const issued = await assertJsonResponse<AgentTokenPair>(
+        issueResponse,
+        201,
+      );
 
-    const beforeRevoke = await requestRoute(app, "GET", "/v1/roles", {
-      headers: {
-        Authorization: `Bearer ${issued.accessToken}`,
-      },
-    });
-    assert.equal(beforeRevoke.status, 200);
+      const beforeRevoke = await requestRoute(app, "GET", "/v1/roles", {
+        headers: {
+          Authorization: `Bearer ${issued.accessToken}`,
+        },
+      });
+      assert.equal(beforeRevoke.status, 200);
 
-    const revokeResponse = await requestRoute(
-      app,
-      "POST",
-      `/v1/api-keys/${workspaceToken.workspaceToken.id}/revoke`,
-      {
-        body: {},
-        headers: authHeaders,
-      },
-    );
-    assert.equal(revokeResponse.status, 200);
+      const revokeResponse = await requestRoute(
+        app,
+        "POST",
+        `/v1/api-keys/${workspaceToken.workspaceToken.id}/revoke`,
+        {
+          body: {},
+          headers: authHeaders,
+        },
+      );
+      assert.equal(revokeResponse.status, 200);
 
-    const afterRevoke = await requestRoute(app, "GET", "/v1/roles", {
-      headers: {
-        Authorization: `Bearer ${issued.accessToken}`,
-      },
-    });
-    await assertJsonResponse<ErrorBody>(afterRevoke, 401, (body) => {
-      assert.equal(body.code, "workspace_token_revoked");
-    });
-  });
+      const afterRevoke = await requestRoute(app, "GET", "/v1/roles", {
+        headers: {
+          Authorization: `Bearer ${issued.accessToken}`,
+        },
+      });
+      await assertJsonResponse<ErrorBody>(afterRevoke, 401, (body) => {
+        assert.equal(body.code, "workspace_token_revoked");
+      });
+    },
+  );
 });
 
 test("POST /v1/tokens refreshTokenTtlSeconds", async (t) => {
-  await t.test("issues a refresh token with the requested TTL when refreshTokenTtlSeconds is provided", async () => {
-    const { app, identity, authHeaders } = await createHarness();
-    const THIRTY_DAYS = 30 * 24 * 3600;
+  await t.test(
+    "issues a refresh token with the requested TTL when refreshTokenTtlSeconds is provided",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
+      const THIRTY_DAYS = 30 * 24 * 3600;
 
-    const response = await requestRoute(app, "POST", "/v1/tokens", {
-      body: {
-        identityId: identity.id,
-        scopes: ["specialist:invoke"],
-        audience: ["specialist"],
-        refreshTokenTtlSeconds: THIRTY_DAYS,
-      },
-      headers: authHeaders,
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens", {
+        body: {
+          identityId: identity.id,
+          scopes: ["specialist:invoke"],
+          audience: ["specialist"],
+          refreshTokenTtlSeconds: THIRTY_DAYS,
+        },
+        headers: authHeaders,
+      });
 
-    const body = await assertJsonResponse<TokenPair>(response, 201);
-    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.refreshToken, 1);
-    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
+      const body = await assertJsonResponse<TokenPair>(response, 201);
+      const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.refreshToken,
+        1,
+      );
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
 
-    const refreshTtl = refreshClaims.exp - refreshClaims.iat;
-    assert.ok(refreshTtl >= THIRTY_DAYS - 5, `expected refresh TTL ~${THIRTY_DAYS}s, got ${refreshTtl}`);
-    assert.ok(refreshTtl <= THIRTY_DAYS + 5, `expected refresh TTL ~${THIRTY_DAYS}s, got ${refreshTtl}`);
+      const refreshTtl = refreshClaims.exp - refreshClaims.iat;
+      assert.ok(
+        refreshTtl >= THIRTY_DAYS - 5,
+        `expected refresh TTL ~${THIRTY_DAYS}s, got ${refreshTtl}`,
+      );
+      assert.ok(
+        refreshTtl <= THIRTY_DAYS + 5,
+        `expected refresh TTL ~${THIRTY_DAYS}s, got ${refreshTtl}`,
+      );
 
-    assert.equal(refreshClaims.meta?.refreshTokenTtl, String(THIRTY_DAYS));
-    assert.equal(accessClaims.meta?.refreshTokenTtl, String(THIRTY_DAYS));
-  });
+      assert.equal(refreshClaims.meta?.refreshTokenTtl, String(THIRTY_DAYS));
+      assert.equal(accessClaims.meta?.refreshTokenTtl, String(THIRTY_DAYS));
+    },
+  );
 
-  await t.test("caps refreshTokenTtlSeconds at 90 days (MAX_OPERATOR_REFRESH_TOKEN_TTL_SECONDS)", async () => {
-    const { app, identity, authHeaders } = await createHarness();
-    const NINETY_DAYS = 90 * 24 * 3600;
-    const TOO_LARGE = 365 * 24 * 3600;
+  await t.test(
+    "caps refreshTokenTtlSeconds at 90 days (MAX_OPERATOR_REFRESH_TOKEN_TTL_SECONDS)",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
+      const NINETY_DAYS = 90 * 24 * 3600;
+      const TOO_LARGE = 365 * 24 * 3600;
 
-    const response = await requestRoute(app, "POST", "/v1/tokens", {
-      body: {
-        identityId: identity.id,
-        scopes: ["specialist:invoke"],
-        refreshTokenTtlSeconds: TOO_LARGE,
-      },
-      headers: authHeaders,
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens", {
+        body: {
+          identityId: identity.id,
+          scopes: ["specialist:invoke"],
+          refreshTokenTtlSeconds: TOO_LARGE,
+        },
+        headers: authHeaders,
+      });
 
-    const body = await assertJsonResponse<TokenPair>(response, 201);
-    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.refreshToken, 1);
-    const refreshTtl = refreshClaims.exp - refreshClaims.iat;
-    assert.ok(refreshTtl <= NINETY_DAYS + 5, `refresh TTL must be capped at 90d, got ${refreshTtl}`);
-    assert.equal(refreshClaims.meta?.refreshTokenTtl, String(NINETY_DAYS));
-  });
+      const body = await assertJsonResponse<TokenPair>(response, 201);
+      const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.refreshToken,
+        1,
+      );
+      const refreshTtl = refreshClaims.exp - refreshClaims.iat;
+      assert.ok(
+        refreshTtl <= NINETY_DAYS + 5,
+        `refresh TTL must be capped at 90d, got ${refreshTtl}`,
+      );
+      assert.equal(refreshClaims.meta?.refreshTokenTtl, String(NINETY_DAYS));
+    },
+  );
 
-  await t.test("defaults to 24h refresh TTL when refreshTokenTtlSeconds is absent", async () => {
-    const { app, identity, authHeaders } = await createHarness();
-    const DEFAULT_24H = 24 * 3600;
+  await t.test(
+    "defaults to 24h refresh TTL when refreshTokenTtlSeconds is absent",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
+      const DEFAULT_24H = 24 * 3600;
 
-    const response = await requestRoute(app, "POST", "/v1/tokens", {
-      body: {
-        identityId: identity.id,
-        scopes: ["specialist:invoke"],
-      },
-      headers: authHeaders,
-    });
+      const response = await requestRoute(app, "POST", "/v1/tokens", {
+        body: {
+          identityId: identity.id,
+          scopes: ["specialist:invoke"],
+        },
+        headers: authHeaders,
+      });
 
-    const body = await assertJsonResponse<TokenPair>(response, 201);
-    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.refreshToken, 1);
-    const refreshTtl = refreshClaims.exp - refreshClaims.iat;
-    assert.ok(refreshTtl >= DEFAULT_24H - 5, `expected default 24h refresh TTL, got ${refreshTtl}`);
-    assert.ok(refreshTtl <= DEFAULT_24H + 5, `expected default 24h refresh TTL, got ${refreshTtl}`);
-    assert.equal(refreshClaims.meta?.refreshTokenTtl, undefined);
-  });
+      const body = await assertJsonResponse<TokenPair>(response, 201);
+      const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.refreshToken,
+        1,
+      );
+      const refreshTtl = refreshClaims.exp - refreshClaims.iat;
+      assert.ok(
+        refreshTtl >= DEFAULT_24H - 5,
+        `expected default 24h refresh TTL, got ${refreshTtl}`,
+      );
+      assert.ok(
+        refreshTtl <= DEFAULT_24H + 5,
+        `expected default 24h refresh TTL, got ${refreshTtl}`,
+      );
+      assert.equal(refreshClaims.meta?.refreshTokenTtl, undefined);
+    },
+  );
 
-  await t.test("propagates refreshTokenTtl through rotation so each new refresh token gets the same TTL", async () => {
-    const { app, identity, authHeaders } = await createHarness();
-    const THIRTY_DAYS = 30 * 24 * 3600;
+  await t.test(
+    "propagates refreshTokenTtl through rotation so each new refresh token gets the same TTL",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
+      const THIRTY_DAYS = 30 * 24 * 3600;
 
-    const issueResponse = await requestRoute(app, "POST", "/v1/tokens", {
-      body: {
-        identityId: identity.id,
-        scopes: ["specialist:invoke"],
-        refreshTokenTtlSeconds: THIRTY_DAYS,
-      },
-      headers: authHeaders,
-    });
-    const issued = await assertJsonResponse<TokenPair>(issueResponse, 201);
+      const issueResponse = await requestRoute(app, "POST", "/v1/tokens", {
+        body: {
+          identityId: identity.id,
+          scopes: ["specialist:invoke"],
+          refreshTokenTtlSeconds: THIRTY_DAYS,
+        },
+        headers: authHeaders,
+      });
+      const issued = await assertJsonResponse<TokenPair>(issueResponse, 201);
 
-    const refreshResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken: issued.refreshToken },
-    });
-    const rotated = await assertJsonResponse<TokenPair>(refreshResponse, 200);
+      const refreshResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/refresh",
+        {
+          body: { refreshToken: issued.refreshToken },
+        },
+      );
+      const rotated = await assertJsonResponse<TokenPair>(refreshResponse, 200);
 
-    const rotatedRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(rotated.refreshToken, 1);
-    const rotatedRefreshTtl = rotatedRefreshClaims.exp - rotatedRefreshClaims.iat;
-    assert.ok(
-      rotatedRefreshTtl >= THIRTY_DAYS - 5,
-      `expected rotated refresh TTL ~${THIRTY_DAYS}s, got ${rotatedRefreshTtl}`,
-    );
-    assert.ok(
-      rotatedRefreshTtl <= THIRTY_DAYS + 5,
-      `expected rotated refresh TTL ~${THIRTY_DAYS}s, got ${rotatedRefreshTtl}`,
-    );
-    assert.equal(rotatedRefreshClaims.meta?.refreshTokenTtl, String(THIRTY_DAYS));
-  });
+      const rotatedRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        rotated.refreshToken,
+        1,
+      );
+      const rotatedRefreshTtl =
+        rotatedRefreshClaims.exp - rotatedRefreshClaims.iat;
+      assert.ok(
+        rotatedRefreshTtl >= THIRTY_DAYS - 5,
+        `expected rotated refresh TTL ~${THIRTY_DAYS}s, got ${rotatedRefreshTtl}`,
+      );
+      assert.ok(
+        rotatedRefreshTtl <= THIRTY_DAYS + 5,
+        `expected rotated refresh TTL ~${THIRTY_DAYS}s, got ${rotatedRefreshTtl}`,
+      );
+      assert.equal(
+        rotatedRefreshClaims.meta?.refreshTokenTtl,
+        String(THIRTY_DAYS),
+      );
+    },
+  );
 
-  await t.test("workspace-path mint: 90d TTL lands in token meta and survives /v1/tokens/refresh", async () => {
-    const { app, authHeaders } = await createHarness({
-      authClaims: {
-        scopes: [
-          "relayauth:api-key:manage:*",
-          "relayfile:fs:read:*",
-          "relayfile:fs:write:*",
-        ],
-      },
-    });
-    const orgApiKey = await issueApiKey(app, authHeaders, [
-      "relayauth:api-key:manage:*",
-      "relayfile:fs:read:*",
-      "relayfile:fs:write:*",
-    ]);
-    const NINETY_DAYS = 90 * 24 * 3600;
+  await t.test(
+    "workspace-path mint: 90d TTL lands in token meta and survives /v1/tokens/refresh",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+      const NINETY_DAYS = 90 * 24 * 3600;
 
-    const mintResponse = await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-      body: {
-        workspaceId: "ws_tokens_route",
-        agentName: "cloud-orchestrator",
-        paths: ["/github/repos/*"],
-        scopes: ["relayfile:fs:read:/github/repos/*"],
-        refreshTokenTtlSeconds: NINETY_DAYS,
-      },
-      headers: { "x-api-key": orgApiKey.key },
-    });
+      const mintResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "cloud-orchestrator",
+            paths: ["/github/repos/*"],
+            scopes: ["relayfile:fs:read:/github/repos/*"],
+            refreshTokenTtlSeconds: NINETY_DAYS,
+          },
+          headers: { "x-api-key": orgApiKey.key },
+        },
+      );
 
-    const minted = await assertJsonResponse<WorkspacePathTokenPair>(mintResponse, 201);
-    const mintedRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(minted.refreshToken, 1);
+      const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+        mintResponse,
+        201,
+      );
+      const mintedRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.refreshToken,
+        1,
+      );
 
-    const mintedRefreshTtl = mintedRefreshClaims.exp - mintedRefreshClaims.iat;
-    assert.ok(mintedRefreshTtl >= NINETY_DAYS - 5, `minted refresh TTL should be ~90d, got ${mintedRefreshTtl}`);
-    assert.ok(mintedRefreshTtl <= NINETY_DAYS + 5, `minted refresh TTL should be ~90d, got ${mintedRefreshTtl}`);
-    assert.equal(mintedRefreshClaims.meta?.refreshTokenTtl, String(NINETY_DAYS));
+      const mintedRefreshTtl =
+        mintedRefreshClaims.exp - mintedRefreshClaims.iat;
+      assert.ok(
+        mintedRefreshTtl >= NINETY_DAYS - 5,
+        `minted refresh TTL should be ~90d, got ${mintedRefreshTtl}`,
+      );
+      assert.ok(
+        mintedRefreshTtl <= NINETY_DAYS + 5,
+        `minted refresh TTL should be ~90d, got ${mintedRefreshTtl}`,
+      );
+      assert.equal(
+        mintedRefreshClaims.meta?.refreshTokenTtl,
+        String(NINETY_DAYS),
+      );
 
-    const refreshResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
-      body: { refreshToken: minted.refreshToken },
-    });
-    const rotated = await assertJsonResponse<TokenPair>(refreshResponse, 200);
+      const refreshResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/refresh",
+        {
+          body: { refreshToken: minted.refreshToken },
+        },
+      );
+      const rotated = await assertJsonResponse<TokenPair>(refreshResponse, 200);
 
-    const rotatedRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(rotated.refreshToken, 1);
-    const rotatedRefreshTtl = rotatedRefreshClaims.exp - rotatedRefreshClaims.iat;
-    assert.ok(rotatedRefreshTtl >= NINETY_DAYS - 5, `rotated refresh TTL should be ~90d, got ${rotatedRefreshTtl}`);
-    assert.ok(rotatedRefreshTtl <= NINETY_DAYS + 5, `rotated refresh TTL should be ~90d, got ${rotatedRefreshTtl}`);
-    assert.equal(rotatedRefreshClaims.meta?.refreshTokenTtl, String(NINETY_DAYS));
-    assert.match(rotated.accessToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    assert.match(rotated.refreshToken, /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-  });
+      const rotatedRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        rotated.refreshToken,
+        1,
+      );
+      const rotatedRefreshTtl =
+        rotatedRefreshClaims.exp - rotatedRefreshClaims.iat;
+      assert.ok(
+        rotatedRefreshTtl >= NINETY_DAYS - 5,
+        `rotated refresh TTL should be ~90d, got ${rotatedRefreshTtl}`,
+      );
+      assert.ok(
+        rotatedRefreshTtl <= NINETY_DAYS + 5,
+        `rotated refresh TTL should be ~90d, got ${rotatedRefreshTtl}`,
+      );
+      assert.equal(
+        rotatedRefreshClaims.meta?.refreshTokenTtl,
+        String(NINETY_DAYS),
+      );
+      assert.match(
+        rotated.accessToken,
+        /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+      assert.match(
+        rotated.refreshToken,
+        /^relay_pa_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+    },
+  );
 });
