@@ -538,6 +538,10 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
         key: "indexes/v1/org=org_archive/next.json",
         sha256: "a".repeat(64),
       });
+      assert.deepEqual(query.cursor.entryCursor, {
+        timestamp: "2026-03-24T12:00:02.000Z",
+        id: "aud_archive_002",
+      });
       return { kind: "complete", entries: [entries[2]!] };
     }
     return {
@@ -551,6 +555,10 @@ test("GET /v1/audit returns a typed archive budget continuation that resumes wit
         chunk: {
           key: "indexes/v1/org=org_archive/next.json",
           sha256: "a".repeat(64),
+        },
+        entryCursor: {
+          timestamp: "2026-03-24T12:00:02.000Z",
+          id: "aud_archive_002",
         },
         filterKey: createAuditQueryContinuationFilterKey(query),
       },

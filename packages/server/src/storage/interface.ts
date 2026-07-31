@@ -147,7 +147,9 @@ export type DashboardAuditQuery = {
 /**
  * The archive is ordered timestamp DESC, id DESC. Keep this canonical key in
  * the storage contract so every backend produces continuations accepted by
- * the HTTP boundary without copying filter semantics.
+ * the HTTP boundary without copying filter semantics. Pagination position is
+ * carried by the continuation cursor itself and is deliberately not query
+ * scope: it changes between otherwise identical page requests.
  */
 export function createAuditQueryContinuationFilterKey(
   query: Pick<
@@ -160,15 +162,10 @@ export function createAuditQueryContinuationFilterKey(
     | "from"
     | "to"
     | "limit"
-    | "cursor"
   >,
 ): string {
   const from = normalizeAuditQueryTimestamp(query.from, "from");
   const to = normalizeAuditQueryTimestamp(query.to, "to");
-  const entryCursor =
-    query.cursor?.kind === "archive_partition"
-      ? query.cursor.entryCursor
-      : query.cursor;
   return JSON.stringify({
     version: 1,
     resource: "audit",
@@ -181,9 +178,6 @@ export function createAuditQueryContinuationFilterKey(
     from: from ?? null,
     to: to ?? null,
     limit: query.limit,
-    entryCursor: entryCursor
-      ? { timestamp: entryCursor.timestamp, id: entryCursor.id }
-      : null,
   });
 }
 
