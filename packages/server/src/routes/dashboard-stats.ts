@@ -2,7 +2,11 @@ import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
 import { requireScope } from "../middleware/scope.js";
-import { decodeAuditCursor, encodeAuditCursor } from "./audit-query.js";
+import {
+  decodeAuditCursor,
+  encodeAuditCursor,
+  isIsoTimestamp,
+} from "./audit-query.js";
 import { createDashboardAuditContinuationFilterKey } from "../storage/interface.js";
 
 type ScopeContextVars = {
@@ -300,12 +304,6 @@ function normalizeQueryValue(value: string | undefined): string | undefined {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function isIsoTimestamp(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
-    value,
-  );
 }
 
 export default dashboardStats;

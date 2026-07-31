@@ -679,6 +679,17 @@ test("GET /v1/stats supports time range filter via from/to query params", async 
   assert.equal(body.scopeDenials, 0);
 });
 
+test("GET /v1/stats rejects ISO-shaped impossible from/to timestamps", async () => {
+  for (const field of ["from", "to"] as const) {
+    const response = await getDashboardStats(
+      createStatsSearch({ [field]: "2026-99-99T99:99:99Z" }),
+    );
+    const body = await assertJsonResponse<{ error: string }>(response, 400);
+
+    assert.equal(body.error, `${field} must be an ISO 8601 timestamp`);
+  }
+});
+
 test("GET /v1/stats is scoped to the caller's org", async () => {
   const response = await getDashboardStats("", {
     claims: {
