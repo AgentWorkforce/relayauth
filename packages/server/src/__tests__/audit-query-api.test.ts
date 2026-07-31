@@ -304,6 +304,33 @@ test("GET /v1/audit filters by date range using inclusive from and exclusive to"
   );
 });
 
+test("GET /v1/audit canonicalizes offset-equivalent from/to boundaries before storage", async () => {
+  const storage = createTestStorage();
+  storage.audit.query = async (query) => {
+    assert.equal(query.from, "2026-03-27T06:30:00.000Z");
+    assert.equal(query.to, "2026-03-27T06:30:00.000Z");
+    return { kind: "complete", entries: [] };
+  };
+  const app = createTestApp({}, { storage });
+  const response = await app.request(
+    createTestRequest(
+      "GET",
+      "/v1/audit?orgId=org_offset_range&from=2026-03-27T12%3A00%3A00.000%2B05%3A30&to=2026-03-27T12%3A00%3A00.000%2B05%3A30",
+      undefined,
+      {
+        Authorization: `Bearer ${generateTestToken({
+          org: "org_offset_range",
+          scopes: ["relayauth:audit:read"],
+        })}`,
+      },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  await assertJsonResponse<AuditQueryResponse>(response, 200);
+});
+
 test("GET /v1/audit filters by result query param", async () => {
   const entries = [
     createAuditEntry(1, {

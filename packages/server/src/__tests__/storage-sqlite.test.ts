@@ -5,6 +5,8 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { Policy, Role } from "@relayauth/types";
 import {
+  createAuditQueryContinuationFilterKey,
+  createDashboardAuditContinuationFilterKey,
   StorageError,
   type AuditArchivePartitionCursor,
 } from "../storage/interface.js";
@@ -334,6 +336,83 @@ async function assertRejectsMisalignedArchiveCursors(
   }
 }
 
+async function assertOffsetRangeBoundaryParity(
+  storage: ReturnType<typeof createSqliteStorage>,
+) {
+  await storage.audit.write({
+    id: "aud_offset_range_boundary",
+    action: "token.issued",
+    identityId: "agent_offset_range_boundary",
+    orgId: "org_offset_range_boundary",
+    result: "allowed",
+    timestamp: "2026-03-27T06:30:00.000Z",
+  });
+
+  for (const testCase of [
+    {
+      field: "from" as const,
+      utc: "2026-03-27T06:30:00.000Z",
+      offset: "2026-03-27T12:00:00.000+05:30",
+      expectedIds: ["aud_offset_range_boundary"],
+      expectedTokensIssued: 1,
+    },
+    {
+      field: "to" as const,
+      utc: "2026-03-27T06:30:00.000Z",
+      offset: "2026-03-27T12:00:00.000+05:30",
+      expectedIds: [],
+      expectedTokensIssued: 0,
+    },
+  ]) {
+    const utcQuery = { [testCase.field]: testCase.utc };
+    const offsetQuery = { [testCase.field]: testCase.offset };
+    const utcEntries = await storage.audit.query(
+      {
+        orgId: "org_offset_range_boundary",
+        limit: 10,
+        ...utcQuery,
+      },
+      { includeOverflowRow: false },
+    );
+    const offsetEntries = await storage.audit.query(
+      {
+        orgId: "org_offset_range_boundary",
+        limit: 10,
+        ...offsetQuery,
+      },
+      { includeOverflowRow: false },
+    );
+
+    assert.deepEqual(
+      offsetEntries.entries.map((entry) => entry.id),
+      utcEntries.entries.map((entry) => entry.id),
+      `${testCase.field} offset boundary must equal UTC`,
+    );
+    assert.deepEqual(
+      offsetEntries.entries.map((entry) => entry.id),
+      testCase.expectedIds,
+    );
+
+    const utcCounts = await storage.audit.getActionCounts(
+      "org_offset_range_boundary",
+      utcQuery,
+    );
+    const offsetCounts = await storage.audit.getActionCounts(
+      "org_offset_range_boundary",
+      offsetQuery,
+    );
+    assert.deepEqual(
+      offsetCounts.counts,
+      utcCounts.counts,
+      `${testCase.field} count boundary must equal UTC`,
+    );
+    assert.equal(
+      offsetCounts.counts.tokensIssued,
+      testCase.expectedTokensIssued,
+    );
+  }
+}
+
 test("TestSqliteAuditQuery rejects impossible archive timestamps before opening storage", async (t) => {
   const { dbPath, storage } = createTempStorage(t);
 
@@ -410,6 +489,36 @@ test("TestSqliteAuditQuery rejects non-minute archive cursor variants", async (t
 test("TestSqliteAuditQuery rejects non-minute archive cursor variants in forced memory", async (t) => {
   const storage = createForcedMemoryStorage(t);
   await assertRejectsMisalignedArchiveCursors(storage);
+});
+
+test("TestSqliteAuditQuery normalizes offset from/to query and count boundaries", async (t) => {
+  const { storage } = createTempStorage(t);
+  await assertOffsetRangeBoundaryParity(storage);
+});
+
+test("TestSqliteAuditQuery normalizes offset from/to query and count boundaries in forced memory", async (t) => {
+  const storage = createForcedMemoryStorage(t);
+  await assertOffsetRangeBoundaryParity(storage);
+});
+
+test("audit continuation filter keys canonicalize offset from/to boundaries", () => {
+  const utcRange = {
+    from: "2026-03-27T06:30:00.000Z",
+    to: "2026-03-27T07:30:00.000Z",
+  };
+  const offsetRange = {
+    from: "2026-03-27T12:00:00.000+05:30",
+    to: "2026-03-27T13:00:00.000+05:30",
+  };
+
+  assert.equal(
+    createAuditQueryContinuationFilterKey({ ...offsetRange, limit: 10 }),
+    createAuditQueryContinuationFilterKey({ ...utcRange, limit: 10 }),
+  );
+  assert.equal(
+    createDashboardAuditContinuationFilterKey(offsetRange),
+    createDashboardAuditContinuationFilterKey(utcRange),
+  );
 });
 
 test("TestSqliteIdentityCRUD", async (t) => {

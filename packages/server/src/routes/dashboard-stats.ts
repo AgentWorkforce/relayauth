@@ -7,7 +7,10 @@ import {
   encodeAuditCursor,
   isIsoTimestamp,
 } from "./audit-query.js";
-import { createDashboardAuditContinuationFilterKey } from "../storage/interface.js";
+import {
+  createDashboardAuditContinuationFilterKey,
+  normalizeAuditQueryTimestamp,
+} from "../storage/interface.js";
 
 type ScopeContextVars = {
   identity?: {
@@ -154,15 +157,17 @@ function parseDashboardStatsQuery(
   query: Record<string, string | undefined>,
   authenticatedOrgId: string | undefined,
 ): { ok: true; value: DashboardStatsQuery } | { ok: false; error: string } {
-  const from = normalizeQueryValue(query.from);
-  if (from && !isIsoTimestamp(from)) {
+  const rawFrom = normalizeQueryValue(query.from);
+  if (rawFrom && !isIsoTimestamp(rawFrom)) {
     return { ok: false, error: "from must be an ISO 8601 timestamp" };
   }
+  const from = normalizeAuditQueryTimestamp(rawFrom, "from");
 
-  const to = normalizeQueryValue(query.to);
-  if (to && !isIsoTimestamp(to)) {
+  const rawTo = normalizeQueryValue(query.to);
+  if (rawTo && !isIsoTimestamp(rawTo)) {
     return { ok: false, error: "to must be an ISO 8601 timestamp" };
   }
+  const to = normalizeAuditQueryTimestamp(rawTo, "to");
 
   const cursorValue = normalizeQueryValue(query.cursor);
   const decodedCursor = cursorValue

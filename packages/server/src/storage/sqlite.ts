@@ -62,6 +62,7 @@ import type {
 import {
   normalizeAuditArchiveCursorBoundaries,
   normalizeAuditQueryCursor,
+  normalizeAuditQueryTimestamp,
   StorageError,
 } from "./interface.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
@@ -2453,8 +2454,8 @@ class SqliteAuditStorage implements AuditStorage {
 
   async getActionCounts(orgId: string, query: DashboardAuditQuery) {
     const normalizedOrgId = requireString(orgId, "orgId is required");
-    const from = normalizeOptionalString(query.from);
-    const to = normalizeOptionalString(query.to);
+    const from = normalizeAuditQueryTimestamp(query.from, "from");
+    const to = normalizeAuditQueryTimestamp(query.to, "to");
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
@@ -3565,6 +3566,8 @@ function normalizeAuditQuery(query: AuditQueryInput): AuditQueryInput {
   return {
     ...query,
     orgId,
+    from: normalizeAuditQueryTimestamp(query.from, "from"),
+    to: normalizeAuditQueryTimestamp(query.to, "to"),
     cursor,
     limit: normalizeAuditLimit(query.limit),
   };

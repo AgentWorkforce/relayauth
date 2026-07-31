@@ -679,6 +679,42 @@ test("GET /v1/stats supports time range filter via from/to query params", async 
   assert.equal(body.scopeDenials, 0);
 });
 
+test("GET /v1/stats canonicalizes offset-equivalent from/to boundaries before storage", async () => {
+  const storage = createTestStorage();
+  storage.audit.getActionCounts = async (_orgId, query) => {
+    assert.equal(query.from, "2026-03-27T06:30:00.000Z");
+    assert.equal(query.to, "2026-03-27T06:30:00.000Z");
+    return {
+      kind: "complete",
+      counts: {
+        tokensIssued: 0,
+        tokensRevoked: 0,
+        tokensRefreshed: 0,
+        scopeChecks: 0,
+        scopeDenials: 0,
+      },
+    };
+  };
+  const app = createTestApp({}, { storage });
+  const response = await app.request(
+    createTestRequest(
+      "GET",
+      "/v1/stats?from=2026-03-27T12%3A00%3A00.000%2B05%3A30&to=2026-03-27T12%3A00%3A00.000%2B05%3A30",
+      undefined,
+      {
+        Authorization: `Bearer ${generateTestToken({
+          org: "org_offset_stats",
+          scopes: ["relayauth:stats:read"],
+        })}`,
+      },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  await assertJsonResponse<DashboardStatsResponse>(response, 200);
+});
+
 test("GET /v1/stats rejects ISO-shaped impossible from/to timestamps", async () => {
   for (const field of ["from", "to"] as const) {
     const response = await getDashboardStats(

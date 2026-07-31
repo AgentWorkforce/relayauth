@@ -163,6 +163,8 @@ export function createAuditQueryContinuationFilterKey(
     | "cursor"
   >,
 ): string {
+  const from = normalizeAuditQueryTimestamp(query.from, "from");
+  const to = normalizeAuditQueryTimestamp(query.to, "to");
   const entryCursor =
     query.cursor?.kind === "archive_partition"
       ? query.cursor.entryCursor
@@ -176,8 +178,8 @@ export function createAuditQueryContinuationFilterKey(
     workspaceId: query.workspaceId ?? null,
     plane: query.plane ?? null,
     result: query.result ?? null,
-    from: query.from ?? null,
-    to: query.to ?? null,
+    from: from ?? null,
+    to: to ?? null,
     limit: query.limit,
     entryCursor: entryCursor
       ? { timestamp: entryCursor.timestamp, id: entryCursor.id }
@@ -189,12 +191,14 @@ export function createAuditQueryContinuationFilterKey(
 export function createDashboardAuditContinuationFilterKey(
   query: Pick<DashboardAuditQuery, "from" | "to">,
 ): string {
+  const from = normalizeAuditQueryTimestamp(query.from, "from");
+  const to = normalizeAuditQueryTimestamp(query.to, "to");
   return JSON.stringify({
     version: 1,
     resource: "dashboard-audit-counts",
     order: "partition_minute_desc",
-    from: query.from ?? null,
-    to: query.to ?? null,
+    from: from ?? null,
+    to: to ?? null,
   });
 }
 
@@ -518,6 +522,24 @@ export function isValidAuditTimestamp(value: unknown): value is string {
     offsetMinute <= 59 &&
     Number.isFinite(Date.parse(value))
   );
+}
+
+export function normalizeAuditQueryTimestamp(
+  value: string | undefined,
+  field: "from" | "to",
+): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (!isValidAuditTimestamp(normalized)) {
+    throw new StorageError(
+      `${field} must be an ISO 8601 timestamp`,
+      400,
+      "invalid_input",
+    );
+  }
+  return new Date(Date.parse(normalized)).toISOString();
 }
 
 function normalizeAuditEntryCursor(cursor: AuditEntryCursor): AuditEntryCursor {

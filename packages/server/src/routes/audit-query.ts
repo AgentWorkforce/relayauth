@@ -7,6 +7,7 @@ import {
   isValidAuditTimestamp,
   normalizeAuditArchiveCursorBoundaries,
   normalizeAuditQueryCursor,
+  normalizeAuditQueryTimestamp,
   type AuditQueryCursor,
 } from "../storage/interface.js";
 import { requireScope } from "../middleware/scope.js";
@@ -156,15 +157,17 @@ export function parseAuditQuery(
     return { ok: false, error: "invalid result" };
   }
 
-  const from = normalizeQueryValue(query.from);
-  if (from && !isIsoTimestamp(from)) {
+  const rawFrom = normalizeQueryValue(query.from);
+  if (rawFrom && !isIsoTimestamp(rawFrom)) {
     return { ok: false, error: "from must be an ISO 8601 timestamp" };
   }
+  const from = normalizeAuditQueryTimestamp(rawFrom, "from");
 
-  const to = normalizeQueryValue(query.to);
-  if (to && !isIsoTimestamp(to)) {
+  const rawTo = normalizeQueryValue(query.to);
+  if (rawTo && !isIsoTimestamp(rawTo)) {
     return { ok: false, error: "to must be an ISO 8601 timestamp" };
   }
+  const to = normalizeAuditQueryTimestamp(rawTo, "to");
 
   const cursor = normalizeQueryValue(query.cursor);
   const decodedCursor = cursor ? decodeAuditCursor(cursor) : null;
