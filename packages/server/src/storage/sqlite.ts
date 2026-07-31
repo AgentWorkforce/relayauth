@@ -61,6 +61,7 @@ import type {
 } from "./interface.js";
 import {
   getAuditArchiveCursorUpperBound,
+  normalizeAuditArchiveCursorBoundaries,
   StorageError,
 } from "./interface.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
@@ -96,6 +97,11 @@ export type SqliteStorage = AuthStorage & {
   BASE_URL?: string;
   ALLOWED_ORIGINS?: string;
   close(): Promise<void> | void;
+};
+
+export type SqliteStorageOptions = {
+  /** Select the pure in-memory fallback explicitly for backend parity tests. */
+  forceMemory?: boolean;
 };
 
 // Schema lives in packages/server/src/db/migrations/*.sql and is applied via
@@ -802,8 +808,14 @@ const dynamicImport = Function(
 ) as DynamicImportFunction;
 const MAX_REVOCATION_EXPIRY = 253402300799;
 
-export function createSqliteStorage(dbPath?: string): SqliteStorage {
-  const provider = new BackendProvider(dbPath ?? DEFAULT_DB_PATH);
+export function createSqliteStorage(
+  dbPath?: string,
+  options: SqliteStorageOptions = {},
+): SqliteStorage {
+  const provider = new BackendProvider(
+    dbPath ?? DEFAULT_DB_PATH,
+    options.forceMemory ?? false,
+  );
   const revocations = new SqliteRevocationStorage(provider);
   const storage: AuthStorage = {
     identities: new SqliteIdentityStorage(provider),
@@ -924,7 +936,10 @@ function normalizeRevocationKey(key: string): string {
 class BackendProvider {
   private backendPromise: Promise<BackendContext> | null = null;
 
-  constructor(private readonly dbPath: string) {}
+  constructor(
+    private readonly dbPath: string,
+    private readonly forceMemory: boolean,
+  ) {}
 
   async getBackend(): Promise<BackendContext> {
     if (!this.backendPromise) {
@@ -946,6 +961,10 @@ class BackendProvider {
   }
 
   private async initialize(): Promise<BackendContext> {
+    if (this.forceMemory) {
+      return createMemoryBackend();
+    }
+
     const candidates = await loadSqliteConstructors();
 
     for (const Database of candidates) {
@@ -3604,13 +3623,14 @@ function buildAuditQuerySql(
     params.push(query.to);
   }
   if (query.cursor?.kind === "archive_partition") {
+    const boundaries = normalizeAuditArchiveCursorBoundaries(query.cursor);
     clauses.push("timestamp < ?");
-    params.push(getAuditArchiveCursorUpperBound(query.cursor));
+    params.push(boundaries.upperBound);
     if (query.cursor.entryCursor) {
       clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
       params.push(
-        query.cursor.entryCursor.timestamp,
-        query.cursor.entryCursor.timestamp,
+        boundaries.entryCursorTimestamp,
+        boundaries.entryCursorTimestamp,
         query.cursor.entryCursor.id,
       );
     }
@@ -3753,14 +3773,15 @@ function matchesAuditQuery(
     return false;
   }
   if (query.cursor?.kind === "archive_partition") {
-    const upper = getAuditArchiveCursorUpperBound(query.cursor);
-    if (entry.timestamp >= upper) {
+    const boundaries = normalizeAuditArchiveCursorBoundaries(query.cursor);
+    if (entry.timestamp >= boundaries.upperBound) {
       return false;
     }
     if (
       query.cursor.entryCursor &&
-      (entry.timestamp > query.cursor.entryCursor.timestamp ||
-        (entry.timestamp === query.cursor.entryCursor.timestamp &&
+      boundaries.entryCursorTimestamp &&
+      (entry.timestamp > boundaries.entryCursorTimestamp ||
+        (entry.timestamp === boundaries.entryCursorTimestamp &&
           entry.id >= query.cursor.entryCursor.id))
     ) {
       return false;

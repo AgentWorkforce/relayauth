@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { Policy, Role } from "@relayauth/types";
-import { StorageError } from "../storage/interface.js";
+import {
+  StorageError,
+  type AuditArchivePartitionCursor,
+} from "../storage/interface.js";
 import { createSqliteStorage } from "../storage/sqlite.js";
 
 function createTempStorage(t: TestContext) {
@@ -18,6 +21,16 @@ function createTempStorage(t: TestContext) {
   });
 
   return { directory, dbPath, storage };
+}
+
+function createForcedMemoryStorage(t: TestContext) {
+  const storage = createSqliteStorage(undefined, { forceMemory: true });
+
+  t.after(async () => {
+    await storage.close();
+  });
+
+  return storage;
 }
 
 async function assertInclusiveArchiveCursorQuery(
@@ -56,12 +69,140 @@ async function assertInclusiveArchiveCursorQuery(
 
   assert.deepEqual(
     result.entries.map((entry) => entry.id),
-    [
-      "aud_in_partition",
-      "aud_partition_start",
-      "aud_before_partition",
-    ],
+    ["aud_in_partition", "aud_partition_start", "aud_before_partition"],
   );
+}
+
+async function assertOffsetArchiveCursorParity(
+  storage: ReturnType<typeof createSqliteStorage>,
+) {
+  for (const [id, timestamp] of [
+    ["aud_after_partition", "2026-03-27T12:01:00.000Z"],
+    ["aud_in_partition", "2026-03-27T12:00:30.000Z"],
+    ["aud_same_c", "2026-03-27T12:00:00.000Z"],
+    ["aud_same_b", "2026-03-27T12:00:00.000Z"],
+    ["aud_same_a", "2026-03-27T12:00:00.000Z"],
+    ["aud_before_partition", "2026-03-27T11:59:59.000Z"],
+  ]) {
+    await storage.audit.write({
+      id,
+      action: "scope.checked",
+      identityId: "agent_audit_offset_cursor",
+      orgId: "org_audit_offset_cursor",
+      result: "allowed",
+      timestamp,
+    });
+  }
+
+  const baseCursor = {
+    kind: "archive_partition" as const,
+    orgId: "org_audit_offset_cursor",
+    filterKey: "storage-offset-contract-test",
+  };
+  const cases: Array<{
+    name: string;
+    utcCursor: AuditArchivePartitionCursor;
+    offsetCursor: AuditArchivePartitionCursor;
+    expectedIds: string[];
+  }> = [
+    {
+      name: "non-inclusive",
+      utcCursor: {
+        ...baseCursor,
+        timestamp: "2026-03-27T12:00:00.000Z",
+      },
+      offsetCursor: {
+        ...baseCursor,
+        timestamp: "2026-03-27T13:00:00.000+01:00",
+      },
+      expectedIds: ["aud_before_partition"],
+    },
+    {
+      name: "chunked",
+      utcCursor: {
+        ...baseCursor,
+        timestamp: "2026-03-27T12:00:00.000Z",
+        inclusive: true,
+        chunk: { key: "chunk-2", sha256: "chunk-2-sha" },
+      },
+      offsetCursor: {
+        ...baseCursor,
+        timestamp: "2026-03-27T13:00:00.000+01:00",
+        inclusive: true,
+        chunk: { key: "chunk-2", sha256: "chunk-2-sha" },
+      },
+      expectedIds: ["aud_before_partition"],
+    },
+    {
+      name: "entry cursor",
+      utcCursor: {
+        ...baseCursor,
+        timestamp: "2026-03-27T13:00:00.000Z",
+        entryCursor: {
+          timestamp: "2026-03-27T12:00:00.000Z",
+          id: "aud_same_b",
+        },
+      },
+      offsetCursor: {
+        ...baseCursor,
+        timestamp: "2026-03-27T14:00:00.000+01:00",
+        entryCursor: {
+          timestamp: "2026-03-27T13:00:00.000+01:00",
+          id: "aud_same_b",
+        },
+      },
+      expectedIds: ["aud_same_a", "aud_before_partition"],
+    },
+    {
+      name: "inclusive",
+      utcCursor: {
+        ...baseCursor,
+        timestamp: "2026-03-27T12:00:00.000Z",
+        inclusive: true,
+      },
+      offsetCursor: {
+        ...baseCursor,
+        timestamp: "2026-03-27T13:00:00.000+01:00",
+        inclusive: true,
+      },
+      expectedIds: [
+        "aud_in_partition",
+        "aud_same_c",
+        "aud_same_b",
+        "aud_same_a",
+        "aud_before_partition",
+      ],
+    },
+  ];
+
+  for (const testCase of cases) {
+    const utcResult = await storage.audit.query(
+      {
+        orgId: "org_audit_offset_cursor",
+        limit: 10,
+        cursor: testCase.utcCursor,
+      },
+      { includeOverflowRow: false },
+    );
+    const offsetResult = await storage.audit.query(
+      {
+        orgId: "org_audit_offset_cursor",
+        limit: 10,
+        cursor: testCase.offsetCursor,
+      },
+      { includeOverflowRow: false },
+    );
+    const utcIds = utcResult.entries.map((entry) => entry.id);
+    const offsetIds = offsetResult.entries.map((entry) => entry.id);
+
+    assert.deepEqual(offsetIds, utcIds, `${testCase.name} UTC parity`);
+    assert.deepEqual(offsetIds, testCase.expectedIds, testCase.name);
+    assert.equal(
+      new Set(offsetIds).size,
+      offsetIds.length,
+      `${testCase.name} must not duplicate equivalent instants`,
+    );
+  }
 }
 
 test("TestSqliteAuditQuery rejects impossible archive timestamps before opening storage", async (t) => {
@@ -108,17 +249,18 @@ test("TestSqliteAuditQuery applies the inclusive archive cursor minute bound", a
 });
 
 test("TestSqliteAuditQuery applies the inclusive archive cursor minute bound in memory", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "relayauth-memory-"));
-  // A directory cannot be opened as a SQLite database, so the provider takes
-  // its supported in-memory fallback path.
-  const storage = createSqliteStorage(directory);
-
-  t.after(async () => {
-    await storage.close();
-    rmSync(directory, { recursive: true, force: true });
-  });
-
+  const storage = createForcedMemoryStorage(t);
   await assertInclusiveArchiveCursorQuery(storage);
+});
+
+test("TestSqliteAuditQuery normalizes offset archive cursor boundaries", async (t) => {
+  const { storage } = createTempStorage(t);
+  await assertOffsetArchiveCursorParity(storage);
+});
+
+test("TestSqliteAuditQuery normalizes offset archive cursor boundaries in forced memory", async (t) => {
+  const storage = createForcedMemoryStorage(t);
+  await assertOffsetArchiveCursorParity(storage);
 });
 
 test("TestSqliteIdentityCRUD", async (t) => {

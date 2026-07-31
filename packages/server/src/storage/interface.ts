@@ -524,11 +524,15 @@ export function isValidAuditTimestamp(value: unknown): value is string {
  * Return the exclusive hot-store upper bound for an archive partition cursor.
  * This is deliberately part of the storage contract: direct callers bypass
  * HTTP validation, and both SQL and in-memory implementations need identical
- * inclusive-minute arithmetic.
+ * UTC normalization and inclusive-minute arithmetic.
  */
-export function getAuditArchiveCursorUpperBound(
+export function normalizeAuditArchiveCursorBoundaries(
   cursor: AuditArchivePartitionCursor,
-): string {
+): {
+  cursorTimestamp: string;
+  upperBound: string;
+  entryCursorTimestamp?: string;
+} {
   if (!isValidAuditTimestamp(cursor.timestamp)) {
     throw new StorageError(
       "archive cursor timestamp must be an ISO 8601 timestamp",
@@ -537,31 +541,38 @@ export function getAuditArchiveCursorUpperBound(
     );
   }
 
-  if (
-    cursor.entryCursor &&
-    !isValidAuditTimestamp(cursor.entryCursor.timestamp)
-  ) {
-    throw new StorageError(
-      "archive entry cursor timestamp must be an ISO 8601 timestamp",
-      400,
-      "invalid_input",
-    );
+  const cursorTimestamp = new Date(Date.parse(cursor.timestamp)).toISOString();
+  let entryCursorTimestamp: string | undefined;
+
+  if (cursor.entryCursor) {
+    if (!isValidAuditTimestamp(cursor.entryCursor.timestamp)) {
+      throw new StorageError(
+        "archive entry cursor timestamp must be an ISO 8601 timestamp",
+        400,
+        "invalid_input",
+      );
+    }
+    entryCursorTimestamp = new Date(
+      Date.parse(cursor.entryCursor.timestamp),
+    ).toISOString();
   }
 
-  if (!cursor.inclusive || cursor.chunk) {
-    return cursor.timestamp;
-  }
+  const upperBound =
+    cursor.inclusive && !cursor.chunk
+      ? new Date(Date.parse(cursorTimestamp) + 60_000).toISOString()
+      : cursorTimestamp;
 
-  const upperBound = new Date(Date.parse(cursor.timestamp) + 60_000);
-  if (!Number.isFinite(upperBound.getTime())) {
-    throw new StorageError(
-      "archive cursor timestamp must be an ISO 8601 timestamp",
-      400,
-      "invalid_input",
-    );
-  }
+  return {
+    cursorTimestamp,
+    upperBound,
+    ...(entryCursorTimestamp ? { entryCursorTimestamp } : {}),
+  };
+}
 
-  return upperBound.toISOString();
+export function getAuditArchiveCursorUpperBound(
+  cursor: AuditArchivePartitionCursor,
+): string {
+  return normalizeAuditArchiveCursorBoundaries(cursor).upperBound;
 }
 
 export type {

@@ -4,8 +4,8 @@ import { Hono } from "hono";
 import type { AppEnv } from "../env.js";
 import {
   createAuditQueryContinuationFilterKey,
-  getAuditArchiveCursorUpperBound,
   isValidAuditTimestamp,
+  normalizeAuditArchiveCursorBoundaries,
   type AuditQueryCursor,
 } from "../storage/interface.js";
 import { requireScope } from "../middleware/scope.js";
@@ -249,13 +249,14 @@ export function buildAuditQuery(
   }
 
   if (params.cursor?.kind === "archive_partition") {
+    const boundaries = normalizeAuditArchiveCursorBoundaries(params.cursor);
     clauses.push("timestamp < ?");
-    values.push(getAuditArchiveCursorUpperBound(params.cursor));
+    values.push(boundaries.upperBound);
     if (params.cursor.entryCursor) {
       clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
       values.push(
-        params.cursor.entryCursor.timestamp,
-        params.cursor.entryCursor.timestamp,
+        boundaries.entryCursorTimestamp,
+        boundaries.entryCursorTimestamp,
         params.cursor.entryCursor.id,
       );
     }
