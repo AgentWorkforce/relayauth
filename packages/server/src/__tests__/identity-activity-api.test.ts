@@ -858,10 +858,20 @@ test("GET /v1/identities/:id/activity trims a budget overflow row and resumes wi
   ];
   const storage = createTestStorage();
   await storage.identities.create(identity);
+  let auditQueryCalls = 0;
+  let continuationFilterKey: string | undefined;
   storage.audit.query = async (query) => {
+    auditQueryCalls += 1;
+    assert.equal(query.orgId, identity.orgId);
+    assert.equal(query.identityId, identity.id);
     if (query.cursor?.kind === "archive_partition") {
+      assert.equal(query.cursor.orgId, identity.orgId);
+      assert.equal(query.cursor.timestamp, entries[2]!.timestamp);
+      assert.equal(query.cursor.inclusive, true);
+      assert.equal(query.cursor.filterKey, continuationFilterKey);
       return { kind: "complete", entries: [entries[2]!] };
     }
+    continuationFilterKey = createAuditQueryContinuationFilterKey(query);
     return {
       kind: "budget_exhausted",
       entries,
@@ -870,7 +880,7 @@ test("GET /v1/identities/:id/activity trims a budget overflow row and resumes wi
         orgId: identity.orgId,
         timestamp: entries[2]!.timestamp,
         inclusive: true,
-        filterKey: createAuditQueryContinuationFilterKey(query),
+        filterKey: continuationFilterKey,
       },
       workBudget: {
         hotStorePages: 1,
@@ -907,6 +917,47 @@ test("GET /v1/identities/:id/activity trims a budget overflow row and resumes wi
   assert.equal(firstPage.partial, true);
   assert.equal(firstPage.hasMore, true);
   assert.equal(typeof firstPage.nextCursor, "string");
+  assert.deepEqual(firstPage.workBudget, {
+    hotStorePages: 1,
+    hotStoreRows: 3,
+    archivePartitions: 1,
+    archiveReads: 1,
+  });
+
+  const crossOrgResponse = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/identities/${identity.id}/activity?limit=2&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      undefined,
+      {
+        Authorization: `Bearer ${generateTestToken({
+          org: "org_activity_other",
+          scopes: ["relayauth:audit:read"],
+        })}`,
+      },
+    ),
+    undefined,
+    app.bindings,
+  );
+  assert.deepEqual(
+    await assertJsonResponse<{ error: string }>(crossOrgResponse, 404),
+    { error: "identity_not_found" },
+  );
+
+  const mismatchedFilterResponse = await app.request(
+    createTestRequest(
+      "GET",
+      `/v1/identities/${identity.id}/activity?limit=2&action=token.refreshed&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+      undefined,
+      { Authorization: authorization },
+    ),
+    undefined,
+    app.bindings,
+  );
+  assert.deepEqual(
+    await assertJsonResponse<{ error: string }>(mismatchedFilterResponse, 400),
+    { error: "invalid cursor" },
+  );
 
   const secondResponse = await app.request(
     createTestRequest(
@@ -930,6 +981,11 @@ test("GET /v1/identities/:id/activity trims a budget overflow row and resumes wi
     entries.map((entry) => entry.id),
   );
   assert.equal(new Set(received).size, received.length);
+  assert.equal(
+    auditQueryCalls,
+    2,
+    "only the initial and valid resumed queries may reach audit storage",
+  );
 });
 
 test("GET /v1/identities/:id/activity returns 404 when the identity does not exist", async () => {
