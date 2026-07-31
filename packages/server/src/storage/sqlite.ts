@@ -59,7 +59,10 @@ import type {
   RoleUpdate,
   WorkspaceContextRecord,
 } from "./interface.js";
-import { StorageError } from "./interface.js";
+import {
+  getAuditArchiveCursorUpperBound,
+  StorageError,
+} from "./interface.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 
 const DEFAULT_DB_PATH = ".relay/relayauth.db";
@@ -3533,9 +3536,17 @@ function normalizeAuditWriteEntry(entry: AuditLogWriteEntry): AuditEntryRecord {
 }
 
 function normalizeAuditQuery(query: AuditQueryInput): AuditQueryInput {
+  const orgId = requireString(query.orgId, "orgId is required");
+
+  if (query.cursor?.kind === "archive_partition") {
+    // Validate before the provider is opened so invalid direct storage calls
+    // cannot reach a SQL statement or the in-memory scan.
+    getAuditArchiveCursorUpperBound(query.cursor);
+  }
+
   return {
     ...query,
-    orgId: requireString(query.orgId, "orgId is required"),
+    orgId,
     limit: normalizeAuditLimit(query.limit),
   };
 }
@@ -3594,13 +3605,7 @@ function buildAuditQuerySql(
   }
   if (query.cursor?.kind === "archive_partition") {
     clauses.push("timestamp < ?");
-    params.push(
-      query.cursor.inclusive && !query.cursor.chunk
-        ? new Date(
-            new Date(query.cursor.timestamp).getTime() + 60_000,
-          ).toISOString()
-        : query.cursor.timestamp,
-    );
+    params.push(getAuditArchiveCursorUpperBound(query.cursor));
     if (query.cursor.entryCursor) {
       clauses.push("(timestamp < ? OR (timestamp = ? AND id < ?))");
       params.push(
@@ -3748,12 +3753,7 @@ function matchesAuditQuery(
     return false;
   }
   if (query.cursor?.kind === "archive_partition") {
-    const upper =
-      query.cursor.inclusive && !query.cursor.chunk
-        ? new Date(
-            new Date(query.cursor.timestamp).getTime() + 60_000,
-          ).toISOString()
-        : query.cursor.timestamp;
+    const upper = getAuditArchiveCursorUpperBound(query.cursor);
     if (entry.timestamp >= upper) {
       return false;
     }

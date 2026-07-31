@@ -465,6 +465,105 @@ export function isStorageError(error: unknown): error is StorageError {
   return error instanceof StorageError;
 }
 
+const ISO_8601_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+/**
+ * Validate timestamp input before it becomes part of an audit storage query.
+ * Date.parse alone accepts impossible calendar dates on some runtimes.
+ */
+export function isValidAuditTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const match = ISO_8601_TIMESTAMP.exec(value);
+  if (!match) {
+    return false;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = match[7] === undefined ? 0 : Number(match[7]);
+  const offsetMinute = match[8] === undefined ? 0 : Number(match[8]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= (daysInMonth[month - 1] ?? 0) &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    offsetHour <= 23 &&
+    offsetMinute <= 59 &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+/**
+ * Return the exclusive hot-store upper bound for an archive partition cursor.
+ * This is deliberately part of the storage contract: direct callers bypass
+ * HTTP validation, and both SQL and in-memory implementations need identical
+ * inclusive-minute arithmetic.
+ */
+export function getAuditArchiveCursorUpperBound(
+  cursor: AuditArchivePartitionCursor,
+): string {
+  if (!isValidAuditTimestamp(cursor.timestamp)) {
+    throw new StorageError(
+      "archive cursor timestamp must be an ISO 8601 timestamp",
+      400,
+      "invalid_input",
+    );
+  }
+
+  if (
+    cursor.entryCursor &&
+    !isValidAuditTimestamp(cursor.entryCursor.timestamp)
+  ) {
+    throw new StorageError(
+      "archive entry cursor timestamp must be an ISO 8601 timestamp",
+      400,
+      "invalid_input",
+    );
+  }
+
+  if (!cursor.inclusive || cursor.chunk) {
+    return cursor.timestamp;
+  }
+
+  const upperBound = new Date(Date.parse(cursor.timestamp) + 60_000);
+  if (!Number.isFinite(upperBound.getTime())) {
+    throw new StorageError(
+      "archive cursor timestamp must be an ISO 8601 timestamp",
+      400,
+      "invalid_input",
+    );
+  }
+
+  return upperBound.toISOString();
+}
+
 export type {
   CreateApiKeyInput,
   IdentityBudget,

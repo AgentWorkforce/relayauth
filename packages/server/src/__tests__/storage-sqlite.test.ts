@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { Policy, Role } from "@relayauth/types";
+import { StorageError } from "../storage/interface.js";
 import { createSqliteStorage } from "../storage/sqlite.js";
 
 function createTempStorage(t: TestContext) {
@@ -18,6 +19,107 @@ function createTempStorage(t: TestContext) {
 
   return { directory, dbPath, storage };
 }
+
+async function assertInclusiveArchiveCursorQuery(
+  storage: ReturnType<typeof createSqliteStorage>,
+) {
+  for (const [id, timestamp] of [
+    ["aud_after_partition", "2026-03-27T12:01:00.000Z"],
+    ["aud_in_partition", "2026-03-27T12:00:59.000Z"],
+    ["aud_partition_start", "2026-03-27T12:00:00.000Z"],
+    ["aud_before_partition", "2026-03-27T11:59:59.000Z"],
+  ]) {
+    await storage.audit.write({
+      id,
+      action: "scope.checked",
+      identityId: "agent_audit_cursor",
+      orgId: "org_audit_cursor",
+      result: "allowed",
+      timestamp,
+    });
+  }
+
+  const result = await storage.audit.query(
+    {
+      orgId: "org_audit_cursor",
+      limit: 10,
+      cursor: {
+        kind: "archive_partition",
+        orgId: "org_audit_cursor",
+        timestamp: "2026-03-27T12:00:00.000Z",
+        inclusive: true,
+        filterKey: "storage-contract-test",
+      },
+    },
+    { includeOverflowRow: false },
+  );
+
+  assert.deepEqual(
+    result.entries.map((entry) => entry.id),
+    [
+      "aud_in_partition",
+      "aud_partition_start",
+      "aud_before_partition",
+    ],
+  );
+}
+
+test("TestSqliteAuditQuery rejects impossible archive timestamps before opening storage", async (t) => {
+  const { dbPath, storage } = createTempStorage(t);
+
+  for (const timestamp of [
+    "2026-02-29T12:00:00.000Z",
+    "2026-03-27T12:00:00.000+24:00",
+  ]) {
+    await assert.rejects(
+      () =>
+        storage.audit.query({
+          orgId: "org_audit_cursor",
+          limit: 10,
+          cursor: {
+            kind: "archive_partition",
+            orgId: "org_audit_cursor",
+            timestamp,
+            inclusive: true,
+            filterKey: "storage-contract-test",
+          },
+        }),
+      (error: unknown) => {
+        assert.equal(error instanceof RangeError, false);
+        assert.ok(error instanceof StorageError);
+        assert.equal(error.name, "StorageError");
+        assert.equal(error.code, "invalid_input");
+        assert.equal(error.status, 400);
+        return true;
+      },
+    );
+    assert.equal(
+      existsSync(dbPath),
+      false,
+      "invalid archive cursors must not open the SQLite store",
+    );
+  }
+});
+
+test("TestSqliteAuditQuery applies the inclusive archive cursor minute bound", async (t) => {
+  const { dbPath, storage } = createTempStorage(t);
+  await assertInclusiveArchiveCursorQuery(storage);
+  assert.equal(existsSync(dbPath), true, "expected the SQLite query path");
+});
+
+test("TestSqliteAuditQuery applies the inclusive archive cursor minute bound in memory", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "relayauth-memory-"));
+  // A directory cannot be opened as a SQLite database, so the provider takes
+  // its supported in-memory fallback path.
+  const storage = createSqliteStorage(directory);
+
+  t.after(async () => {
+    await storage.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  await assertInclusiveArchiveCursorQuery(storage);
+});
 
 test("TestSqliteIdentityCRUD", async (t) => {
   const { storage } = createTempStorage(t);
