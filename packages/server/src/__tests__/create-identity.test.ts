@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import test from "node:test";
 import type { AgentIdentity, CreateIdentityInput, RelayAuthTokenClaims } from "@relayauth/types";
 import { FixedWindowRateLimiter, RateLimitExceededError } from "../lib/rate-limit.js";
+import { StorageCapacityExhaustedError } from "../lib/storage-retry.js";
 import type { IdentityBudget, StoredIdentity } from "../storage/identity-types.js";
 import {
   assertJsonResponse,
@@ -397,4 +398,38 @@ test("the global error handler preserves rate-limit errors as 429 responses", as
   assert.equal(body.code, "rate_limited");
   assert.equal(response.headers.get("Retry-After"), "60");
   assert.equal(response.headers.get("RateLimit-Remaining"), "0");
+});
+
+test("POST /v1/identities returns 503 with capacity envelope when storage.identities.create throws StorageCapacityExhaustedError", async () => {
+  // Verifies that StorageCapacityExhaustedError thrown from storage.identities.create()
+  // propagates correctly: the route catch block re-throws it (not swallowed as 500),
+  // and app.onError handles it via storageCapacityResponse → 503 with Retry-After.
+  // This is the server-side assertion that the 503 route mapping fix is correct.
+  const storage = createTestStorage();
+  storage.identities.create = async () => {
+    throw new StorageCapacityExhaustedError("post-auth mint capacity exhausted (status 429)");
+  };
+  const app = createTestApp({}, { storage });
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "capacity-probe", sponsorId: "user_sponsor_1" },
+      { Authorization: `Bearer ${createAuthToken()}` },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  const body = await assertJsonResponse<{
+    code?: string;
+    retryable?: boolean;
+    retryAfterMs?: number;
+    requestId?: string;
+  }>(response, 503);
+  assert.equal(body.code, "storage_capacity_exhausted", "capacity envelope code");
+  assert.equal(body.retryable, true, "capacity envelope must be retryable");
+  assert.ok(response.headers.get("Retry-After"), "Retry-After header must be present");
+  assert.equal(response.headers.get("Cache-Control"), "no-store", "Cache-Control must be no-store");
 });
