@@ -11,6 +11,7 @@ import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext, authenticateBearerOrApiKey, authorizeClaims, decodeBase64UrlJson } from "../lib/auth.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 import {
+  isStorageCapacityExhausted,
   isTransientStorageOverload,
   isStorageOverloadedError,
   StorageOverloadedError,
@@ -502,6 +503,10 @@ identities.post("/", async (c) => {
     });
     return c.json(createdIdentity, 201);
   } catch (error) {
+    if (isStorageCapacityExhausted(error)) {
+      throw error;
+    }
+
     if (isStorageOverloadedError(error)) {
       return storageOverloadResponse(c, error);
     }
