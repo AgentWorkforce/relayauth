@@ -472,7 +472,7 @@ test("retention minimum is 1 day and lower values are rejected", async () => {
     async () => retention.setRetentionConfig(db, "org_test", 0),
     (error: unknown) =>
       error instanceof Error &&
-      error.message === "retentionDays must be at least 1 days",
+      error.message === "retentionDays must be at least 1 day",
   );
 });
 
