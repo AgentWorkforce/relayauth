@@ -28,8 +28,8 @@ type RetentionConfigRow = {
   retentionDays?: unknown;
 };
 
-const DEFAULT_RETENTION_DAYS = 90;
-const MIN_RETENTION_DAYS = 7;
+const DEFAULT_RETENTION_DAYS = 2;
+const MIN_RETENTION_DAYS = 1;
 const MAX_RETENTION_DAYS = 365;
 
 export async function purgeExpiredEntries(
@@ -120,7 +120,9 @@ function normalizeRetentionDays(value: unknown): number {
   const num = value;
 
   if (num < MIN_RETENTION_DAYS) {
-    throw new Error(`retentionDays must be at least ${MIN_RETENTION_DAYS} days`);
+    throw new Error(
+      `retentionDays must be at least ${MIN_RETENTION_DAYS} ${formatDays(MIN_RETENTION_DAYS)}`,
+    );
   }
 
   if (num > MAX_RETENTION_DAYS) {
@@ -128,6 +130,10 @@ function normalizeRetentionDays(value: unknown): number {
   }
 
   return num;
+}
+
+function formatDays(value: number): "day" | "days" {
+  return value === 1 ? "day" : "days";
 }
 
 function createCutoffTimestamp(retentionDays: number): string {

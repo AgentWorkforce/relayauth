@@ -122,13 +122,13 @@ Retention is configurable per organization.
 
 | Setting            | Default | Minimum | Maximum  |
 |--------------------|---------|---------|----------|
-| `retentionDays`    | 90      | 7       | 365      |
+| `retentionDays`    | 2       | 1       | 365      |
 
 ### Configuration
 
 ```typescript
 interface OrgAuditConfig {
-  retentionDays: number;     // Default: 90
+  retentionDays: number;     // Default: 2
   webhookUrl?: string;       // Optional webhook endpoint
   webhookEvents?: AuditAction[]; // Filter which actions trigger webhooks (default: all)
   webhookSecret?: string;    // HMAC-SHA256 signing secret for webhook payloads

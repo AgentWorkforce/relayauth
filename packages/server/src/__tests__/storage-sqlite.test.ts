@@ -800,3 +800,21 @@ test("TestSqliteAutoCreateTables", async (t) => {
     );
   }
 });
+
+test("TestSqliteAuditRetentionDefaultsToTwoDays", async (t) => {
+  const { storage } = createTempStorage(t);
+
+  await storage.DB.prepare(
+    "INSERT INTO audit_retention_config (org_id) VALUES (?)",
+  )
+    .bind("org_default_retention")
+    .run();
+
+  const row = await storage.DB.prepare(
+    "SELECT retention_days FROM audit_retention_config WHERE org_id = ?",
+  )
+    .bind("org_default_retention")
+    .first<{ retention_days?: number }>();
+
+  assert.equal(row?.retention_days, 2);
+});

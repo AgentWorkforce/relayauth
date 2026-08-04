@@ -92,12 +92,12 @@ Use node:test + node:assert/strict. Import helpers from ./test-helpers.js.
 
 Test these behaviors:
 1. purgeExpiredEntries(db, retentionDays) deletes entries older than retentionDays
-2. Default retention is 90 days
+2. Default retention is 2 days
 3. Per-org retention override is respected
 4. purgeExpiredEntries returns count of deleted entries
 5. getRetentionConfig(db, orgId) returns org-specific or default config
 6. setRetentionConfig(db, orgId, days) updates org retention setting
-7. Retention minimum is 7 days (rejects lower values)
+7. Retention minimum is 1 day (rejects lower values)
 8. Dry run mode: countExpiredEntries() returns count without deleting`,
     verification: { type: 'exit_code' },
   })
@@ -133,8 +133,8 @@ Write to ${ROOT}/packages/server/src/engine/audit-retention.ts:
 2. countExpiredEntries(db, retentionDays?) — COUNT without deleting (dry run)
 3. getRetentionConfig(db, orgId) — read from audit_retention_config table
 4. setRetentionConfig(db, orgId, days) — upsert retention config
-5. Default retention: 90 days
-6. Minimum retention: 7 days (throw if lower)
+5. Default retention: 2 days
+6. Minimum retention: 1 day (throw if lower)
 7. Return { deletedCount } from purge
 
 Export from the package.`,
