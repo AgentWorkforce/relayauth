@@ -28,8 +28,8 @@ type RetentionConfigRow = {
   retentionDays?: unknown;
 };
 
-const DEFAULT_RETENTION_DAYS = 90;
-const MIN_RETENTION_DAYS = 7;
+const DEFAULT_RETENTION_DAYS = 2;
+const MIN_RETENTION_DAYS = 1;
 const MAX_RETENTION_DAYS = 365;
 
 export async function purgeExpiredEntries(

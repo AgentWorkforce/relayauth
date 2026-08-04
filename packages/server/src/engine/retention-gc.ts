@@ -369,7 +369,7 @@ export async function countExpiredTokensBatch(
 
 /**
  * Deletes one bounded batch of audit logs using each organization's configured
- * retention period, or the 90-day default when the config row is absent.
+ * retention period, or the two-day default when the config row is absent.
  */
 export async function purgeExpiredEntriesBatch(
   db: RetentionGcSqlExecutor,

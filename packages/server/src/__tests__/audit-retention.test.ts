@@ -398,12 +398,12 @@ test("purgeExpiredEntries deletes entries older than the provided retentionDays"
   );
 });
 
-test("default retention is 90 days", async () => {
+test("default retention is 2 days", async () => {
   const retention = await loadAuditRetention();
   const { db } = createRetentionD1({
     logs: [
-      createAuditLog("aud_expired_120", "org_default", 120),
-      createAuditLog("aud_recent_30", "org_default", 30),
+      createAuditLog("aud_expired_3", "org_default", 3),
+      createAuditLog("aud_recent_1", "org_default", 1),
     ],
   });
 
@@ -421,7 +421,7 @@ test("per-org retention override is respected", async () => {
   const fallback = await retention.getRetentionConfig(db, "org_default");
 
   assertRetentionConfig(override, "org_override", 30);
-  assertRetentionConfig(fallback, "org_default", 90);
+  assertRetentionConfig(fallback, "org_default", 2);
 });
 
 test("purgeExpiredEntries returns count of deleted entries", async () => {
@@ -447,7 +447,7 @@ test("getRetentionConfig returns org-specific or default config", async () => {
   });
 
   assertRetentionConfig(await retention.getRetentionConfig(db, "org_custom"), "org_custom", 120);
-  assertRetentionConfig(await retention.getRetentionConfig(db, "org_fallback"), "org_fallback", 90);
+  assertRetentionConfig(await retention.getRetentionConfig(db, "org_fallback"), "org_fallback", 2);
 });
 
 test("setRetentionConfig updates org retention setting", async () => {
@@ -461,13 +461,16 @@ test("setRetentionConfig updates org retention setting", async () => {
   assertRetentionConfig(await retention.getRetentionConfig(db, "org_test"), "org_test", 180);
 });
 
-test("retention minimum is 7 days and lower values are rejected", async () => {
+test("retention minimum is 1 day and lower values are rejected", async () => {
   const retention = await loadAuditRetention();
   const { db } = createRetentionD1();
 
+  await retention.setRetentionConfig(db, "org_test", 1);
+  assertRetentionConfig(await retention.getRetentionConfig(db, "org_test"), "org_test", 1);
+
   await assert.rejects(
-    async () => retention.setRetentionConfig(db, "org_test", 6),
-    /7|minimum|retention/i,
+    async () => retention.setRetentionConfig(db, "org_test", 0),
+    /1|minimum|retention/i,
   );
 });
 

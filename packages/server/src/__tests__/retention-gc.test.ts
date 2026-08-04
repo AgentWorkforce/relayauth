@@ -172,22 +172,22 @@ test("pruneExpiredTokens bounds a batch and preserves verifier clock skew", asyn
   ]);
 });
 
-test("audit retention uses overrides, a 90-day default, and bounded batches", async (t) => {
+test("audit retention uses overrides, a 2-day default, and bounded batches", async (t) => {
   const { storage, db } = createStorage(t);
 
   await storage.DB.prepare(
     "INSERT INTO audit_retention_config (org_id, retention_days) VALUES (?, ?), (?, ?), (?, ?), (?, ?)",
   )
-    .bind("org_short", 30, "org_long", 180, "org_invalid", 1, "org_fractional", 30.5)
+    .bind("org_short", 30, "org_long", 180, "org_invalid", 0, "org_fractional", 30.5)
     .run();
 
-  await insertAuditLog(storage, "aud_default_old", "org_default", daysBeforeNow(100));
-  await insertAuditLog(storage, "aud_default_recent", "org_default", daysBeforeNow(80));
+  await insertAuditLog(storage, "aud_default_old", "org_default", daysBeforeNow(3));
+  await insertAuditLog(storage, "aud_default_recent", "org_default", daysBeforeNow(1));
   await insertAuditLog(storage, "aud_short_old", "org_short", daysBeforeNow(40));
   await insertAuditLog(storage, "aud_short_recent", "org_short", daysBeforeNow(20));
   await insertAuditLog(storage, "aud_long_recent", "org_long", daysBeforeNow(100));
-  await insertAuditLog(storage, "aud_invalid_old", "org_invalid", daysBeforeNow(100));
-  await insertAuditLog(storage, "aud_fractional_recent", "org_fractional", daysBeforeNow(40));
+  await insertAuditLog(storage, "aud_invalid_old", "org_invalid", daysBeforeNow(3));
+  await insertAuditLog(storage, "aud_fractional_recent", "org_fractional", daysBeforeNow(1));
 
   assert.deepEqual(await countExpiredEntriesBatch(db, { now: NOW, limit: 2 }), {
     expiredCount: 2,
@@ -266,7 +266,7 @@ test("audit cursor windows apply config/default retention inside a bounded rowid
   await storage.DB.prepare(
     "INSERT INTO audit_retention_config (org_id, retention_days) VALUES (?, ?), (?, ?), (?, ?)",
   )
-    .bind("org_short", 30, "org_long", 180, "org_invalid", 1)
+    .bind("org_short", 30, "org_long", 180, "org_invalid", 0)
     .run();
 
   await insertAuditLog(storage, "aud_default_old", "org_default", daysBeforeNow(100), 3);
