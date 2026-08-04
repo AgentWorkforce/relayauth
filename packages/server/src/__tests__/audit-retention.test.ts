@@ -470,7 +470,9 @@ test("retention minimum is 1 day and lower values are rejected", async () => {
 
   await assert.rejects(
     async () => retention.setRetentionConfig(db, "org_test", 0),
-    /1|minimum|retention/i,
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message === "retentionDays must be at least 1 days",
   );
 });
 
