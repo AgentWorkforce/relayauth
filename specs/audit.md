@@ -549,8 +549,8 @@ interface OrgAuditRetentionConfig {
 
 Rules:
 
-- Default `retentionDays` is `90`.
-- Minimum supported value is `7`.
+- Default `retentionDays` is `2`.
+- Minimum supported value is `1`.
 - Maximum supported value is `365`.
 - Values outside this range must be rejected at write time.
 - Retention applies to all audit actions unless future product policy adds

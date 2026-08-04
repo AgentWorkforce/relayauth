@@ -70,7 +70,7 @@ Write design outline to ${ROOT}/docs/audit-design.md covering:
 - Audit entry format: all fields from AuditEntry
 - Actions: all AuditAction values and when they fire
 - Storage: D1 table schema, indexes
-- Retention: configurable per-org, default 90 days
+- Retention: configurable per-org, default 2 days, minimum 1 day
 - Query semantics: filters, pagination, sorting
 - Export: CSV and JSON formats
 - Webhook notifications on audit events`,
