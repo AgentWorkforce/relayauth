@@ -15,6 +15,7 @@ import type {
   StoredIdentity,
 } from "./identity-types.js";
 import type {
+  ApiKeyKind,
   CreateApiKeyInput,
   ListApiKeysOptions,
   StoredApiKey,
@@ -657,6 +658,7 @@ export function getAuditArchiveCursorUpperBound(
 }
 
 export type {
+  ApiKeyKind,
   CreateApiKeyInput,
   IdentityBudget,
   IdentityBudgetUsage,
