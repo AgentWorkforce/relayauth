@@ -34,7 +34,6 @@ const MAX_GRANT_TTL_SECONDS = 24 * 60 * 60;
 const DEFAULT_GRANT_TTL_SECONDS = 60 * 60;
 const MAX_FINALIZE_COMMITS = 100;
 const ATTEST_GRANT_SCOPE = "relayauth:attest:grant:*";
-const ATTEST_LATE_SCOPE = "relayauth:attest:late:*";
 
 const attestations = new Hono<AppEnv>();
 
@@ -50,7 +49,7 @@ attestations.post("/grants", async (c) => {
   const late = body.late === true;
   const auth = await authenticateAndAuthorizeFromContext(
     c,
-    late ? ATTEST_LATE_SCOPE : ATTEST_GRANT_SCOPE,
+    ATTEST_GRANT_SCOPE,
     matchScope,
   );
   if (!auth.ok) {

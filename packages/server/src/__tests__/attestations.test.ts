@@ -185,8 +185,8 @@ test("ledger is immutable and retention only deletes audit_logs", async (t) => {
   t.after(() => app.close());
   await grant(app, key);
   const row = await app.storage.DB.prepare(
-    "SELECT seq, payload_json FROM attestation_ledger LIMIT 1",
-  ).first<{ seq: number; payload_json: string }>();
+    "SELECT seq, payload_json, prev_hash, entry_hash FROM attestation_ledger LIMIT 1",
+  ).first<{ seq: number; payload_json: string; prev_hash: string; entry_hash: string }>();
   assert.ok(row);
   await assert.rejects(
     app.storage.DB.prepare("UPDATE attestation_ledger SET payload_json = ? WHERE seq = ?")
@@ -196,6 +196,16 @@ test("ledger is immutable and retention only deletes audit_logs", async (t) => {
     app.storage.DB.prepare("DELETE FROM attestation_ledger WHERE seq = ?")
       .bind(row.seq).run(),
   );
+  const recomputed = crypto.createHash("sha256")
+    .update(row.payload_json, "utf8")
+    .update(row.prev_hash, "utf8")
+    .digest("hex");
+  assert.equal(recomputed, row.entry_hash);
+  const handTampered = crypto.createHash("sha256")
+    .update('{"tampered":true}', "utf8")
+    .update(row.prev_hash, "utf8")
+    .digest("hex");
+  assert.notEqual(handTampered, row.entry_hash, "chain recomputation must detect a hand-tampered payload");
 
   await app.storage.DB.prepare(`
     INSERT INTO audit_logs (id, action, org_id, result, timestamp, created_at)
