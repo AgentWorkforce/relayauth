@@ -10,6 +10,7 @@ import {
   createTestApp,
   createTestRequest,
   generateTestToken,
+  TEST_RS256_PUBLIC_KEY_PEM,
 } from "./test-helpers.js";
 
 const OIDC_KEY_PAIR = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -182,6 +183,47 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
   const stored = await assertJsonResponse<CreatedIdentity>(storedResponse, 200);
   assert.deepEqual(stored.sponsorBinding, identity.sponsorBinding);
 
+  const ledger = await app.storage.DB.prepare(`
+    SELECT entry_type, agent_id, sponsor_id, jti, payload_json, jws
+    FROM attestation_ledger
+    WHERE org_id = ? AND agent_id = ?
+  `).bind(org, identity.id).first<{
+    entry_type: string;
+    agent_id: string;
+    sponsor_id: string;
+    jti: string | null;
+    payload_json: string;
+    jws: string;
+  }>();
+  assert.ok(ledger);
+  assert.equal(ledger.entry_type, "identity.created");
+  assert.equal(ledger.agent_id, identity.id);
+  assert.equal(ledger.sponsor_id, "user_alice");
+  assert.equal(ledger.jti, "idp-session-1");
+  const [encodedHeader, encodedPayload, encodedSignature] = ledger.jws.split(".");
+  assert.ok(encodedHeader && encodedPayload && encodedSignature);
+  const signedPayloadJson = Buffer.from(encodedPayload, "base64url").toString("utf8");
+  assert.equal(signedPayloadJson, ledger.payload_json);
+  assert.deepEqual(JSON.parse(ledger.payload_json), {
+    agentId: identity.id,
+    sponsorId: "user_alice",
+    issuer,
+    subject: "alice",
+    iat: now,
+    jti: "idp-session-1",
+    sponsorBinding: identity.sponsorBinding,
+    ts: identity.createdAt,
+  });
+  assert.equal(
+    crypto.verify(
+      "RSA-SHA256",
+      Buffer.from(`${encodedHeader}.${encodedPayload}`),
+      TEST_RS256_PUBLIC_KEY_PEM,
+      Buffer.from(encodedSignature, "base64url"),
+    ),
+    true,
+  );
+
   const patchResponse = await app.request(
     createTestRequest(
       "PATCH",
@@ -337,4 +379,70 @@ test("malformed sponsor federation configuration fails closed", async () => {
   );
   const body = await assertJsonResponse<{ code: string }>(response, 503);
   assert.equal(body.code, "sponsor_binding_misconfigured");
+});
+
+test("OIDC-bound identity creation rolls back when the signed ledger append fails", async (t) => {
+  const { issuer } = await startOidcFixture(t);
+  const org = "org_oidc_atomic_ledger";
+  const app = createTestApp({
+    RELAYAUTH_SPONSOR_FEDERATIONS: JSON.stringify({
+      [org]: { sponsorBinding: "oidc", issuer, clientId: "chief-fixture" },
+    }),
+  });
+  const apiKey = await createWorkspaceApiKey(app, org);
+  const now = Math.floor(Date.now() / 1000);
+  const proofResponse = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/sponsors/proof",
+      {
+        idToken: signIdToken({
+          iss: issuer,
+          sub: "alice",
+          aud: "chief-fixture",
+          iat: now,
+          exp: now + 300,
+        }),
+      },
+      { "x-api-key": apiKey },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const proof = await assertJsonResponse<SponsorProof>(proofResponse, 201);
+
+  await app.storage.DB.prepare(`
+    CREATE TRIGGER reject_identity_created_ledger
+    BEFORE INSERT ON attestation_ledger
+    WHEN NEW.entry_type = 'identity.created'
+    BEGIN
+      SELECT RAISE(ABORT, 'fixture ledger failure');
+    END
+  `).run();
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      {
+        name: "must-roll-back",
+        sponsorId: proof.sponsorId,
+        sponsorProof: proof.sponsorProof,
+      },
+      { "x-api-key": apiKey },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const body = await assertJsonResponse<{ code: string }>(response, 500);
+  assert.equal(body.code, "identity_create_failed");
+
+  const identityRow = await app.storage.DB.prepare(
+    "SELECT id FROM identities WHERE org_id = ? AND name = ?",
+  ).bind(org, "must-roll-back").first<{ id: string }>();
+  const ledgerRow = await app.storage.DB.prepare(
+    "SELECT seq FROM attestation_ledger WHERE org_id = ?",
+  ).bind(org).first<{ seq: number }>();
+  assert.equal(identityRow ?? null, null);
+  assert.equal(ledgerRow ?? null, null);
 });
