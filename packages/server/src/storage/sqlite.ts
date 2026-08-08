@@ -73,6 +73,7 @@ import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 const DEFAULT_DB_PATH = ".relay/relayauth.db";
 const DEFAULT_INTERNAL_SECRET = "internal-test-secret";
 const MAX_LINEAGE_TOKEN_RECORDS = 1_000;
+const LINEAGE_TOKEN_QUERY_LIMIT = MAX_LINEAGE_TOKEN_RECORDS + 1;
 
 /**
  * D1-compatible shim for test helpers that access .DB.prepare().
@@ -483,7 +484,7 @@ const SELECT_IDENTITY_LINEAGE_MEMBERS_SQL = `
 `;
 
 const SELECT_TOKEN_LINEAGES_SQL = `
-  SELECT token_id, identity_id, org_id, workspace_id, sponsor_id, token_type, created_at
+  SELECT token_id, issued_token_id, identity_id, org_id, workspace_id, sponsor_id, token_type, created_at
   FROM token_lineages
   WHERE identity_id = ?
   ORDER BY created_at ASC, token_id ASC
@@ -510,6 +511,7 @@ const SELECT_TOKEN_LINEAGE_MEMBERS_BY_IDENTITY_SQL = `
 const INSERT_TOKEN_LINEAGE_SQL = `
   INSERT INTO token_lineages (
     token_id,
+    issued_token_id,
     identity_id,
     org_id,
     workspace_id,
@@ -517,7 +519,7 @@ const INSERT_TOKEN_LINEAGE_SQL = `
     token_type,
     created_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const INSERT_TOKEN_LINEAGE_MEMBER_SQL = `
@@ -738,6 +740,7 @@ type IdentityLineageRow = {
 };
 type TokenLineageRow = IdentityLineageRow & {
   token_id?: string | null;
+  issued_token_id?: string | null;
   token_type?: "access" | "refresh" | null;
 };
 type LineageMemberRow = { principal_id?: string | null };
@@ -871,7 +874,7 @@ function toMemoryTokenRecord(token: IssuedTokenRecord): MemoryTokenRecord {
 
 type MemoryIdentityLineageSnapshot = Omit<
   IdentityLineageRecord,
-  "tokens"
+  "tokens" | "tokensTruncated"
 >;
 
 type RevokedTokenRecord = {
@@ -1529,7 +1532,7 @@ class SqliteIdentityStorage implements IdentityStorage {
         return null;
       }
 
-      const tokens = [...backend.state.tokens.values()]
+      const lineageTokens = [...backend.state.tokens.values()]
         .filter(
           (token) =>
             token.identityId === normalizedIdentityId && token.lineage !== undefined,
@@ -1538,7 +1541,9 @@ class SqliteIdentityStorage implements IdentityStorage {
           (left, right) =>
             left.createdAt.localeCompare(right.createdAt) ||
             left.tokenId.localeCompare(right.tokenId),
-        )
+        );
+      const tokensTruncated = lineageTokens.length > MAX_LINEAGE_TOKEN_RECORDS;
+      const tokens = lineageTokens
         .slice(0, MAX_LINEAGE_TOKEN_RECORDS)
         .map((token): TokenLineageRecord => ({
           tokenId: token.tokenId,
@@ -1555,6 +1560,7 @@ class SqliteIdentityStorage implements IdentityStorage {
         ...identityLineage,
         sponsorChain: [...identityLineage.sponsorChain],
         tokens,
+        tokensTruncated,
       };
     }
 
@@ -1579,7 +1585,7 @@ class SqliteIdentityStorage implements IdentityStorage {
       .prepare<TokenLineageMemberRow>(
         SELECT_TOKEN_LINEAGE_MEMBERS_BY_IDENTITY_SQL,
       )
-      .all(normalizedIdentityId, MAX_LINEAGE_TOKEN_RECORDS)
+      .all(normalizedIdentityId, LINEAGE_TOKEN_QUERY_LIMIT)
       .reduce((byToken, member) => {
         const tokenId = normalizeOptionalString(member.token_id);
         const principalId = normalizeOptionalString(member.principal_id);
@@ -1591,9 +1597,12 @@ class SqliteIdentityStorage implements IdentityStorage {
         return byToken;
       }, new Map<string, string[]>());
 
-    const tokens = backend.db
+    const tokenRows = backend.db
       .prepare<TokenLineageRow>(SELECT_TOKEN_LINEAGES_SQL)
-      .all(normalizedIdentityId, MAX_LINEAGE_TOKEN_RECORDS)
+      .all(normalizedIdentityId, LINEAGE_TOKEN_QUERY_LIMIT);
+    const tokensTruncated = tokenRows.length > MAX_LINEAGE_TOKEN_RECORDS;
+    const tokens = tokenRows
+      .slice(0, MAX_LINEAGE_TOKEN_RECORDS)
       .map((row) => {
         const token = hydrateTokenLineage(row);
         if (!token) {
@@ -1601,7 +1610,9 @@ class SqliteIdentityStorage implements IdentityStorage {
         }
         return {
           ...token,
-          sponsorChain: [...(tokenMembers.get(token.tokenId) ?? [])],
+          sponsorChain: [
+            ...(tokenMembers.get(normalizeOptionalString(row.token_id) ?? "") ?? []),
+          ],
         };
       })
       .filter((token): token is TokenLineageRecord => token !== null);
@@ -1610,6 +1621,7 @@ class SqliteIdentityStorage implements IdentityStorage {
       ...identityRecord,
       sponsorChain,
       tokens,
+      tokensTruncated,
     };
   }
 
@@ -2049,6 +2061,7 @@ function insertTokenLineage(db: SqliteDatabase, token: IssuedTokenRecord): void 
 
   db.prepare(INSERT_TOKEN_LINEAGE_SQL).run(
     token.id,
+    token.tokenId,
     token.identityId,
     lineage.orgId,
     lineage.workspaceId,
@@ -2064,7 +2077,10 @@ function insertTokenLineage(db: SqliteDatabase, token: IssuedTokenRecord): void 
 
 function hydrateIdentityLineage(
   row: IdentityLineageRow,
-): Omit<IdentityLineageRecord, "sponsorChain" | "tokens"> | null {
+): Omit<
+  IdentityLineageRecord,
+  "sponsorChain" | "tokens" | "tokensTruncated"
+> | null {
   const identityId = normalizeOptionalString(row.identity_id);
   const orgId = normalizeOptionalString(row.org_id);
   const workspaceId = normalizeOptionalString(row.workspace_id);
@@ -2078,7 +2094,7 @@ function hydrateIdentityLineage(
 }
 
 function hydrateTokenLineage(row: TokenLineageRow): Omit<TokenLineageRecord, "sponsorChain"> | null {
-  const tokenId = normalizeOptionalString(row.token_id);
+  const tokenId = normalizeOptionalString(row.issued_token_id);
   const identityId = normalizeOptionalString(row.identity_id);
   const orgId = normalizeOptionalString(row.org_id);
   const workspaceId = normalizeOptionalString(row.workspace_id);
@@ -2095,7 +2111,8 @@ function hydrateTokenLineage(row: TokenLineageRow): Omit<TokenLineageRecord, "sp
     (tokenType !== "access" && tokenType !== "refresh")
   ) {
     console.warn("Ignoring malformed token lineage record", {
-      tokenId: row.token_id,
+      tokenId: row.issued_token_id,
+      storageTokenId: row.token_id,
       identityId: row.identity_id,
     });
     return null;

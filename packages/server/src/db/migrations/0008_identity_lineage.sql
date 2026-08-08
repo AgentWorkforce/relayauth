@@ -27,6 +27,7 @@ CREATE INDEX IF NOT EXISTS idx_identity_lineage_members_principal
 
 CREATE TABLE IF NOT EXISTS token_lineages (
   token_id TEXT PRIMARY KEY,
+  issued_token_id TEXT NOT NULL,
   identity_id TEXT NOT NULL,
   org_id TEXT NOT NULL,
   workspace_id TEXT NOT NULL,
@@ -72,6 +73,7 @@ SELECT
 FROM identities
 CROSS JOIN json_each(identities.sponsor_chain_json)
 WHERE json_valid(identities.sponsor_chain_json)
+  AND json_type(identities.sponsor_chain_json) = 'array'
   AND json_each.type = 'text';
 
 CREATE TRIGGER IF NOT EXISTS identities_record_lineage_after_insert
@@ -103,5 +105,6 @@ BEGIN
     json_each.value
   FROM json_each(NEW.sponsor_chain_json)
   WHERE json_valid(NEW.sponsor_chain_json)
+    AND json_type(NEW.sponsor_chain_json) = 'array'
     AND json_each.type = 'text';
 END;

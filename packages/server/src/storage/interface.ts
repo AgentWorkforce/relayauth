@@ -294,6 +294,8 @@ export type IdentityLineageRecord = {
   sponsorChain: string[];
   createdAt: string;
   tokens: TokenLineageRecord[];
+  /** True when older token history is returned only up to the response limit. */
+  tokensTruncated: boolean;
 };
 
 export type StoredTokenRecord = {

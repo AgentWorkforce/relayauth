@@ -34,6 +34,7 @@ type IdentityLineageResponse = {
   sponsorId: string;
   sponsorChain: string[];
   createdAt: string;
+  tokensTruncated: boolean;
   tokens: Array<{
     tokenId: string;
     identityId: string;
@@ -127,6 +128,27 @@ test("identity lineage survives a SQLite server restart without reading an issue
   );
   assert.equal(mintAgentTokenResponse.status, 201);
 
+  await firstStorage.tokens.persistIssued({
+    id: "lineage-storage-token-id",
+    tokenId: "lineage-public-token-id",
+    jti: "lineage-token-jti",
+    identityId: identity.id,
+    issuedAt: 1_700_000_000,
+    expiresAt: 1_700_003_600,
+    createdAt: "2026-08-08T00:00:00.000Z",
+    lineage: {
+      orgId: "org_lineage",
+      workspaceId: "ws_lineage",
+      sponsorId: "user_lineage_owner",
+      sponsorChain: [
+        "user_lineage_owner",
+        "agent_lineage_operator",
+        identity.id,
+      ],
+      tokenType: "access",
+    },
+  });
+
   const queryLineage = async (
     app: ReturnType<typeof createTestApp>,
   ): Promise<IdentityLineageResponse> => {
@@ -153,10 +175,17 @@ test("identity lineage survives a SQLite server restart without reading an issue
     "agent_lineage_operator",
     identity.id,
   ]);
-  assert.equal(beforeRestart.tokens.length, 2);
+  assert.equal(beforeRestart.tokens.length, 3);
+  assert.equal(beforeRestart.tokensTruncated, false);
   assert.deepEqual(
     beforeRestart.tokens.map((token) => token.tokenType).sort(),
-    ["access", "refresh"],
+    ["access", "access", "refresh"],
+  );
+  assert.equal(
+    beforeRestart.tokens.find(
+      (token) => token.tokenId === "lineage-public-token-id",
+    )?.tokenId,
+    "lineage-public-token-id",
   );
   for (const token of beforeRestart.tokens) {
     assert.equal(token.identityId, identity.id);
