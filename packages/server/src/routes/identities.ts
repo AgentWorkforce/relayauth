@@ -11,7 +11,10 @@ import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext, authenticateBearerOrApiKey, authorizeClaims, decodeBase64UrlJson } from "../lib/auth.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
-import { SponsorBindingError } from "../lib/sponsor-binding.js";
+import {
+  SponsorBindingError,
+  type IdentityCreatedLedgerPayload,
+} from "../lib/sponsor-binding.js";
 import {
   isStorageCapacityExhausted,
   isTransientStorageOverload,
@@ -509,10 +512,43 @@ identities.post("/", async (c) => {
       // Identity creation is not guaranteed to be idempotent across storage
       // adapters. Never retry a write that may have committed before its
       // adapter surfaced an overload error.
-      createdIdentity = await storage.identities.create(storedIdentity);
+      if (sponsorBinding.mode === "oidc") {
+        const ledgerPayload: IdentityCreatedLedgerPayload = {
+          agentId: storedIdentity.id,
+          sponsorId,
+          issuer: sponsorBinding.issuer,
+          subject: sponsorBinding.subject,
+          iat: sponsorBinding.iat,
+          ...(sponsorBinding.jti ? { jti: sponsorBinding.jti } : {}),
+          sponsorBinding,
+          ts: timestamp,
+        };
+        const jws = await c.get("sponsorOidcService").signIdentityCreatedLedgerPayload(
+          c.env,
+          ledgerPayload,
+        );
+        createdIdentity = await storage.attestations.createIdentityWithLedgerEntry(
+          storedIdentity,
+          {
+            orgId: storedIdentity.orgId,
+            entryType: "identity.created",
+            agentId: storedIdentity.id,
+            sponsorId,
+            ...(sponsorBinding.jti ? { jti: sponsorBinding.jti } : {}),
+            payload: ledgerPayload,
+            jws,
+            createdAt: timestamp,
+          },
+        );
+      } else {
+        createdIdentity = await storage.identities.create(storedIdentity);
+      }
     } catch (error) {
       if (isTransientStorageOverload(error)) {
-        throw new StorageOverloadedError("identities.create", 1, { cause: error });
+        const operation = sponsorBinding.mode === "oidc"
+          ? "attestations.create_identity_with_ledger"
+          : "identities.create";
+        throw new StorageOverloadedError(operation, 1, { cause: error });
       }
       throw error;
     }

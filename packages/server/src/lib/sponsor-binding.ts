@@ -3,6 +3,7 @@ import { rsaPublicJwkFromPem } from "./jwk.js";
 import {
   encodeBytesAsBase64Url,
   keyIdFromPublicJwk,
+  signCanonicalRs256,
   signRs256,
 } from "./sign-rs256.js";
 import {
@@ -61,6 +62,17 @@ export type IssuedSponsorProof = {
   sponsorId: string;
   sponsorProof: string;
   expiresAt: string;
+};
+
+export type IdentityCreatedLedgerPayload = {
+  agentId: string;
+  sponsorId: string;
+  issuer: string;
+  subject: string;
+  iat: number;
+  jti?: string;
+  sponsorBinding: Extract<SponsorBinding, { mode: "oidc" }>;
+  ts: string;
 };
 
 type JsonWebKeySet = {
@@ -356,6 +368,21 @@ export class SponsorOidcService {
       iat: claims.oidc.iat,
       ...(typeof claims.oidc.jti === "string" ? { jti: claims.oidc.jti } : {}),
     };
+  }
+
+  async signIdentityCreatedLedgerPayload(
+    env: SponsorBindingEnv,
+    payload: IdentityCreatedLedgerPayload,
+  ): Promise<string> {
+    const privateKey = env.RELAYAUTH_SIGNING_KEY_PEM?.trim();
+    const publicKey = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
+    if (!privateKey || !publicKey) {
+      throw configurationError("RelayAuth signing keys are required for sponsor binding ledger entries");
+    }
+
+    const publicJwk = await rsaPublicJwkFromPem(publicKey, "");
+    const kid = await keyIdFromPublicJwk(publicJwk);
+    return signCanonicalRs256(payload, privateKey, kid);
   }
 
   async #resolveJwks(
