@@ -23,6 +23,7 @@ import { apiKeyAuth } from "./middleware/api-key-auth.js";
 import auditExport from "./routes/audit-export.js";
 import auditQuery from "./routes/audit-query.js";
 import auditWebhooks from "./routes/audit-webhooks.js";
+import attestations from "./routes/attestations.js";
 import apiKeys from "./routes/api-keys.js";
 import dashboardStats from "./routes/dashboard-stats.js";
 import discovery, { apiDiscovery } from "./routes/discovery.js";
@@ -198,6 +199,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.use("/v1/tokens/*", apiKeyAuth());
   app.use("/v1/api-keys", apiKeyAuth());
   app.use("/v1/api-keys/*", apiKeyAuth());
+  app.use("/v1/attestations", apiKeyAuth());
+  app.use("/v1/attestations/*", apiKeyAuth());
 
   app.use("*", async (c, next) => {
     if (isPublicPath(c.req.path)) {
@@ -252,6 +255,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.route("/v1/audit", auditWebhooks);
   app.route("/v1/audit", auditExport);
   app.route("/v1/audit", auditQuery);
+  app.route("/v1/attestations", attestations);
   app.route("/v1/identities", identityActivity);
   app.route("/v1/identities", identities);
   app.route("/v1/identities", roleAssignments);

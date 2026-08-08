@@ -2400,7 +2400,7 @@ class SqliteAttestationStorage implements AttestationStorage {
 
     const backend = await this.provider.getBackend();
     if (backend.kind === "memory") {
-      const grant = backend.state.attestations.grants.get(jti);
+      const grant = backend.state.attestations.grants.get(jti) ?? null;
       assertGrantCanRedeem(grant, keyHash, redeemedAt);
       const entries: AttestationLedgerEntry[] = [];
       for (const entry of input.ledgerEntries) {
