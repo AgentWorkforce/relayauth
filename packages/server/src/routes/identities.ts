@@ -4,12 +4,14 @@ import type {
   IdentityStatus,
   IdentityType,
   RelayAuthTokenClaims,
+  SponsorBinding,
 } from "@relayauth/types";
 import { matchScope } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext, authenticateBearerOrApiKey, authorizeClaims, decodeBase64UrlJson } from "../lib/auth.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
+import { SponsorBindingError } from "../lib/sponsor-binding.js";
 import {
   isStorageCapacityExhausted,
   isTransientStorageOverload,
@@ -449,6 +451,24 @@ identities.post("/", async (c) => {
 
   const storage = c.get("storage");
   try {
+    const federation = c.get("sponsorOidcService").resolveConfig(c.env, auth.claims.org);
+    let sponsorBinding: SponsorBinding = { mode: "legacy" };
+    if (federation.sponsorBinding === "oidc") {
+      const sponsorProof = typeof body.sponsorProof === "string" ? body.sponsorProof.trim() : "";
+      if (!sponsorProof) {
+        return c.json({
+          error: "sponsorProof is required for this organization",
+          code: "sponsor_proof_required",
+        }, 403);
+      }
+      sponsorBinding = await c.get("sponsorOidcService").verifySponsorProof(
+        c.env,
+        sponsorProof,
+        auth.claims.org,
+        sponsorId,
+      );
+    }
+
     const duplicate = await withStorageRetry(
       () => storage.identities.findDuplicate(auth.claims.org, name),
       { operation: "identities.find_duplicate" },
@@ -476,6 +496,7 @@ identities.post("/", async (c) => {
       updatedAt: timestamp,
       sponsorId,
       sponsorChain: [...auth.claims.sponsorChain, id],
+      sponsorBinding,
       workspaceId: normalizeWorkspaceId(body.workspaceId, auth.claims.wks),
       ...(budget ? { budget } : {}),
     };
@@ -499,10 +520,15 @@ identities.post("/", async (c) => {
         id: createdIdentity.id,
         org: createdIdentity.orgId,
         name: createdIdentity.name,
+        sponsorId: createdIdentity.sponsorId,
+        sponsorBinding: createdIdentity.sponsorBinding ?? { mode: "legacy" },
       },
     });
     return c.json(createdIdentity, 201);
   } catch (error) {
+    if (error instanceof SponsorBindingError) {
+      return c.json({ error: error.message, code: error.code }, error.status);
+    }
     if (isStorageCapacityExhausted(error)) {
       throw error;
     }
@@ -667,7 +693,7 @@ function sanitizeIdentityUpdate(body: UpdateIdentityRequest): UpdateIdentityRequ
     update.type = body.type;
   }
 
-  // status, sponsorId, sponsorChain, workspaceId are not allowed via PATCH —
+  // status, sponsorId, sponsorChain, sponsorBinding, workspaceId are not allowed via PATCH —
   // use dedicated endpoints (suspend, retire, reactivate) for status changes.
 
   if ("scopes" in body) {

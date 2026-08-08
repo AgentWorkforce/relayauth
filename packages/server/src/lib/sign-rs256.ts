@@ -1,5 +1,3 @@
-import type { RelayAuthTokenClaims } from "@relayauth/types";
-
 const textEncoder = new TextEncoder();
 
 const MIN_RSA_MODULUS_BITS = 2048;
@@ -44,8 +42,8 @@ export async function importRsaPrivateKey(pem: string): Promise<CryptoKey> {
   );
 }
 
-export async function signRs256(
-  claims: RelayAuthTokenClaims,
+export async function signRs256<T extends object>(
+  claims: T,
   key: CryptoKey | string,
   kid: string,
 ): Promise<string> {

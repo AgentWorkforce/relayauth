@@ -50,6 +50,8 @@ export type ObserverEvent =
         id: string;
         org: string;
         name?: string;
+        sponsorId: string;
+        sponsorBinding: import("@relayauth/types").SponsorBinding;
       };
     }
   | {
