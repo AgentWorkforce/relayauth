@@ -70,7 +70,7 @@ SELECT
   CAST(json_each.key AS INTEGER),
   json_each.value
 FROM identities
-JOIN json_each(identities.sponsor_chain_json)
+CROSS JOIN json_each(identities.sponsor_chain_json)
 WHERE json_each.type = 'text';
 
 CREATE TRIGGER IF NOT EXISTS identities_record_lineage_after_insert
