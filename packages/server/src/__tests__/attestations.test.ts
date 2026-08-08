@@ -155,6 +155,38 @@ test("finalize rejects a wrong key and an expired grant", async (t) => {
   });
 });
 
+test("late grants require an operator API key", async (t) => {
+  const { app, key } = await createWorkspaceGrantClient();
+  t.after(() => app.close());
+  const workspaceAttempt = await app.fetch(createTestRequest(
+    "POST",
+    "/v1/attestations/grants",
+    { agentId: "agent_attestation", repo: "AgentWorkforce/example", late: true },
+    { "x-api-key": key },
+  ));
+  await assertJsonResponse<{ code: string }>(workspaceAttempt, 403, (body) => {
+    assert.equal(body.code, "operator_api_key_required");
+  });
+
+  const operatorKey = "ra_operator_attestation_test_key";
+  await app.storage.apiKeys.create({
+    orgId: "org_attestation",
+    name: "attestation operator key",
+    prefix: "ra_",
+    keyHash: hashApiKey(operatorKey),
+    scopes: ["relayauth:attest:grant:*"],
+  });
+  const lateResponse = await app.fetch(createTestRequest(
+    "POST",
+    "/v1/attestations/grants",
+    { agentId: "agent_attestation", repo: "AgentWorkforce/example", late: true },
+    { "x-api-key": operatorKey },
+  ));
+  await assertJsonResponse<{ late: boolean }>(lateResponse, 201, (body) => {
+    assert.equal(body.late, true);
+  });
+});
+
 test("ledger chains are independent for each organization", async (t) => {
   const { app } = await createWorkspaceGrantClient();
   t.after(() => app.close());
