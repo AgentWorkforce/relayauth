@@ -144,7 +144,7 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
   );
   const proof = await assertJsonResponse<SponsorProof>(proofResponse, 201);
   assert.equal(proofResponse.headers.get("cache-control"), "no-store");
-  assert.equal(proof.sponsorId, "user_alice");
+  assert.equal(proof.sponsorId, "user_YWxpY2U");
   assert.equal(proof.intent, "identity.create");
   const [, encodedProofPayload] = proof.sponsorProof.split(".");
   assert.ok(encodedProofPayload);
@@ -168,8 +168,8 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
     app.bindings,
   );
   const identity = await assertJsonResponse<CreatedIdentity>(response, 201);
-  assert.equal(identity.sponsorId, "user_alice");
-  assert.deepEqual(identity.sponsorChain, ["user_alice", identity.id]);
+  assert.equal(identity.sponsorId, "user_YWxpY2U");
+  assert.deepEqual(identity.sponsorChain, ["user_YWxpY2U", identity.id]);
   assert.deepEqual(identity.sponsorBinding, {
     mode: "oidc",
     issuer,
@@ -205,7 +205,7 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
   assert.ok(ledger);
   assert.equal(ledger.entry_type, "identity.created");
   assert.equal(ledger.agent_id, identity.id);
-  assert.equal(ledger.sponsor_id, "user_alice");
+  assert.equal(ledger.sponsor_id, "user_YWxpY2U");
   assert.equal(ledger.jti, "idp-session-1");
   const [encodedHeader, encodedPayload, encodedSignature] = ledger.jws.split(".");
   assert.ok(encodedHeader && encodedPayload && encodedSignature);
@@ -213,7 +213,7 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
   assert.equal(signedPayloadJson, ledger.payload_json);
   assert.deepEqual(JSON.parse(ledger.payload_json), {
     agentId: identity.id,
-    sponsorId: "user_alice",
+    sponsorId: "user_YWxpY2U",
     intent: "identity.create",
     issuer,
     subject: "alice",
@@ -402,6 +402,45 @@ test("sponsor proof requires a valid intent", async (t) => {
     const body = await assertJsonResponse<{ code: string }>(response, 400);
     assert.equal(body.code, "invalid_sponsor_intent");
   }
+});
+
+test("OIDC subject mapping is collision-free for raw and encoded-looking values", async (t) => {
+  const { issuer } = await startOidcFixture(t);
+  const org = "org_oidc_subject_encoding";
+  const app = createTestApp({
+    RELAYAUTH_SPONSOR_FEDERATIONS: JSON.stringify({
+      [org]: { sponsorBinding: "oidc", issuer, clientId: "chief-fixture" },
+    }),
+  });
+  const apiKey = await createWorkspaceApiKey(app, org);
+  const now = Math.floor(Date.now() / 1000);
+  const sponsorIds: string[] = [];
+
+  for (const subject of ["?", "Pw"]) {
+    const response = await app.request(
+      createTestRequest(
+        "POST",
+        "/v1/sponsors/proof",
+        {
+          idToken: signIdToken({
+            iss: issuer,
+            sub: subject,
+            aud: "chief-fixture",
+            iat: now,
+            exp: now + 300,
+          }),
+          intent: "approval",
+        },
+        { "x-api-key": apiKey },
+      ),
+      undefined,
+      app.bindings,
+    );
+    const proof = await assertJsonResponse<SponsorProof>(response, 201);
+    sponsorIds.push(proof.sponsorId);
+  }
+
+  assert.deepEqual(sponsorIds, ["user_Pw", "user_UHc"]);
 });
 
 test("legacy org creation remains unchanged and surfaces legacy binding mode", async (t) => {

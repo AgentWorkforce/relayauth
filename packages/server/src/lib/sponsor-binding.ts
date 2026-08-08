@@ -575,9 +575,9 @@ function mapSponsorId(claim: string, prefix: string): string {
   if (!/^user_[A-Za-z0-9_-]*$/u.test(prefix)) {
     throw configurationError("sponsorIdPrefix must begin with user_ and contain only token-safe characters");
   }
-  const safeClaim = /^[A-Za-z0-9_-]+$/u.test(claim)
-    ? claim
-    : encodeBytesAsBase64Url(new TextEncoder().encode(claim));
+  // OIDC subject values are opaque. Always encode them so a token-safe raw
+  // value cannot collide with the encoding of a different, unsafe value.
+  const safeClaim = encodeBytesAsBase64Url(new TextEncoder().encode(claim));
   const sponsorId = `${prefix}${safeClaim}`;
   if (!SPONSOR_ID_PATTERN.test(sponsorId)) {
     throw invalidIdToken();

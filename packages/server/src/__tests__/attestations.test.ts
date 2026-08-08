@@ -124,6 +124,27 @@ test("grant snapshots identity sponsorship and finalizes two verifiable attestat
   });
 });
 
+test("ordinary grants refuse suspended and retired identities", async (t) => {
+  for (const status of ["suspended", "retired"]) {
+    const { app, key } = await createWorkspaceGrantClient();
+    t.after(() => app.close());
+    if (status === "suspended") {
+      await app.storage.identities.suspend("agent_attestation", "review fixture");
+    } else {
+      await app.storage.identities.retire("agent_attestation", "review fixture");
+    }
+    const response = await app.fetch(createTestRequest(
+      "POST",
+      "/v1/attestations/grants",
+      { agentId: "agent_attestation", repo: "AgentWorkforce/example" },
+      { "x-api-key": key },
+    ));
+    await assertJsonResponse<{ code: string }>(response, 404, (body) => {
+      assert.equal(body.code, "identity_not_found");
+    });
+  }
+});
+
 test("finalize rejects a wrong key and an expired grant", async (t) => {
   const { app, key } = await createWorkspaceGrantClient();
   t.after(() => app.close());
