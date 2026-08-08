@@ -478,7 +478,7 @@ const SELECT_ATTESTATION_LEDGER_ENTRY_BY_HASH_SQL = `
     seq, org_id, org_seq, entry_type, jti, commit_sha, repo, agent_id,
     sponsor_id, payload_json, jws, prev_hash, entry_hash, created_at
   FROM attestation_ledger
-  WHERE entry_hash = ?
+  WHERE org_id = ? AND entry_hash = ?
   LIMIT 1
 `;
 
@@ -2455,7 +2455,7 @@ class SqliteAttestationStorage implements AttestationStorage {
     const stored = hydrateAttestationLedgerEntry(
       db
         .prepare<AttestationLedgerRow>(SELECT_ATTESTATION_LEDGER_ENTRY_BY_HASH_SQL)
-        .get(entry.entryHash),
+        .get(entry.orgId, entry.entryHash),
     );
     if (!stored) {
       throw new Error("attestation ledger insert did not return a row");

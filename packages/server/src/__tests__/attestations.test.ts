@@ -175,7 +175,7 @@ test("ledger chains are independent for each organization", async (t) => {
   const independent = await app.storage.attestations.appendAttestationLedgerEntry({
     orgId: "org_chain_b",
     entryType: "checkpoint",
-    payload: { event: "first", org: "org_chain_b" },
+    payload: { event: "first" },
     jws: "test-jws-b1",
     createdAt: "2000-01-01T00:00:00.000Z",
   });

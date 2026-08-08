@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS attestation_ledger (
   entry_hash TEXT NOT NULL CHECK (length(entry_hash) = 64),
   created_at TEXT NOT NULL,
   UNIQUE (org_id, org_seq),
-  UNIQUE (entry_hash)
+  UNIQUE (org_id, entry_hash)
 );
 
 CREATE INDEX IF NOT EXISTS idx_attestation_ledger_org_seq
