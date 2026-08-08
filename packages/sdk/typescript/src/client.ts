@@ -5,11 +5,13 @@ import type {
   AuditEntry,
   AuditQuery,
   CreateIdentityInput,
+  CreateSponsorProofInput,
   IdentityStatus,
   PathTokenPair,
   PathTokenIssueRequest,
   RelayAuthTokenClaims,
   Role,
+  SponsorProof,
   TokenPair,
   WorkspacePathTokenIssueRequest,
   WorkspacePathTokenPair,
@@ -112,6 +114,13 @@ export class RelayAuthClient {
         orgId,
         ...input,
       },
+    });
+  }
+
+  async createSponsorProof(input: CreateSponsorProofInput): Promise<SponsorProof> {
+    return this._request<SponsorProof>("/v1/sponsors/proof", {
+      method: "POST",
+      body: input,
     });
   }
 

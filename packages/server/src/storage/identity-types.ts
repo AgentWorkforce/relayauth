@@ -1,4 +1,4 @@
-import type { AgentIdentity, IdentityStatus, IdentityType } from "@relayauth/types";
+import type { AgentIdentity, IdentityStatus, IdentityType, SponsorBinding } from "@relayauth/types";
 
 export type { AgentIdentity, IdentityStatus, IdentityType };
 
@@ -19,6 +19,7 @@ export interface StoredIdentity extends AgentIdentity {
   sponsorId: string;
   sponsorChain: string[];
   workspaceId: string;
+  sponsorBinding?: SponsorBinding;
   budget?: IdentityBudget;
   budgetUsage?: IdentityBudgetUsage;
 }

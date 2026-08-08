@@ -10,6 +10,7 @@ export type Action =
   | "send"
   | "invoke"
   | "trigger"
+  | "grant"
   | "*";
 
 export interface ParsedScope {
