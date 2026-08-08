@@ -60,6 +60,7 @@ const sharedIdentityCreatePreAuthRateLimiter = new FixedWindowSketchRateLimiter(
   IDENTITY_CREATE_RATE_LIMIT,
   IDENTITY_CREATE_RATE_WINDOW_MS,
 );
+const sharedSponsorOidcService = new SponsorOidcService();
 
 export type CreateAppOptions = {
   storage?: AuthStorage;
@@ -71,6 +72,7 @@ export type CreateAppOptions = {
   deferTask?: DeferredTaskScheduler;
   identityCreatePreAuthRateLimiter?: RequestRateLimiter;
   identityCreateRateLimiter?: RequestRateLimiter;
+  sponsorOidcService?: SponsorOidcService;
 };
 
 export type StartServerOptions = {
@@ -107,7 +109,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   const identityCreateRateLimiter =
     options.identityCreateRateLimiter ?? sharedIdentityCreateRateLimiter;
   const config = normalizeConfig(options);
-  const sponsorOidcService = new SponsorOidcService();
+  const sponsorOidcService = options.sponsorOidcService ?? sharedSponsorOidcService;
 
   app.onError((error, c) => {
     if (isStorageOverloadedError(error)) {
