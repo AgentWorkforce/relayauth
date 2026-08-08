@@ -10,8 +10,8 @@ export type SponsorBinding =
       mode: "oidc";
       issuer: string;
       subject: string;
-      issuedAt: number;
-      tokenId?: string;
+      iat: number;
+      jti?: string;
     };
 
 export interface AgentIdentity {
