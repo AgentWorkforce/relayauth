@@ -854,6 +854,21 @@ type MemoryTokenRecord = {
   lineage?: TokenLineageSnapshot;
 };
 
+function toMemoryTokenRecord(token: IssuedTokenRecord): MemoryTokenRecord {
+  return {
+    ...token,
+    status: "active",
+    ...(token.lineage
+      ? {
+          lineage: {
+            ...token.lineage,
+            sponsorChain: [...token.lineage.sponsorChain],
+          },
+        }
+      : {}),
+  };
+}
+
 type MemoryIdentityLineageSnapshot = Omit<
   IdentityLineageRecord,
   "tokens"
@@ -1524,6 +1539,7 @@ class SqliteIdentityStorage implements IdentityStorage {
             left.createdAt.localeCompare(right.createdAt) ||
             left.tokenId.localeCompare(right.tokenId),
         )
+        .slice(0, MAX_LINEAGE_TOKEN_RECORDS)
         .map((token): TokenLineageRecord => ({
           tokenId: token.tokenId,
           identityId: token.identityId,
@@ -1645,10 +1661,7 @@ class SqliteTokenStorage implements TokenStorage {
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
-      backend.state.tokens.set(token.id, {
-        ...token,
-        status: "active",
-      });
+      backend.state.tokens.set(token.id, toMemoryTokenRecord(token));
       return;
     }
 
@@ -1693,10 +1706,7 @@ class SqliteTokenStorage implements TokenStorage {
           "token_already_exists",
         );
       }
-      backend.state.tokens.set(input.token.id, {
-        ...input.token,
-        status: "active",
-      });
+      backend.state.tokens.set(input.token.id, toMemoryTokenRecord(input.token));
       backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
       backend.state.auditLogs.sort(compareAuditRecordDesc);
       return;
@@ -1748,14 +1758,14 @@ class SqliteTokenStorage implements TokenStorage {
         );
       }
 
-      backend.state.tokens.set(input.accessToken.id, {
-        ...input.accessToken,
-        status: "active",
-      });
-      backend.state.tokens.set(input.refreshToken.id, {
-        ...input.refreshToken,
-        status: "active",
-      });
+      backend.state.tokens.set(
+        input.accessToken.id,
+        toMemoryTokenRecord(input.accessToken),
+      );
+      backend.state.tokens.set(
+        input.refreshToken.id,
+        toMemoryTokenRecord(input.refreshToken),
+      );
       backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
       backend.state.auditLogs.sort(compareAuditRecordDesc);
       return;
@@ -1827,14 +1837,14 @@ class SqliteTokenStorage implements TokenStorage {
           "token_rotation_conflict",
         );
       }
-      backend.state.tokens.set(input.accessToken.id, {
-        ...input.accessToken,
-        status: "active",
-      });
-      backend.state.tokens.set(input.refreshToken.id, {
-        ...input.refreshToken,
-        status: "active",
-      });
+      backend.state.tokens.set(
+        input.accessToken.id,
+        toMemoryTokenRecord(input.accessToken),
+      );
+      backend.state.tokens.set(
+        input.refreshToken.id,
+        toMemoryTokenRecord(input.refreshToken),
+      );
       previousToken.status = "revoked";
       backend.state.revokedTokens.set(previous.id, {
         expiresAt: previous.expiresAt,
