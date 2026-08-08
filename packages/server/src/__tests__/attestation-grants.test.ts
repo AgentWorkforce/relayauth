@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { hashApiKey } from "../lib/api-keys.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
+import { createSqliteStorage } from "../storage/sqlite.js";
 import {
   assertJsonResponse,
   createTestApp,
@@ -56,8 +57,13 @@ async function installLedgerStub(app: ReturnType<typeof createTestApp>): Promise
   `);
 }
 
-async function createWorkspaceGrantClient(scopes = ["relayauth:attest:grant:*"]) {
-  const app = createTestApp();
+async function createWorkspaceGrantClient(
+  scopes = ["relayauth:attest:grant:*"],
+  forceMemory = false,
+) {
+  const app = createTestApp({}, forceMemory
+    ? { storage: createSqliteStorage(undefined, { forceMemory: true }) }
+    : {});
   await installLedgerStub(app);
   const key = "ra_ws_attestation_test_key";
   await app.storage.apiKeys.create({
@@ -267,4 +273,28 @@ test("late grants require an operator API key and are flagged", async (t) => {
   await assertJsonResponse<GrantResponse>(late, 201, (body) => {
     assert.equal(body.late, true);
   });
+});
+
+test("forced-memory storage preserves atomic finalize behavior", async (t) => {
+  const { app, key } = await createWorkspaceGrantClient(
+    ["relayauth:attest:grant:*"],
+    true,
+  );
+  t.after(() => app.close());
+  const issued = await grant(app, key);
+  const finalized = await app.fetch(createTestRequest(
+    "POST",
+    "/v1/attestations/finalize",
+    { jti: issued.jti, commits: [{ sha: "8".repeat(40) }] },
+    { authorization: `Bearer ${issued.finalizeKey}` },
+  ));
+  await assertJsonResponse<FinalizeResponse>(finalized, 201);
+
+  const replay = await app.fetch(createTestRequest(
+    "POST",
+    "/v1/attestations/finalize",
+    { jti: issued.jti, commits: [{ sha: "7".repeat(40) }] },
+    { authorization: `Bearer ${issued.finalizeKey}` },
+  ));
+  await assertJsonResponse<{ code: string }>(replay, 409);
 });

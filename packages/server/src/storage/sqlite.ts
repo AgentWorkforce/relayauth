@@ -849,6 +849,18 @@ type RevokedTokenRecord = {
   revokedAt?: string;
 };
 
+type MemoryAttestationLedgerEntry = {
+  seq: number;
+  orgId: string;
+  orgSeq: number;
+  entryType: string;
+  payloadJson: string;
+  jws: string;
+  prevHash: string;
+  entryHash: string;
+  createdAt: string;
+};
+
 type MemoryState = {
   identities: Map<string, StoredIdentity>;
   roles: Map<string, Role>;
@@ -862,6 +874,7 @@ type MemoryState = {
   orgBudgets: Map<string, IdentityBudget | undefined>;
   tokens: Map<string, MemoryTokenRecord>;
   revokedTokens: Map<string, RevokedTokenRecord>;
+  attestationLedger: MemoryAttestationLedgerEntry[];
 };
 
 type BackendContext =
@@ -2282,13 +2295,19 @@ class SqliteAttestationGrantStorage implements AttestationGrantStorage {
     if (backend.kind === "memory") {
       const grant = backend.state.attestationGrants.get(jti) ?? null;
       assertGrantCanRedeem(grant, keyHash, redeemedAt);
+      const stagedEntries: MemoryAttestationLedgerEntry[] = [];
       for (const entry of input.ledgerEntries) {
         assertLedgerEntryMatchesGrant(entry, grant);
+        stagedEntries.push(prepareMemoryAttestationLedgerEntry(
+          [...backend.state.attestationLedger, ...stagedEntries],
+          entry,
+        ));
       }
       backend.state.attestationGrants.set(
         jti,
         cloneAttestationGrant({ ...grant, redeemedAt }),
       );
+      backend.state.attestationLedger.push(...stagedEntries);
       return;
     }
 
@@ -2909,6 +2928,7 @@ function createMemoryBackend(): BackendContext {
       orgBudgets: new Map<string, IdentityBudget | undefined>(),
       tokens: new Map<string, MemoryTokenRecord>(),
       revokedTokens: new Map<string, RevokedTokenRecord>(),
+      attestationLedger: [],
     },
   };
 }
@@ -4506,6 +4526,40 @@ function appendAttestationLedgerEntryCompatibility(
     entryHash,
     createdAt,
   );
+}
+
+function prepareMemoryAttestationLedgerEntry(
+  existing: MemoryAttestationLedgerEntry[],
+  entry: AttestationLedgerAppendInput,
+): MemoryAttestationLedgerEntry {
+  const previous = [...existing]
+    .filter((candidate) => candidate.orgId === entry.orgId)
+    .sort((left, right) => right.orgSeq - left.orgSeq)[0];
+  const orgSeq = (previous?.orgSeq ?? 0) + 1;
+  const prevHash = previous?.entryHash ?? "0".repeat(64);
+  const payloadJson = canonicalizeJson(entry.payload);
+  assertRs256JwsMatchesPayload(entry.jws, payloadJson);
+  const createdAt = normalizeTimestamp(entry.createdAt);
+  const entryHash = crypto.createHash("sha256").update(canonicalizeJson({
+    createdAt,
+    entryType: entry.entryType,
+    jws: entry.jws,
+    orgId: entry.orgId,
+    orgSeq,
+    payload: entry.payload,
+    prevHash,
+  }), "utf8").digest("hex");
+  return {
+    seq: existing.reduce((max, candidate) => Math.max(max, candidate.seq), 0) + 1,
+    orgId: entry.orgId,
+    orgSeq,
+    entryType: entry.entryType,
+    payloadJson,
+    jws: entry.jws,
+    prevHash,
+    entryHash,
+    createdAt,
+  };
 }
 
 function assertRs256JwsMatchesPayload(jws: string, payloadJson: string): void {
