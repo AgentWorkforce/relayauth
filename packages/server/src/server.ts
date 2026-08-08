@@ -199,8 +199,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.use("/v1/tokens/*", apiKeyAuth());
   app.use("/v1/api-keys", apiKeyAuth());
   app.use("/v1/api-keys/*", apiKeyAuth());
-  app.use("/v1/attestations", apiKeyAuth());
-  app.use("/v1/attestations/*", apiKeyAuth());
+  // Finalization deliberately authenticates only with its one-time bearer
+  // capability. API-key middleware belongs on grant creation alone so a
+  // capability is never interpreted as an API key.
+  app.use("/v1/attestations/grants", apiKeyAuth());
 
   app.use("*", async (c, next) => {
     if (isPublicPath(c.req.path)) {
