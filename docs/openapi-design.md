@@ -751,7 +751,7 @@ ParsedScope:
   properties:
     plane: { type: string, enum: [relaycast, relayfile, cloud, relayauth] }
     resource: { type: string }
-    action: { type: string, enum: [read, write, create, delete, manage, run, send, invoke, "*"] }
+    action: { type: string, enum: [read, write, create, delete, manage, run, send, invoke, trigger, grant, "*"] }
     path: { type: string }
     raw: { type: string }
 ```

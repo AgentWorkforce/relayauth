@@ -289,11 +289,13 @@ test("POST /v1/identities protects org-budget reads with the same overload respo
 
 test("POST /v1/identities never retries a create that may already have committed", async () => {
   const storage = createTestStorage();
-  const create = storage.identities.create.bind(storage.identities);
+  const createIdentityWithLedgerEntry = storage.attestations.createIdentityWithLedgerEntry.bind(
+    storage.attestations,
+  );
   let attempts = 0;
-  storage.identities.create = async (identity) => {
+  storage.attestations.createIdentityWithLedgerEntry = async (identity, ledgerEntry) => {
     attempts += 1;
-    await create(identity);
+    await createIdentityWithLedgerEntry(identity, ledgerEntry);
     throw Object.assign(new Error("database write failed"), { code: "SQLITE_BUSY" });
   };
   const app = createTestApp({}, { storage });
@@ -316,7 +318,7 @@ test("POST /v1/identities never retries a create that may already have committed
   }>(response, 503);
   assert.equal(attempts, 1);
   assert.equal(body.code, "storage_overloaded");
-  assert.equal(body.operation, "identities.create");
+  assert.equal(body.operation, "attestations.create_identity_with_ledger");
   assert.equal(body.attempts, 1);
   const stored = await storage.identities.list("org_auth_ctx");
   assert.equal(stored.filter((identity) => identity.name === "committed-before-overload").length, 1);
@@ -400,13 +402,13 @@ test("the global error handler preserves rate-limit errors as 429 responses", as
   assert.equal(response.headers.get("RateLimit-Remaining"), "0");
 });
 
-test("POST /v1/identities returns 503 with capacity envelope when storage.identities.create throws StorageCapacityExhaustedError", async () => {
-  // Verifies that StorageCapacityExhaustedError thrown from storage.identities.create()
+test("POST /v1/identities returns 503 with capacity envelope when storage.attestations.createIdentityWithLedgerEntry throws StorageCapacityExhaustedError", async () => {
+  // Verifies that StorageCapacityExhaustedError thrown from the identity-create write
   // propagates correctly: the route catch block re-throws it (not swallowed as 500),
   // and app.onError handles it via storageCapacityResponse → 503 with Retry-After.
   // This is the server-side assertion that the 503 route mapping fix is correct.
   const storage = createTestStorage();
-  storage.identities.create = async () => {
+  storage.attestations.createIdentityWithLedgerEntry = async () => {
     throw new StorageCapacityExhaustedError("post-auth mint capacity exhausted (status 429)");
   };
   const app = createTestApp({}, { storage });

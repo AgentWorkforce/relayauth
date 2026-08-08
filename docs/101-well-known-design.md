@@ -367,7 +367,7 @@ GET /.well-known/agent-configuration
     "pattern": "{plane}:{resource}:{action}:{path?}",
     "separator": ":",
     "planes": ["relaycast", "relayfile", "cloud", "relayauth"],
-    "actions": ["read", "write", "create", "delete", "manage", "run", "send", "invoke", "trigger", "*"],
+    "actions": ["read", "write", "create", "delete", "manage", "run", "send", "invoke", "trigger", "grant", "*"],
     "wildcard": "*",
     "path_optional": true
   },

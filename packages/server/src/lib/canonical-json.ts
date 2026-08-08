@@ -25,6 +25,15 @@ function canonicalizeValue(value: unknown): unknown {
   }
 
   if (Array.isArray(value)) {
+    // Object.keys().length alone misses a hole compensated by a non-index
+    // own property (e.g. a "foo" key); findIndex visits every index,
+    // including holes, so it catches that case too.
+    if (
+      Object.keys(value).length !== value.length ||
+      value.findIndex((_, index) => !Object.hasOwn(value, index)) !== -1
+    ) {
+      throw new Error("canonical JSON does not support sparse arrays");
+    }
     return value.map(canonicalizeValue);
   }
 
@@ -35,7 +44,10 @@ function canonicalizeValue(value: unknown): unknown {
     }
 
     const object = value as Record<string, unknown>;
-    const normalized: Record<string, unknown> = {};
+    // Object.create(null) (rather than {}) so an own `__proto__` key is
+    // stored as a real property instead of silently reassigning the
+    // prototype, which would otherwise drop that key from the payload.
+    const normalized: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const key of Object.keys(object).sort()) {
       const nested = object[key];
       if (nested === undefined) {

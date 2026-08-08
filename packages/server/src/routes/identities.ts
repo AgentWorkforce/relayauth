@@ -11,6 +11,8 @@ import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext, authenticateBearerOrApiKey, authorizeClaims, decodeBase64UrlJson } from "../lib/auth.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
+import { resolveLedgerSigningMaterial, signLedgerPayload } from "../lib/ledger-signing.js";
+import type { AppendAttestationLedgerEntryInput } from "../storage/index.js";
 import {
   IDENTITY_CREATE_SPONSOR_INTENT,
   SponsorBindingError,
@@ -540,9 +542,12 @@ identities.post("/", async (c) => {
 
     let createdIdentity: StoredIdentity;
     try {
-      // Identity creation is not guaranteed to be idempotent across storage
-      // adapters. Never retry a write that may have committed before its
-      // adapter surfaced an overload error.
+      // Every identity gets an atomic, signed identity.created ledger entry
+      // (fail-closed on ledger persistence) regardless of sponsor-binding
+      // mode — OIDC-bound orgs get the richer sponsor-proof payload signed
+      // by the sponsor OIDC service; legacy orgs get the standard ledger
+      // signing material.
+      let ledgerEntry: AppendAttestationLedgerEntryInput;
       if (sponsorBinding.mode === "oidc") {
         const ledgerPayload: IdentityCreatedLedgerPayload = {
           agentId: storedIdentity.id,
@@ -559,28 +564,47 @@ identities.post("/", async (c) => {
           c.env,
           ledgerPayload,
         );
-        createdIdentity = await storage.attestations.createIdentityWithLedgerEntry(
-          storedIdentity,
-          {
-            orgId: storedIdentity.orgId,
-            entryType: "identity.created",
-            agentId: storedIdentity.id,
-            sponsorId,
-            ...(sponsorBinding.jti ? { jti: sponsorBinding.jti } : {}),
-            payload: ledgerPayload,
-            jws,
-            createdAt: timestamp,
-          },
-        );
+        ledgerEntry = {
+          orgId: storedIdentity.orgId,
+          entryType: "identity.created",
+          agentId: storedIdentity.id,
+          sponsorId,
+          ...(sponsorBinding.jti ? { jti: sponsorBinding.jti } : {}),
+          payload: ledgerPayload,
+          jws,
+          createdAt: timestamp,
+        };
       } else {
-        createdIdentity = await storage.identities.create(storedIdentity);
+        const signingMaterial = await resolveLedgerSigningMaterial(c.env);
+        const ledgerPayload: Record<string, unknown> = {
+          agentId: storedIdentity.id,
+          sponsorId: storedIdentity.sponsorId,
+          sponsorChain: storedIdentity.sponsorChain,
+          name: storedIdentity.name,
+          type: storedIdentity.type,
+          ts: timestamp,
+        };
+        const jws = await signLedgerPayload(signingMaterial, ledgerPayload);
+        ledgerEntry = {
+          orgId: storedIdentity.orgId,
+          entryType: "identity.created",
+          agentId: storedIdentity.id,
+          sponsorId: storedIdentity.sponsorId,
+          payload: ledgerPayload,
+          jws,
+          createdAt: timestamp,
+        };
       }
+      // Identity creation is not guaranteed to be idempotent across storage
+      // adapters. Never retry a write that may have committed before its
+      // adapter surfaced an overload error.
+      createdIdentity = await storage.attestations.createIdentityWithLedgerEntry(
+        storedIdentity,
+        ledgerEntry,
+      );
     } catch (error) {
       if (isTransientStorageOverload(error)) {
-        const operation = sponsorBinding.mode === "oidc"
-          ? "attestations.create_identity_with_ledger"
-          : "identities.create";
-        throw new StorageOverloadedError(operation, 1, { cause: error });
+        throw new StorageOverloadedError("attestations.create_identity_with_ledger", 1, { cause: error });
       }
       throw error;
     }

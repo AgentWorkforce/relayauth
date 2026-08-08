@@ -27,7 +27,7 @@ semantically equivalent to `*`.
 | --- | --- | --- | --- |
 | `plane` | Yes | Product or authority plane | `relaycast`, `relayfile`, `cloud`, `relayauth` |
 | `resource` | Yes | Resource type inside the plane | `channel`, `fs`, `workflow`, `token`, `identity` |
-| `action` | Yes | Operation permitted on the resource | `read`, `write`, `create`, `delete`, `manage`, `run`, `send`, `invoke` |
+| `action` | Yes | Operation permitted on the resource | `read`, `write`, `create`, `delete`, `manage`, `run`, `send`, `invoke`, `trigger`, `grant` |
 | `path` | No | Optional constraint, instance target, or path-like selector | `*`, `/src/api/*`, `#billing`, `runner-prod` |
 
 ### Examples
@@ -492,7 +492,7 @@ Reject a scope if:
 1. `plane` is not one of `relaycast`, `relayfile`, `cloud`, `relayauth`, or `*`.
 2. `resource` is not `*` and does not match `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`.
 3. `action` is not one of `read`, `write`, `create`, `delete`, `manage`,
-   `run`, `send`, `invoke`, or `*`.
+   `run`, `send`, `invoke`, `trigger`, `grant`, or `*`.
 4. `path` is present but empty.
 
 ### Filesystem Path Validation

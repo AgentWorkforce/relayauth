@@ -110,6 +110,27 @@ const SCOPE_DEFINITIONS: ScopeDefinition[] = [
     description: "Administrative capabilities for identities within the relayauth plane.",
     examples: ["relayauth:identity:manage:*", "relayauth:identity:read:agent_8x2k"],
   },
+  {
+    name: "relayauth-attest",
+    plane: "relayauth",
+    resource: "attest",
+    pattern: "relayauth:attest:grant:*",
+    actions: ["grant"],
+    path_schema: {
+      type: "identifier",
+      required: false,
+      wildcard_allowed: true,
+      // POST /v1/attestations/grants currently authorizes only the wildcard
+      // path (matchPath requires an exact or "*" match against this fixed
+      // required scope) — a repo-scoped grant scope can never satisfy it, so
+      // don't advertise repo-scoped examples until per-repo authorization
+      // actually exists.
+      description: "Must be '*'; per-repository scoping is not yet enforced.",
+      examples: ["*"],
+    },
+    description: "Issue two-phase attestation grants that are redeemed against the append-only attestation ledger.",
+    examples: ["relayauth:attest:grant:*"],
+  },
 ];
 
 discovery.get("/agent-configuration", (c) => {

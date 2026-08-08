@@ -49,23 +49,7 @@ export async function signRs256<T extends object>(
   key: CryptoKey | string,
   kid: string,
 ): Promise<string> {
-  const privateKey = typeof key === "string" ? await importRsaPrivateKey(key) : key;
-  const encodedHeader = encodeJsonAsBase64Url({
-    alg: "RS256",
-    typ: "JWT",
-    kid,
-  });
-  const encodedPayload = encodeJsonAsBase64Url(claims);
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = await crypto.subtle.sign(
-    {
-      name: "RSASSA-PKCS1-v1_5",
-    },
-    privateKey,
-    textEncoder.encode(signingInput),
-  );
-
-  return `${signingInput}.${encodeBytesAsBase64Url(signature)}`;
+  return signEncodedPayload(key, kid, encodeJsonAsBase64Url(claims));
 }
 
 /** Sign a non-token payload using the ledger's canonical JSON representation. */
@@ -74,15 +58,25 @@ export async function signCanonicalRs256(
   key: CryptoKey | string,
   kid: string,
 ): Promise<string> {
+  return signEncodedPayload(
+    key,
+    kid,
+    encodeBytesAsBase64Url(textEncoder.encode(canonicalizeJson(payload))),
+  );
+}
+
+/** Shared RS256 JWS assembly: header/key-import/signature flow used by every signing variant. */
+async function signEncodedPayload(
+  key: CryptoKey | string,
+  kid: string,
+  encodedPayload: string,
+): Promise<string> {
   const privateKey = typeof key === "string" ? await importRsaPrivateKey(key) : key;
   const encodedHeader = encodeJsonAsBase64Url({
     alg: "RS256",
     typ: "JWT",
     kid,
   });
-  const encodedPayload = encodeBytesAsBase64Url(
-    textEncoder.encode(canonicalizeJson(payload)),
-  );
   const signingInput = `${encodedHeader}.${encodedPayload}`;
   const signature = await crypto.subtle.sign(
     { name: "RSASSA-PKCS1-v1_5" },

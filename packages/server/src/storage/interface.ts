@@ -538,7 +538,12 @@ export type CreateAttestationGrantWithLedgerInput = {
 export type RedeemAttestationGrantInput = {
   jti: string;
   finalizeKeyHash: string;
-  redeemedAt: string;
+  /**
+   * redeemedAt is intentionally NOT a caller-supplied field: the storage
+   * implementation stamps it with the wall-clock time inside the atomic
+   * redemption transaction, so expiry is enforced against the moment of
+   * commit rather than a possibly-stale request-start timestamp.
+   */
   ledgerEntries: AppendAttestationLedgerEntryInput[];
 };
 

@@ -4,8 +4,7 @@ import { matchScope } from "@relayauth/sdk";
 
 import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
-import { rsaPublicJwkFromPem } from "../lib/jwk.js";
-import { importRsaPrivateKey, keyIdFromPublicJwk, signCanonicalRs256 } from "../lib/sign-rs256.js";
+import { resolveLedgerSigningMaterial, signLedgerPayload } from "../lib/ledger-signing.js";
 import type {
   AppendAttestationLedgerEntryInput,
   AttestationGrant,
@@ -29,8 +28,6 @@ type FinalizeRequest = {
 type FinalizeCommit = {
   sha: string;
 };
-
-type LedgerSigner = (payload: Record<string, unknown>) => Promise<string>;
 
 const MAX_GRANT_TTL_SECONDS = 24 * 60 * 60;
 const DEFAULT_GRANT_TTL_SECONDS = 60 * 60;
@@ -124,8 +121,8 @@ attestations.post("/grants", async (c) => {
     ts: grant.createdAt,
     ...(grant.taskRef ? { taskRef: grant.taskRef } : {}),
   };
-  const signLedgerPayload = await createLedgerSigner(c);
-  const jws = await signLedgerPayload(payload);
+  const signingMaterial = await resolveLedgerSigningMaterial(c.env);
+  const jws = await signLedgerPayload(signingMaterial, payload);
   const ledgerEntry: AppendAttestationLedgerEntryInput = {
     orgId: grant.orgId,
     entryType: late ? "attestation.late" : "attestation.granted",
@@ -187,7 +184,7 @@ attestations.post("/finalize", async (c) => {
   }
 
   const ts = new Date().toISOString();
-  const signLedgerPayload = await createLedgerSigner(c);
+  const signingMaterial = await resolveLedgerSigningMaterial(c.env);
   const ledgerEntries: AppendAttestationLedgerEntryInput[] = [];
   const responseAttestations: Array<{ sha: string; jws: string }> = [];
   for (const commit of commits) {
@@ -200,7 +197,7 @@ attestations.post("/finalize", async (c) => {
       sponsorId: grant.sponsorId,
       ts,
     };
-    const jws = await signLedgerPayload(payload);
+    const jws = await signLedgerPayload(signingMaterial, payload);
     ledgerEntries.push({
       orgId: grant.orgId,
       entryType: grant.late ? "attestation.late" : "attestation.issued",
@@ -217,10 +214,13 @@ attestations.post("/finalize", async (c) => {
   }
 
   try {
+    // redeemedAt is deliberately not passed here: it must reflect the actual
+    // wall-clock time inside the atomic redemption transaction, not this
+    // request's pre-signing timestamp, which can be stale by the time up to
+    // MAX_FINALIZE_COMMITS signatures have been computed.
     await storage.attestations.redeemGrantWithLedgerEntries({
       jti: grant.jti,
       finalizeKeyHash: hashFinalizeKey(finalizeKey),
-      redeemedAt: ts,
       ledgerEntries,
     });
   } catch (error) {
@@ -231,26 +231,6 @@ attestations.post("/finalize", async (c) => {
 });
 
 export default attestations;
-
-/**
- * Import the signing key and derive its `kid` once per request.
- *
- * Finalize signs up to MAX_FINALIZE_COMMITS payloads. Resolving the key inside
- * that loop would repeat the PKCS#8 import and the JWK thumbprint digest for
- * every commit, on the request thread, for no change in output.
- */
-async function createLedgerSigner(c: Context<AppEnv>): Promise<LedgerSigner> {
-  const privateKeyPem = c.env.RELAYAUTH_SIGNING_KEY_PEM?.trim();
-  if (!privateKeyPem) {
-    throw new Error("RELAYAUTH_SIGNING_KEY_PEM must be set");
-  }
-  const publicKey = c.env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
-  const kid = publicKey
-    ? await keyIdFromPublicJwk(await rsaPublicJwkFromPem(publicKey, ""))
-    : "rs256-key";
-  const privateKey = await importRsaPrivateKey(privateKeyPem);
-  return (payload) => signCanonicalRs256(payload, privateKey, kid);
-}
 
 async function resolveWorkspaceToken(
   apiKeys: { get(id: string): Promise<StoredApiKey | null> },
@@ -276,10 +256,13 @@ function normalizeFinalizeCommits(value: unknown): FinalizeCommit[] | null {
   const seen = new Set<string>();
   const commits: FinalizeCommit[] = [];
   for (const item of value) {
-    const sha = typeof item === "object" && item !== null
+    const rawSha = typeof item === "object" && item !== null
       ? normalizeRequiredString((item as { sha?: unknown }).sha)
       : undefined;
-    if (!sha || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/iu.test(sha) || seen.has(sha)) {
+    // Lowercase before validation/dedup so the same Git object supplied in
+    // mixed case can't slip past `seen` and produce duplicate attestations.
+    const sha = rawSha?.toLowerCase();
+    if (!sha || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(sha) || seen.has(sha)) {
       return null;
     }
     seen.add(sha);
