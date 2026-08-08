@@ -436,6 +436,43 @@ export interface ApiKeyStorage {
   touchLastUsed(id: string, usedAt: string): Promise<void>;
 }
 
+/** Fixed predecessor for the first entry in every organization's chain. */
+export const ATTESTATION_LEDGER_GENESIS_HASH =
+  "0000000000000000000000000000000000000000000000000000000000000000";
+
+export type AttestationLedgerEntryType =
+  | "attestation.created"
+  | "identity.created"
+  | "key.rotated"
+  | "checkpoint";
+
+export type AttestationLedgerEntry = {
+  seq: number;
+  orgId: string;
+  orgSeq: number;
+  entryType: AttestationLedgerEntryType;
+  payloadJson: string;
+  jws: string;
+  prevHash: string;
+  entryHash: string;
+  createdAt: string;
+};
+
+export type AppendAttestationLedgerEntryInput = {
+  orgId: string;
+  entryType: AttestationLedgerEntryType;
+  payload: Record<string, unknown>;
+  /** Compact JWS whose header uses alg=RS256 and whose payload matches payload. */
+  jws: string;
+  createdAt?: string;
+};
+
+export interface AttestationStorage {
+  appendAttestationLedgerEntry(
+    input: AppendAttestationLedgerEntryInput,
+  ): Promise<AttestationLedgerEntry>;
+}
+
 export interface AuthStorage {
   identities: IdentityStorage;
   tokens: TokenStorage;
@@ -446,6 +483,7 @@ export interface AuthStorage {
   auditWebhooks: AuditWebhookStorage;
   contexts: ContextStorage;
   apiKeys: ApiKeyStorage;
+  attestations: AttestationStorage;
 }
 
 export class StorageError extends Error {

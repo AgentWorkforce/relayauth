@@ -27,6 +27,9 @@ import type {
 } from "./identity-types.js";
 import type {
   ApiKeyStorage,
+  AppendAttestationLedgerEntryInput,
+  AttestationLedgerEntry,
+  AttestationStorage,
   AuditEntryRecord,
   AuditStorage,
   AuditWebhookStorage,
@@ -60,6 +63,11 @@ import type {
   WorkspaceContextRecord,
 } from "./interface.js";
 import {
+  appendAttestationLedgerEntryInTransaction,
+  prepareAttestationLedgerEntry,
+} from "./attestation-ledger.js";
+import {
+  ATTESTATION_LEDGER_GENESIS_HASH,
   normalizeAuditArchiveCursorBoundaries,
   normalizeAuditQueryCursor,
   normalizeAuditQueryTimestamp,
@@ -797,6 +805,7 @@ type MemoryState = {
   orgBudgets: Map<string, IdentityBudget | undefined>;
   tokens: Map<string, MemoryTokenRecord>;
   revokedTokens: Map<string, RevokedTokenRecord>;
+  attestationLedger: AttestationLedgerEntry[];
 };
 
 type BackendContext =
@@ -808,6 +817,14 @@ const dynamicImport = Function(
   "return import(specifier)",
 ) as DynamicImportFunction;
 const MAX_REVOCATION_EXPIRY = 253402300799;
+
+/** Ledger append and verification helpers for durable Node/SQLite consumers. */
+export {
+  appendAttestationLedgerEntryInTransaction,
+  recomputeAttestationLedgerEntryHash,
+  verifyAttestationLedgerChain,
+} from "./attestation-ledger.js";
+export type { AttestationLedgerSqliteDatabase } from "./attestation-ledger.js";
 
 export function createSqliteStorage(
   dbPath?: string,
@@ -825,6 +842,7 @@ export function createSqliteStorage(
     roles: new SqliteRoleStorage(provider),
     policies: new SqlitePolicyStorage(provider),
     apiKeys: new SqliteApiKeyStorage(provider),
+    attestations: new SqliteAttestationStorage(provider),
     audit: new SqliteAuditStorage(provider),
     auditWebhooks: new SqliteAuditWebhookStorage(provider),
     contexts: new SqliteContextStorage(provider),
@@ -930,6 +948,48 @@ export function createSqliteStorage(
     close: () => provider.close(),
   });
 }
+
+class SqliteAttestationStorage implements AttestationStorage {
+  constructor(private readonly provider: BackendProvider) {}
+
+  async appendAttestationLedgerEntry(
+    input: AppendAttestationLedgerEntryInput,
+  ): Promise<AttestationLedgerEntry> {
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const normalizedOrgId = input.orgId.trim();
+      const previous = [...backend.state.attestationLedger]
+        .filter((entry) => entry.orgId === normalizedOrgId)
+        .sort((left, right) => right.orgSeq - left.orgSeq)[0];
+      const prepared = prepareAttestationLedgerEntry(
+        input,
+        (previous?.orgSeq ?? 0) + 1,
+        previous?.entryHash ?? ATTESTATION_LEDGER_GENESIS_HASH,
+      );
+      const entry: AttestationLedgerEntry = {
+        seq: backend.state.attestationLedger.length + 1,
+        ...prepared,
+      };
+      backend.state.attestationLedger.push(entry);
+      return { ...entry };
+    }
+
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      const entry = appendAttestationLedgerEntryInTransaction(backend.db, input);
+      backend.db.exec("COMMIT");
+      return entry;
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the append failure that caused the rollback.
+      }
+      throw error;
+    }
+  }
+}
+
 function normalizeRevocationKey(key: string): string {
   return key.startsWith("revoked:") ? key.slice("revoked:".length) : key;
 }
@@ -2743,6 +2803,7 @@ function createMemoryBackend(): BackendContext {
       orgBudgets: new Map<string, IdentityBudget | undefined>(),
       tokens: new Map<string, MemoryTokenRecord>(),
       revokedTokens: new Map<string, RevokedTokenRecord>(),
+      attestationLedger: [],
     },
   };
 }
