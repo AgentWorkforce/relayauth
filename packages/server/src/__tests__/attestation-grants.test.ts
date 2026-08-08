@@ -45,11 +45,6 @@ async function installLedgerStub(app: ReturnType<typeof createTestApp>): Promise
       org_id TEXT NOT NULL,
       org_seq INTEGER NOT NULL,
       entry_type TEXT NOT NULL,
-      jti TEXT,
-      commit_sha TEXT,
-      repo TEXT,
-      agent_id TEXT,
-      sponsor_id TEXT,
       payload_json TEXT NOT NULL,
       jws TEXT NOT NULL,
       prev_hash TEXT NOT NULL CHECK (length(prev_hash) = 64),
@@ -190,6 +185,22 @@ test("finalize rejects the wrong key and an expired grant", async (t) => {
   await assertJsonResponse<{ code: string }>(expired, 410, (body) => {
     assert.equal(body.code, "attestation_grant_expired");
   });
+});
+
+test("an opaque sessionRef is signed when the dispatcher supplies one", async (t) => {
+  const { app, key } = await createWorkspaceGrantClient();
+  t.after(() => app.close());
+  const issued = await grant(app, key, { sessionRef: "sessionref_opaque_01" });
+  const response = await app.fetch(createTestRequest(
+    "POST",
+    "/v1/attestations/finalize",
+    { jti: issued.jti, commits: [{ sha: "9".repeat(40) }] },
+    { authorization: `Bearer ${issued.finalizeKey}` },
+  ));
+  const finalized = await assertJsonResponse<FinalizeResponse>(response, 201);
+  const payload = await verifyWithPublishedJwks(app, finalized.attestations[0]!.jws);
+  assert.equal(payload.sessionRef, "sessionref_opaque_01");
+  assert.equal("sessionId" in payload, false);
 });
 
 test("ledger append failure returns 5xx and leaves the grant redeemable", async (t) => {

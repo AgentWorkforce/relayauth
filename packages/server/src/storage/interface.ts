@@ -444,6 +444,7 @@ export type AttestationGrant = {
   sponsorChain: string[];
   repo: string;
   taskRef?: string;
+  sessionRef?: string;
   notAfter: string;
   finalizeKeyHash: string;
   redeemedAt?: string;
@@ -458,15 +459,9 @@ export type AttestationGrant = {
 export type AttestationLedgerAppendInput = {
   orgId: string;
   entryType: "attestation.created" | string;
-  jti: string;
-  commitSha: string;
-  repo: string;
-  agentId: string;
-  sponsorId: string;
   payload: Record<string, unknown>;
   jws: string;
-  createdAt: string;
-  late: boolean;
+  createdAt?: string;
 };
 
 export type RedeemAttestationGrantInput = {

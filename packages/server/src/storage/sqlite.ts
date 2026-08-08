@@ -431,15 +431,15 @@ const UPDATE_API_KEY_LAST_USED_SQL = `
 const INSERT_ATTESTATION_GRANT_SQL = `
   INSERT INTO attestation_grants (
     jti, org_id, agent_id, sponsor_id, sponsor_chain_json, repo, task_ref,
-    not_after, finalize_key_hash, redeemed_at, late, created_at
+    session_ref, not_after, finalize_key_hash, redeemed_at, late, created_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const SELECT_ATTESTATION_GRANT_SQL = `
   SELECT
     jti, org_id, agent_id, sponsor_id, sponsor_chain_json, repo, task_ref,
-    not_after, finalize_key_hash, redeemed_at, late, created_at
+    session_ref, not_after, finalize_key_hash, redeemed_at, late, created_at
   FROM attestation_grants
   WHERE jti = ?
   LIMIT 1
@@ -464,10 +464,9 @@ const SELECT_LAST_ATTESTATION_LEDGER_ENTRY_SQL = `
 
 const INSERT_ATTESTATION_LEDGER_ENTRY_SQL = `
   INSERT INTO attestation_ledger (
-    org_id, org_seq, entry_type, jti, commit_sha, repo, agent_id, sponsor_id,
-    payload_json, jws, prev_hash, entry_hash, created_at
+    org_id, org_seq, entry_type, payload_json, jws, prev_hash, entry_hash, created_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const LIST_ACTIVE_TOKENS_SQL = `
@@ -764,6 +763,7 @@ type AttestationGrantRow = {
   sponsor_chain_json?: string;
   repo?: string;
   task_ref?: string | null;
+  session_ref?: string | null;
   not_after?: string;
   finalize_key_hash?: string;
   redeemed_at?: string | null;
@@ -4360,6 +4360,7 @@ function normalizeAttestationGrant(input: AttestationGrant): AttestationGrant {
     sponsorChain,
     repo: requireString(input.repo, "repo is required"),
     ...(normalizeOptionalString(input.taskRef) ? { taskRef: input.taskRef!.trim() } : {}),
+    ...(normalizeOptionalString(input.sessionRef) ? { sessionRef: input.sessionRef!.trim() } : {}),
     notAfter: requireString(input.notAfter, "notAfter is required"),
     finalizeKeyHash: requireString(input.finalizeKeyHash, "finalizeKeyHash is required"),
     ...(normalizeOptionalString(input.redeemedAt) ? { redeemedAt: input.redeemedAt!.trim() } : {}),
@@ -4379,6 +4380,7 @@ function hydrateAttestationGrant(row: AttestationGrantRow | undefined): Attestat
       sponsorChain: normalizeStringArray(parseJson<unknown>(row.sponsor_chain_json, [])),
       repo: row.repo ?? "",
       ...(normalizeOptionalString(row.task_ref) ? { taskRef: row.task_ref! } : {}),
+      ...(normalizeOptionalString(row.session_ref) ? { sessionRef: row.session_ref! } : {}),
       notAfter: row.not_after ?? "",
       finalizeKeyHash: row.finalize_key_hash ?? "",
       ...(normalizeOptionalString(row.redeemed_at) ? { redeemedAt: row.redeemed_at! } : {}),
@@ -4403,6 +4405,7 @@ function toAttestationGrantParams(grant: AttestationGrant): unknown[] {
     JSON.stringify(grant.sponsorChain),
     grant.repo,
     grant.taskRef ?? null,
+    grant.sessionRef ?? null,
     grant.notAfter,
     grant.finalizeKeyHash,
     grant.redeemedAt ?? null,
@@ -4439,13 +4442,15 @@ function assertLedgerEntryMatchesGrant(
   entry: AttestationLedgerAppendInput,
   grant: AttestationGrant,
 ): void {
+  const payload = entry.payload;
   if (
     entry.orgId !== grant.orgId ||
-    entry.jti !== grant.jti ||
-    entry.repo !== grant.repo ||
-    entry.agentId !== grant.agentId ||
-    entry.sponsorId !== grant.sponsorId ||
-    entry.late !== grant.late
+    payload.jti !== grant.jti ||
+    payload.repo !== grant.repo ||
+    payload.agentId !== grant.agentId ||
+    payload.sponsorId !== grant.sponsorId ||
+    JSON.stringify(payload.sponsorChain) !== JSON.stringify(grant.sponsorChain) ||
+    (grant.sessionRef ? payload.sessionRef !== grant.sessionRef : payload.sessionRef !== undefined)
   ) {
     throw new Error("attestation ledger entry does not match its grant");
   }
@@ -4470,16 +4475,11 @@ function appendAttestationLedgerEntryInTransaction(
     entry.orgId,
     orgSeq,
     entry.entryType,
-    entry.jti,
-    entry.commitSha,
-    entry.repo,
-    entry.agentId,
-    entry.sponsorId,
     payloadJson,
     entry.jws,
     prevHash,
     entryHash,
-    entry.createdAt,
+    normalizeTimestamp(entry.createdAt),
   );
 }
 

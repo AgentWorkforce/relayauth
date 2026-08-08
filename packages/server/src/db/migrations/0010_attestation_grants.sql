@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS attestation_grants (
   sponsor_chain_json TEXT NOT NULL,
   repo TEXT NOT NULL,
   task_ref TEXT,
+  session_ref TEXT,
   not_after TEXT NOT NULL,
   finalize_key_hash TEXT NOT NULL CHECK (length(finalize_key_hash) = 64),
   redeemed_at TEXT,

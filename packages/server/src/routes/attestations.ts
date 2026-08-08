@@ -17,6 +17,7 @@ type GrantRequest = {
   agentId?: unknown;
   repo?: unknown;
   taskRef?: unknown;
+  sessionRef?: unknown;
   expiresIn?: unknown;
   late?: unknown;
 };
@@ -67,6 +68,7 @@ attestations.post("/grants", async (c) => {
   const agentId = normalizeRequiredString(body.agentId);
   const repo = normalizeRequiredString(body.repo);
   const taskRef = normalizeOptionalString(body.taskRef);
+  const sessionRef = normalizeOptionalString(body.sessionRef);
   const expiresIn = normalizeGrantTtl(body.expiresIn);
   if (!agentId || !repo) {
     return c.json({ error: "agentId and repo are required", code: "invalid_request" }, 400);
@@ -100,6 +102,7 @@ attestations.post("/grants", async (c) => {
     sponsorChain: [...identity.sponsorChain],
     repo,
     ...(taskRef ? { taskRef } : {}),
+    ...(sessionRef ? { sessionRef } : {}),
     notAfter: new Date(Date.now() + expiresIn * 1000).toISOString(),
     finalizeKeyHash: hashFinalizeKey(finalizeKey),
     late,
@@ -165,20 +168,15 @@ attestations.post("/finalize", async (c) => {
       repo: grant.repo,
       ts,
       jti: grant.jti,
+      ...(grant.sessionRef ? { sessionRef: grant.sessionRef } : {}),
     };
     const jws = await signAttestation(c, payload);
     ledgerEntries.push({
       orgId: grant.orgId,
       entryType: "attestation.created",
-      jti: grant.jti,
-      commitSha: commit.sha,
-      repo: grant.repo,
-      agentId: grant.agentId,
-      sponsorId: grant.sponsorId,
       payload,
       jws,
       createdAt: ts,
-      late: grant.late,
     });
     responseAttestations.push({ sha: commit.sha, jws });
   }
