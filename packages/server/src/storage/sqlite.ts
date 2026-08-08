@@ -4467,7 +4467,7 @@ async function resolveAttestationLedgerTransactionAppender(): Promise<
 > {
   const ledgerModule = await importOptional<{
     appendAttestationLedgerEntryInTransaction?: AttestationLedgerTransactionAppender;
-  }>("./attestation-ledger.js");
+  }>(new URL("./attestation-ledger.js", import.meta.url).href);
   return ledgerModule?.appendAttestationLedgerEntryInTransaction
     ?? appendAttestationLedgerEntryCompatibility;
 }
