@@ -53,8 +53,8 @@ export type VerifiedOidcSponsor = {
   sponsorId: string;
   issuer: string;
   subject: string;
-  issuedAt: number;
-  tokenId?: string;
+  iat: number;
+  jti?: string;
 };
 
 export type IssuedSponsorProof = {
@@ -97,8 +97,8 @@ type SponsorGrantClaims = {
   oidc: {
     issuer: string;
     subject: string;
-    issuedAt: number;
-    tokenId?: string;
+    iat: number;
+    jti?: string;
   };
 };
 
@@ -204,14 +204,14 @@ export class SponsorOidcService {
     );
     const issuer = requireClaimString(claims.iss);
     const subject = requireClaimString(claims.sub);
-    const issuedAt = requireClaimInteger(claims.iat);
+    const iat = requireClaimInteger(claims.iat);
     const expiresAt = requireClaimInteger(claims.exp);
     const notBefore = claims.nbf === undefined ? undefined : requireClaimInteger(claims.nbf);
 
     if (
       issuer !== config.issuer
-      || issuedAt > now + skew
-      || now - issuedAt > maxAge + skew
+      || iat > now + skew
+      || now - iat > maxAge + skew
       || expiresAt <= now - skew
       || (notBefore !== undefined && notBefore > now + skew)
       || !hasAllowedAudience(claims.aud, config)
@@ -230,7 +230,7 @@ export class SponsorOidcService {
     const sponsorClaim = config.sponsorIdClaim ?? "sub";
     const sponsorClaimValue = requireClaimString(claims[sponsorClaim]);
     const sponsorId = mapSponsorId(sponsorClaimValue, config.sponsorIdPrefix ?? "user_");
-    const tokenId = typeof claims.jti === "string" && claims.jti.trim()
+    const jti = typeof claims.jti === "string" && claims.jti.trim()
       ? claims.jti.trim()
       : undefined;
 
@@ -238,8 +238,8 @@ export class SponsorOidcService {
       sponsorId,
       issuer,
       subject,
-      issuedAt,
-      ...(tokenId ? { tokenId } : {}),
+      iat,
+      ...(jti ? { jti } : {}),
     };
   }
 
@@ -277,8 +277,8 @@ export class SponsorOidcService {
       oidc: {
         issuer: sponsor.issuer,
         subject: sponsor.subject,
-        issuedAt: sponsor.issuedAt,
-        ...(sponsor.tokenId ? { tokenId: sponsor.tokenId } : {}),
+        iat: sponsor.iat,
+        ...(sponsor.jti ? { jti: sponsor.jti } : {}),
       },
     };
 
@@ -339,7 +339,7 @@ export class SponsorOidcService {
       || !isRecord(claims.oidc)
       || typeof claims.oidc.issuer !== "string"
       || typeof claims.oidc.subject !== "string"
-      || !Number.isInteger(claims.oidc.issuedAt)
+      || !Number.isInteger(claims.oidc.iat)
     ) {
       throw invalidSponsorProof();
     }
@@ -348,8 +348,8 @@ export class SponsorOidcService {
       mode: "oidc",
       issuer: claims.oidc.issuer,
       subject: claims.oidc.subject,
-      issuedAt: claims.oidc.issuedAt,
-      ...(typeof claims.oidc.tokenId === "string" ? { tokenId: claims.oidc.tokenId } : {}),
+      iat: claims.oidc.iat,
+      ...(typeof claims.oidc.jti === "string" ? { jti: claims.oidc.jti } : {}),
     };
   }
 

@@ -12,6 +12,7 @@ type SponsorProofRequest = {
 const sponsors = new Hono<AppEnv>();
 
 sponsors.post("/proof", async (c) => {
+  c.header("Cache-Control", "no-store");
   const auth = await authenticateAndAuthorizeFromContext(
     c,
     "relayauth:identity:manage:*",

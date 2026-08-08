@@ -134,6 +134,7 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
     app.bindings,
   );
   const proof = await assertJsonResponse<SponsorProof>(proofResponse, 201);
+  assert.equal(proofResponse.headers.get("cache-control"), "no-store");
   assert.equal(proof.sponsorId, "user_alice");
 
   const response = await app.request(
@@ -157,8 +158,8 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
     mode: "oidc",
     issuer,
     subject: "alice",
-    issuedAt: now,
-    tokenId: "idp-session-1",
+    iat: now,
+    jti: "idp-session-1",
   });
 
   const storedResponse = await app.request(

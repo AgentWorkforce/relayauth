@@ -3997,15 +3997,15 @@ function normalizeSponsorBinding(value: SponsorBinding | undefined): SponsorBind
     && value.issuer.trim()
     && typeof value.subject === "string"
     && value.subject.trim()
-    && Number.isInteger(value.issuedAt)
+    && Number.isInteger(value.iat)
   ) {
     return {
       mode: "oidc",
       issuer: value.issuer.trim(),
       subject: value.subject.trim(),
-      issuedAt: value.issuedAt,
-      ...(typeof value.tokenId === "string" && value.tokenId.trim()
-        ? { tokenId: value.tokenId.trim() }
+      iat: value.iat,
+      ...(typeof value.jti === "string" && value.jti.trim()
+        ? { jti: value.jti.trim() }
         : {}),
     };
   }
