@@ -228,6 +228,9 @@ export class SponsorOidcService {
     }
 
     const sponsorClaim = config.sponsorIdClaim ?? "sub";
+    if (sponsorClaim === "email" && claims.email_verified !== true) {
+      throw invalidIdToken();
+    }
     const sponsorClaimValue = requireClaimString(claims[sponsorClaim]);
     const sponsorId = mapSponsorId(sponsorClaimValue, config.sponsorIdPrefix ?? "user_");
     const jti = typeof claims.jti === "string" && claims.jti.trim()
