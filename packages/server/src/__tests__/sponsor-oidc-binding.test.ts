@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import type { AgentIdentity, SponsorProof } from "@relayauth/types";
 import { observerBus, type ObserverEvent } from "../lib/events.js";
+import { FixedWindowRateLimiter } from "../lib/rate-limit.js";
 import {
   assertJsonResponse,
   createTestApp,
@@ -31,8 +32,8 @@ type CreatedIdentity = AgentIdentity & {
   sponsorChain: string[];
 };
 
-function signIdToken(claims: Record<string, unknown>): string {
-  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: OIDC_KID }))
+function signIdToken(claims: Record<string, unknown>, kid = OIDC_KID): string {
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid }))
     .toString("base64url");
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const signingInput = `${header}.${payload}`;
@@ -41,11 +42,17 @@ function signIdToken(claims: Record<string, unknown>): string {
   return `${signingInput}.${signature}`;
 }
 
-async function startOidcFixture(t: test.TestContext): Promise<{ issuer: string }> {
+async function startOidcFixture(
+  t: test.TestContext,
+  cacheControl = "public, max-age=60",
+): Promise<{ issuer: string; requestCount(path: string): number }> {
   let issuer = "";
+  const requestCounts = new Map<string, number>();
   const server = createServer((request, response) => {
+    const path = request.url ?? "";
+    requestCounts.set(path, (requestCounts.get(path) ?? 0) + 1);
     response.setHeader("content-type", "application/json");
-    response.setHeader("cache-control", "public, max-age=60");
+    response.setHeader("cache-control", cacheControl);
     if (request.url === "/.well-known/openid-configuration") {
       response.end(JSON.stringify({ issuer, jwks_uri: `${issuer}/jwks` }));
       return;
@@ -67,7 +74,10 @@ async function startOidcFixture(t: test.TestContext): Promise<{ issuer: string }
   t.after(() => new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   }));
-  return { issuer };
+  return {
+    issuer,
+    requestCount: (path: string) => requestCounts.get(path) ?? 0,
+  };
 }
 
 function adminAuthorization(org: string): HeadersInit {
@@ -402,6 +412,83 @@ test("sponsor proof requires a valid intent", async (t) => {
     const body = await assertJsonResponse<{ code: string }>(response, 400);
     assert.equal(body.code, "invalid_sponsor_intent");
   }
+});
+
+test("sponsor proof is rate limited per organization and API key", async (t) => {
+  const { issuer } = await startOidcFixture(t);
+  const org = "org_oidc_proof_rate_limit";
+  const app = createTestApp(
+    {
+      RELAYAUTH_SPONSOR_FEDERATIONS: JSON.stringify({
+        [org]: { sponsorBinding: "oidc", issuer, clientId: "chief-fixture" },
+      }),
+    },
+    { identityCreateRateLimiter: new FixedWindowRateLimiter(1, 60_000) },
+  );
+  const apiKey = await createWorkspaceApiKey(app, org);
+  const now = Math.floor(Date.now() / 1000);
+  const request = () => app.request(
+    createTestRequest(
+      "POST",
+      "/v1/sponsors/proof",
+      {
+        idToken: signIdToken({
+          iss: issuer,
+          sub: "alice",
+          aud: "chief-fixture",
+          iat: now,
+          exp: now + 300,
+        }),
+        intent: "approval",
+      },
+      { "x-api-key": apiKey },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  await assertJsonResponse<SponsorProof>(await request(), 201);
+  const refused = await request();
+  const body = await assertJsonResponse<{ code: string }>(refused, 429);
+  assert.equal(body.code, "rate_limited");
+  assert.equal(refused.headers.get("retry-after"), "60");
+});
+
+test("unknown OIDC kids cannot bypass JWKS cache or forced-refresh cooldown", async (t) => {
+  const { issuer, requestCount } = await startOidcFixture(t, "public, max-age=0");
+  const org = "org_oidc_jwks_refresh_limit";
+  const app = createTestApp({
+    RELAYAUTH_SPONSOR_FEDERATIONS: JSON.stringify({
+      [org]: { sponsorBinding: "oidc", issuer, clientId: "chief-fixture" },
+    }),
+  });
+  const apiKey = await createWorkspaceApiKey(app, org);
+  const now = Math.floor(Date.now() / 1000);
+  const proofRequest = (kid: string) => app.request(
+    createTestRequest(
+      "POST",
+      "/v1/sponsors/proof",
+      {
+        idToken: signIdToken({
+          iss: issuer,
+          sub: "alice",
+          aud: "chief-fixture",
+          iat: now,
+          exp: now + 300,
+        }, kid),
+        intent: "approval",
+      },
+      { "x-api-key": apiKey },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  await assertJsonResponse<SponsorProof>(await proofRequest(OIDC_KID), 201);
+  await assertJsonResponse<{ code: string }>(await proofRequest("attacker-kid-1"), 403);
+  await assertJsonResponse<{ code: string }>(await proofRequest("attacker-kid-2"), 403);
+  assert.equal(requestCount("/.well-known/openid-configuration"), 1);
+  assert.equal(requestCount("/jwks"), 2);
 });
 
 test("OIDC subject mapping is collision-free for raw and encoded-looking values", async (t) => {

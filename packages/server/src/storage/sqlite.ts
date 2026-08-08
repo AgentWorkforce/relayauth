@@ -4541,14 +4541,16 @@ function normalizeIdentityStatus(value: unknown): IdentityStatus | undefined {
 }
 
 function normalizeSponsorBinding(value: SponsorBinding | undefined): SponsorBinding {
-  if (
-    value?.mode === "oidc"
-    && typeof value.issuer === "string"
-    && value.issuer.trim()
-    && typeof value.subject === "string"
-    && value.subject.trim()
-    && Number.isInteger(value.iat)
-  ) {
+  if (value?.mode === "oidc") {
+    if (
+      typeof value.issuer !== "string"
+      || !value.issuer.trim()
+      || typeof value.subject !== "string"
+      || !value.subject.trim()
+      || !Number.isInteger(value.iat)
+    ) {
+      throw new StorageError("invalid sponsor binding", 400, "invalid_sponsor_binding");
+    }
     return {
       mode: "oidc",
       issuer: value.issuer.trim(),

@@ -26,6 +26,25 @@ sponsors.post("/proof", async (c) => {
     return c.json({ error: auth.error, code: auth.code }, auth.status);
   }
 
+  const apiKeyId = typeof auth.claims.meta?.apiKeyId === "string"
+    ? auth.claims.meta.apiKeyId.trim()
+    : "";
+  const rateLimit = c.get("identityCreateRateLimiter").consume([
+    `sponsor-proof:org:${auth.claims.org}`,
+    ...(apiKeyId ? [`sponsor-proof:api-key:${apiKeyId}`] : []),
+  ]);
+  c.header("RateLimit-Limit", String(rateLimit.limit));
+  c.header("RateLimit-Remaining", String(rateLimit.remaining));
+  c.header("RateLimit-Reset", String(rateLimit.retryAfterSeconds));
+  if (!rateLimit.allowed) {
+    c.header("Retry-After", String(rateLimit.retryAfterSeconds));
+    return c.json({
+      error: "Sponsor proof rate limit exceeded",
+      code: "rate_limited",
+      retryable: true,
+    }, 429);
+  }
+
   const body = await c.req.json<SponsorProofRequest>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return c.json({ error: "Invalid JSON body", code: "invalid_request" }, 400);

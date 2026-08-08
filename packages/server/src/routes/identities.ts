@@ -563,7 +563,7 @@ identities.post("/", async (c) => {
         org: createdIdentity.orgId,
         name: createdIdentity.name,
         sponsorId: createdIdentity.sponsorId,
-        sponsorBinding: createdIdentity.sponsorBinding ?? { mode: "legacy" },
+        sponsorBinding,
       },
     });
     return c.json(createdIdentity, 201);

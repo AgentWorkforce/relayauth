@@ -19,7 +19,9 @@ const MAX_GRANT_TTL_SECONDS = 900;
 const DEFAULT_ID_TOKEN_MAX_AGE_SECONDS = 300;
 const DEFAULT_CLOCK_SKEW_SECONDS = 60;
 const DEFAULT_JWKS_CACHE_SECONDS = 300;
+const MIN_JWKS_CACHE_SECONDS = 30;
 const MAX_JWKS_CACHE_SECONDS = 3600;
+const JWKS_FORCED_REFRESH_COOLDOWN_MS = 30_000;
 const FETCH_TIMEOUT_MS = 5_000;
 const SPONSOR_ID_PATTERN = /^user_[A-Za-z0-9_-]+$/u;
 const SPONSOR_INTENT_PATTERN = /^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/u;
@@ -145,6 +147,7 @@ export class SponsorBindingError extends Error {
 export class SponsorOidcService {
   readonly #jwksCache = new Map<string, CachedJwks>();
   readonly #discoveryCache = new Map<string, { expiresAt: number; jwksUri: string }>();
+  readonly #jwksForcedRefreshAt = new Map<string, number>();
 
   resolveConfig(env: SponsorBindingEnv, orgId: string): SponsorFederationConfig {
     const raw = env.RELAYAUTH_SPONSOR_FEDERATIONS?.trim();
@@ -197,7 +200,7 @@ export class SponsorOidcService {
 
     let jwks = await this.#resolveJwks(config, false);
     let key = selectVerificationKey(jwks, header.kid);
-    if (!key && !config.jwks) {
+    if (!key && !config.jwks && this.#canForceRefresh(config.issuer)) {
       jwks = await this.#resolveJwks(config, true);
       key = selectVerificationKey(jwks, header.kid);
     }
@@ -410,7 +413,9 @@ export class SponsorOidcService {
       return validateJwks(config.jwks);
     }
 
-    const jwksUri = config.jwksUri ?? await this.#resolveJwksUri(config, forceRefresh);
+    // Key rotation refreshes the JWKS itself; the separately cached discovery
+    // document must not be refetched for every attacker-controlled unknown kid.
+    const jwksUri = config.jwksUri ?? await this.#resolveJwksUri(config, false);
     assertSecureProviderUrl(jwksUri, "jwksUri");
     const cached = this.#jwksCache.get(jwksUri);
     if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
@@ -424,6 +429,17 @@ export class SponsorOidcService {
       expiresAt: Date.now() + response.cacheSeconds * 1000,
     });
     return jwks;
+  }
+
+  #canForceRefresh(issuer: string): boolean {
+    const now = Date.now();
+    const previous = this.#jwksForcedRefreshAt.get(issuer);
+    if (previous !== undefined && now - previous < JWKS_FORCED_REFRESH_COOLDOWN_MS) {
+      return false;
+    }
+    // Record the attempt before performing I/O so failures are throttled too.
+    this.#jwksForcedRefreshAt.set(issuer, now);
+    return true;
   }
 
   async #resolveJwksUri(
@@ -614,7 +630,10 @@ function parseCacheSeconds(cacheControl: string | null): number {
   if (!match) {
     return DEFAULT_JWKS_CACHE_SECONDS;
   }
-  return Math.min(Number(match[1]), MAX_JWKS_CACHE_SECONDS);
+  return Math.max(
+    MIN_JWKS_CACHE_SECONDS,
+    Math.min(Number(match[1]), MAX_JWKS_CACHE_SECONDS),
+  );
 }
 
 function validateJwks(value: unknown): JsonWebKeySet {
