@@ -1564,65 +1564,81 @@ class SqliteIdentityStorage implements IdentityStorage {
       };
     }
 
-    const lineage = backend.db
-      .prepare<IdentityLineageRow>(SELECT_IDENTITY_LINEAGE_SQL)
-      .get(normalizedIdentityId);
-    if (!lineage) {
-      return null;
+    // Keep identity, member, and token snapshots consistent when another
+    // connection issues a token while this lineage request is in flight.
+    backend.db.exec("BEGIN");
+    try {
+      const lineage = backend.db
+        .prepare<IdentityLineageRow>(SELECT_IDENTITY_LINEAGE_SQL)
+        .get(normalizedIdentityId);
+      if (!lineage) {
+        backend.db.exec("COMMIT");
+        return null;
+      }
+
+      const identityRecord = hydrateIdentityLineage(lineage);
+      if (!identityRecord) {
+        backend.db.exec("COMMIT");
+        return null;
+      }
+      const sponsorChain = backend.db
+        .prepare<LineageMemberRow>(SELECT_IDENTITY_LINEAGE_MEMBERS_SQL)
+        .all(normalizedIdentityId)
+        .map((row) => normalizeOptionalString(row.principal_id))
+        .filter((value): value is string => Boolean(value));
+
+      const tokenMembers = backend.db
+        .prepare<TokenLineageMemberRow>(
+          SELECT_TOKEN_LINEAGE_MEMBERS_BY_IDENTITY_SQL,
+        )
+        .all(normalizedIdentityId, LINEAGE_TOKEN_QUERY_LIMIT)
+        .reduce((byToken, member) => {
+          const tokenId = normalizeOptionalString(member.token_id);
+          const principalId = normalizeOptionalString(member.principal_id);
+          if (tokenId && principalId) {
+            const members = byToken.get(tokenId) ?? [];
+            members.push(principalId);
+            byToken.set(tokenId, members);
+          }
+          return byToken;
+        }, new Map<string, string[]>());
+
+      const tokenRows = backend.db
+        .prepare<TokenLineageRow>(SELECT_TOKEN_LINEAGES_SQL)
+        .all(normalizedIdentityId, LINEAGE_TOKEN_QUERY_LIMIT);
+      const tokensTruncated = tokenRows.length > MAX_LINEAGE_TOKEN_RECORDS;
+      const tokens = tokenRows
+        .slice(0, MAX_LINEAGE_TOKEN_RECORDS)
+        .map((row) => {
+          const token = hydrateTokenLineage(row);
+          if (!token) {
+            return null;
+          }
+          return {
+            ...token,
+            sponsorChain: [
+              ...(tokenMembers.get(normalizeOptionalString(row.token_id) ?? "") ?? []),
+            ],
+          };
+        })
+        .filter((token): token is TokenLineageRecord => token !== null);
+
+      const result = {
+        ...identityRecord,
+        sponsorChain,
+        tokens,
+        tokensTruncated,
+      };
+      backend.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the original query failure.
+      }
+      throw error;
     }
-
-    const identityRecord = hydrateIdentityLineage(lineage);
-    if (!identityRecord) {
-      return null;
-    }
-    const sponsorChain = backend.db
-      .prepare<LineageMemberRow>(SELECT_IDENTITY_LINEAGE_MEMBERS_SQL)
-      .all(normalizedIdentityId)
-      .map((row) => normalizeOptionalString(row.principal_id))
-      .filter((value): value is string => Boolean(value));
-
-    const tokenMembers = backend.db
-      .prepare<TokenLineageMemberRow>(
-        SELECT_TOKEN_LINEAGE_MEMBERS_BY_IDENTITY_SQL,
-      )
-      .all(normalizedIdentityId, LINEAGE_TOKEN_QUERY_LIMIT)
-      .reduce((byToken, member) => {
-        const tokenId = normalizeOptionalString(member.token_id);
-        const principalId = normalizeOptionalString(member.principal_id);
-        if (tokenId && principalId) {
-          const members = byToken.get(tokenId) ?? [];
-          members.push(principalId);
-          byToken.set(tokenId, members);
-        }
-        return byToken;
-      }, new Map<string, string[]>());
-
-    const tokenRows = backend.db
-      .prepare<TokenLineageRow>(SELECT_TOKEN_LINEAGES_SQL)
-      .all(normalizedIdentityId, LINEAGE_TOKEN_QUERY_LIMIT);
-    const tokensTruncated = tokenRows.length > MAX_LINEAGE_TOKEN_RECORDS;
-    const tokens = tokenRows
-      .slice(0, MAX_LINEAGE_TOKEN_RECORDS)
-      .map((row) => {
-        const token = hydrateTokenLineage(row);
-        if (!token) {
-          return null;
-        }
-        return {
-          ...token,
-          sponsorChain: [
-            ...(tokenMembers.get(normalizeOptionalString(row.token_id) ?? "") ?? []),
-          ],
-        };
-      })
-      .filter((token): token is TokenLineageRecord => token !== null);
-
-    return {
-      ...identityRecord,
-      sponsorChain,
-      tokens,
-      tokensTruncated,
-    };
   }
 
   private async getRequired(id: string): Promise<StoredIdentity> {
