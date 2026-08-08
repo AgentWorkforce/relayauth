@@ -26,6 +26,7 @@ type ApiKeyCreateResponse = {
 
 type CreatedIdentity = AgentIdentity & {
   sponsorId: string;
+  sponsorChain: string[];
 };
 
 function signIdToken(claims: Record<string, unknown>): string {
@@ -151,6 +152,7 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
   );
   const identity = await assertJsonResponse<CreatedIdentity>(response, 201);
   assert.equal(identity.sponsorId, "user_alice");
+  assert.deepEqual(identity.sponsorChain, ["user_alice", identity.id]);
   assert.deepEqual(identity.sponsorBinding, {
     mode: "oidc",
     issuer,
