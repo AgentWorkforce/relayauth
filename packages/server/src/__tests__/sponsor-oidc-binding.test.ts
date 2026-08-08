@@ -321,3 +321,20 @@ test("sponsor proof refuses an id_token with the wrong audience", async (t) => {
   const body = await assertJsonResponse<{ code: string }>(response, 403);
   assert.equal(body.code, "invalid_id_token");
 });
+
+test("malformed sponsor federation configuration fails closed", async () => {
+  const org = "org_misconfigured_binding";
+  const app = createTestApp({ RELAYAUTH_SPONSOR_FEDERATIONS: "{" });
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "must-not-fall-back", sponsorId: "user_alice" },
+      adminAuthorization(org),
+    ),
+    undefined,
+    app.bindings,
+  );
+  const body = await assertJsonResponse<{ code: string }>(response, 503);
+  assert.equal(body.code, "sponsor_binding_misconfigured");
+});
