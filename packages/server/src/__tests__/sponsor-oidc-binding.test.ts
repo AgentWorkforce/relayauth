@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 import type { AgentIdentity, SponsorProof } from "@relayauth/types";
+import { observerBus, type ObserverEvent } from "../lib/events.js";
 import {
   assertJsonResponse,
   createTestApp,
@@ -113,6 +114,13 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
     }),
   });
   const apiKey = await createWorkspaceApiKey(app, org);
+  let identityCreatedEvent: ObserverEvent | undefined;
+  const unsubscribe = observerBus.subscribe((event) => {
+    if (event.type === "identity.created") {
+      identityCreatedEvent = event;
+    }
+  }, { orgId: org, types: ["identity.created"] });
+  t.after(unsubscribe);
   const now = Math.floor(Date.now() / 1000);
   const idToken = signIdToken({
     iss: issuer,
@@ -161,6 +169,10 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
     iat: now,
     jti: "idp-session-1",
   });
+  assert.equal(identityCreatedEvent?.type, "identity.created");
+  if (identityCreatedEvent?.type === "identity.created") {
+    assert.deepEqual(identityCreatedEvent.payload.sponsorBinding, identity.sponsorBinding);
+  }
 
   const storedResponse = await app.request(
     createTestRequest("GET", `/v1/identities/${identity.id}`, undefined, adminAuthorization(org)),
