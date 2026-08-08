@@ -1,7 +1,7 @@
 import type { SponsorBinding } from "@relayauth/types";
 import { rsaPublicJwkFromPem } from "./jwk.js";
 import {
-  encodeJsonAsBase64Url,
+  encodeBytesAsBase64Url,
   keyIdFromPublicJwk,
   signRs256,
 } from "./sign-rs256.js";
@@ -519,7 +519,7 @@ function mapSponsorId(claim: string, prefix: string): string {
   }
   const safeClaim = /^[A-Za-z0-9_-]+$/u.test(claim)
     ? claim
-    : encodeJsonAsBase64Url(claim).replace(/^"|"$/gu, "");
+    : encodeBytesAsBase64Url(new TextEncoder().encode(claim));
   const sponsorId = `${prefix}${safeClaim}`;
   if (!SPONSOR_ID_PATTERN.test(sponsorId)) {
     throw invalidIdToken();
@@ -532,6 +532,7 @@ async function fetchProviderJson(url: string): Promise<{ body: unknown; cacheSec
   try {
     response = await fetch(url, {
       headers: { accept: "application/json" },
+      redirect: "error",
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch {
@@ -559,10 +560,16 @@ function parseCacheSeconds(cacheControl: string | null): number {
 }
 
 function validateJwks(value: unknown): JsonWebKeySet {
-  if (!isRecord(value) || !Array.isArray(value.keys) || value.keys.length === 0 || value.keys.length > 100) {
+  if (
+    !isRecord(value)
+    || !Array.isArray(value.keys)
+    || value.keys.length === 0
+    || value.keys.length > 100
+    || !value.keys.every(isRecord)
+  ) {
     throw configurationError("OIDC JWKS must contain between 1 and 100 keys");
   }
-  return { keys: value.keys.filter(isRecord) as JsonWebKey[] };
+  return { keys: value.keys as JsonWebKey[] };
 }
 
 function sponsorGrantIssuer(env: SponsorBindingEnv): string {

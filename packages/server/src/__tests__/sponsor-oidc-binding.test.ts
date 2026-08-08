@@ -111,7 +111,6 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
       },
     }),
   });
-  t.after(() => app.close());
   const apiKey = await createWorkspaceApiKey(app, org);
   const now = Math.floor(Date.now() / 1000);
   const idToken = signIdToken({
@@ -177,7 +176,6 @@ test("OIDC-bound org refuses workspace API key creation without sponsor proof", 
       [org]: { sponsorBinding: "oidc", issuer, clientId: "chief-fixture" },
     }),
   });
-  t.after(() => app.close());
   const apiKey = await createWorkspaceApiKey(app, org);
 
   const response = await app.request(
@@ -202,7 +200,6 @@ test("OIDC-bound org refuses sponsorId that differs from verified proof", async 
       [org]: { sponsorBinding: "oidc", issuer, clientId: "chief-fixture" },
     }),
   });
-  t.after(() => app.close());
   const apiKey = await createWorkspaceApiKey(app, org);
   const now = Math.floor(Date.now() / 1000);
   const proofResponse = await app.request(
@@ -246,7 +243,6 @@ test("OIDC-bound org refuses sponsorId that differs from verified proof", async 
 test("legacy org creation remains unchanged and surfaces legacy binding mode", async (t) => {
   const org = "org_legacy_binding";
   const app = createTestApp();
-  t.after(() => app.close());
   const apiKey = await createWorkspaceApiKey(app, org);
 
   const response = await app.request(
@@ -272,7 +268,6 @@ test("sponsor proof refuses an id_token with the wrong audience", async (t) => {
       [org]: { sponsorBinding: "oidc", issuer, clientId: "chief-fixture" },
     }),
   });
-  t.after(() => app.close());
   const apiKey = await createWorkspaceApiKey(app, org);
   const now = Math.floor(Date.now() / 1000);
 

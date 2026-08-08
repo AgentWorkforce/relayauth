@@ -140,6 +140,7 @@ class AgentIdentity:
     metadata: dict[str, str]
     createdAt: str
     updatedAt: str
+    sponsorBinding: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, value: Any) -> AgentIdentity:
@@ -155,6 +156,9 @@ class AgentIdentity:
             metadata=_string_map(data.get("metadata")),
             createdAt=str(data["createdAt"]),
             updatedAt=str(data["updatedAt"]),
+            sponsorBinding=dict(data["sponsorBinding"])
+            if isinstance(data.get("sponsorBinding"), dict)
+            else None,
         )
 
 
@@ -166,6 +170,8 @@ class CreateIdentityInput:
     roles: list[str] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
     workspaceId: str | None = None
+    sponsorId: str | None = None
+    sponsorProof: str | None = None
 
     @classmethod
     def from_dict(cls, value: Any) -> CreateIdentityInput:
@@ -177,6 +183,24 @@ class CreateIdentityInput:
             roles=_string_list(data.get("roles")),
             metadata=_string_map(data.get("metadata")),
             workspaceId=_optional_string(data.get("workspaceId")),
+            sponsorId=_optional_string(data.get("sponsorId")),
+            sponsorProof=_optional_string(data.get("sponsorProof")),
+        )
+
+
+@dataclass(slots=True)
+class SponsorProof:
+    sponsorId: str
+    sponsorProof: str
+    expiresAt: str
+
+    @classmethod
+    def from_dict(cls, value: Any) -> SponsorProof:
+        data = dict(value)
+        return cls(
+            sponsorId=str(data["sponsorId"]),
+            sponsorProof=str(data["sponsorProof"]),
+            expiresAt=str(data["expiresAt"]),
         )
 
 
