@@ -1599,7 +1599,7 @@ class SqliteTokenStorage implements TokenStorage {
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       backend.db
         .prepare(INSERT_TOKEN_SQL)
@@ -1616,13 +1616,9 @@ class SqliteTokenStorage implements TokenStorage {
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(auditEntry));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating storage error.
-      }
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -1657,7 +1653,7 @@ class SqliteTokenStorage implements TokenStorage {
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const insertToken = backend.db.prepare(INSERT_TOKEN_SQL);
       for (const token of [input.accessToken, input.refreshToken]) {
@@ -1675,14 +1671,11 @@ class SqliteTokenStorage implements TokenStorage {
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(auditEntry));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating storage error (for example SQLITE_FULL);
-        // rollback errors must not hide the retry/capacity classification.
-      }
+      // Rollback errors must not hide the originating storage error (for
+      // example SQLITE_FULL) or its retry/capacity classification.
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -1744,7 +1737,7 @@ class SqliteTokenStorage implements TokenStorage {
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const insertToken = backend.db.prepare(INSERT_TOKEN_SQL);
       for (const token of [input.accessToken, input.refreshToken]) {
@@ -1786,13 +1779,9 @@ class SqliteTokenStorage implements TokenStorage {
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(revokedAudit));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating storage error.
-      }
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -2025,7 +2014,7 @@ class SqliteRevocationStorage implements RevocationStorage {
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const upsertRevokedToken = backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL);
       const updateTokenStatus = backend.db.prepare(UPDATE_TOKEN_STATUS_SQL);
@@ -2036,13 +2025,10 @@ class SqliteRevocationStorage implements RevocationStorage {
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(auditEntry));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating audit or storage failure.
-      }
+      // Preserve the originating audit or storage failure.
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -2294,7 +2280,7 @@ class SqliteAttestationStorage implements AttestationStorage {
       return cloneStoredIdentity(finalIdentity);
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const existing = backend.db
         .prepare<DataRow>(SELECT_STORED_IDENTITY_SQL)
@@ -2304,7 +2290,7 @@ class SqliteAttestationStorage implements AttestationStorage {
       }
       backend.db.prepare(INSERT_IDENTITY_SQL).run(...toIdentityParams(finalIdentity));
       this.appendSqliteLedgerEntry(backend.db, ledgerEntry);
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
       rollbackSqliteTransaction(backend.db);
       throw error;
@@ -2354,13 +2340,13 @@ class SqliteAttestationStorage implements AttestationStorage {
       return cloneAttestationGrant(grant);
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       backend.db.prepare(INSERT_ATTESTATION_GRANT_SQL).run(
         ...toAttestationGrantParams(grant),
       );
       this.appendSqliteLedgerEntry(backend.db, entry);
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
       return grant;
     } catch (error) {
       rollbackSqliteTransaction(backend.db);
@@ -2378,10 +2364,10 @@ class SqliteAttestationStorage implements AttestationStorage {
       return cloneAttestationLedgerEntry(entry);
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const entry = this.appendSqliteLedgerEntry(backend.db, input);
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
       return entry;
     } catch (error) {
       rollbackSqliteTransaction(backend.db);
@@ -2419,7 +2405,7 @@ class SqliteAttestationStorage implements AttestationStorage {
       return entries.map(cloneAttestationLedgerEntry);
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const grant = hydrateAttestationGrant(
         backend.db
@@ -2432,7 +2418,7 @@ class SqliteAttestationStorage implements AttestationStorage {
         return this.appendSqliteLedgerEntry(backend.db, entry);
       });
       backend.db.prepare(REDEEM_ATTESTATION_GRANT_SQL).run(redeemedAt, jti);
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
       return entries;
     } catch (error) {
       rollbackSqliteTransaction(backend.db);
@@ -3037,6 +3023,25 @@ async function importOptional<T>(specifier: string): Promise<T | null> {
 
 type PreparedAttestationLedgerEntry = Omit<AttestationLedgerEntry, "seq">;
 
+/**
+ * Every field bound into an entry's chain hash. Optional identifiers are
+ * carried as `null` when absent so the preimage stays total.
+ */
+type AttestationLedgerHashPreimage = {
+  orgId: string;
+  orgSeq: number;
+  entryType: string;
+  jti: string | null;
+  commitSha: string | null;
+  repo: string | null;
+  agentId: string | null;
+  sponsorId: string | null;
+  payloadJson: string;
+  jws: string;
+  createdAt: string;
+  prevHash: string;
+};
+
 function normalizeAttestationGrant(input: AttestationGrant): AttestationGrant {
   return {
     jti: requireString(input.jti, "jti is required"),
@@ -3104,32 +3109,64 @@ function prepareAttestationLedgerEntry(
   const orgId = requireString(input.orgId, "orgId is required");
   const payloadJson = canonicalizeJson(input.payload);
   const prevHash = previous?.entryHash ?? ATTESTATION_LEDGER_GENESIS_HASH;
-  const entryHash = crypto
-    .createHash("sha256")
-    .update(payloadJson, "utf8")
-    .update(prevHash, "utf8")
-    .digest("hex");
+  const orgSeq = (previous?.orgSeq ?? 0) + 1;
+  const entryType = requireString(input.entryType, "entryType is required");
+  const jti = normalizeOptionalString(input.jti);
+  const commitSha = normalizeOptionalString(input.commitSha);
+  const repo = normalizeOptionalString(input.repo);
+  const agentId = normalizeOptionalString(input.agentId);
+  const sponsorId = normalizeOptionalString(input.sponsorId);
+  const jws = requireString(input.jws, "jws is required");
+  const createdAt = normalizeTimestamp(input.createdAt);
+  const entryHash = attestationLedgerEntryHash({
+    orgId,
+    orgSeq,
+    entryType,
+    jti: jti ?? null,
+    commitSha: commitSha ?? null,
+    repo: repo ?? null,
+    agentId: agentId ?? null,
+    sponsorId: sponsorId ?? null,
+    payloadJson,
+    jws,
+    createdAt,
+    prevHash,
+  });
   return {
     orgId,
-    orgSeq: (previous?.orgSeq ?? 0) + 1,
-    entryType: requireString(input.entryType, "entryType is required"),
-    ...(normalizeOptionalString(input.jti) ? { jti: normalizeOptionalString(input.jti) } : {}),
-    ...(normalizeOptionalString(input.commitSha)
-      ? { commitSha: normalizeOptionalString(input.commitSha) }
-      : {}),
-    ...(normalizeOptionalString(input.repo) ? { repo: normalizeOptionalString(input.repo) } : {}),
-    ...(normalizeOptionalString(input.agentId)
-      ? { agentId: normalizeOptionalString(input.agentId) }
-      : {}),
-    ...(normalizeOptionalString(input.sponsorId)
-      ? { sponsorId: normalizeOptionalString(input.sponsorId) }
-      : {}),
+    orgSeq,
+    entryType,
+    ...(jti ? { jti } : {}),
+    ...(commitSha ? { commitSha } : {}),
+    ...(repo ? { repo } : {}),
+    ...(agentId ? { agentId } : {}),
+    ...(sponsorId ? { sponsorId } : {}),
     payloadJson,
-    jws: requireString(input.jws, "jws is required"),
+    jws,
     prevHash,
     entryHash,
-    createdAt: normalizeTimestamp(input.createdAt),
+    createdAt,
   };
+}
+
+/**
+ * Hash the whole ledger entry, not just its payload and link.
+ *
+ * The chain is the tamper-evidence for attestation evidence, so every column a
+ * verifier reads has to be inside the preimage. Hashing only `payloadJson` and
+ * `prevHash` would leave `entryType`, `createdAt`, `jws` and the identifiers
+ * rewritable by anyone with database access while every hash still verified —
+ * an `attestation.late` entry could be relabelled `attestation.issued`, or a
+ * signature swapped between entries, with no break in the chain.
+ *
+ * `null` is used for absent optional fields rather than omitting the key, so
+ * that an absent value and an empty one cannot produce the same preimage.
+ */
+function attestationLedgerEntryHash(preimage: AttestationLedgerHashPreimage): string {
+  return crypto
+    .createHash("sha256")
+    .update(canonicalizeJson(preimage), "utf8")
+    .digest("hex");
 }
 
 function createMemoryLedgerEntry(
@@ -3267,7 +3304,41 @@ function assertFinalizeEntryMatchesGrant(
   }
 }
 
+/**
+ * Connections with a storage transaction currently open.
+ *
+ * SQLite has no nested transactions: a second BEGIN IMMEDIATE on the same
+ * connection throws, and the surrounding catch would then ROLLBACK the *outer*
+ * transaction, discarding writes this layer never owned. Tracking it here
+ * rather than reading a driver flag keeps the guard identical across
+ * better-sqlite3 and node:sqlite, neither of which exposes the same property.
+ */
+const openSqliteTransactions = new WeakSet<SqliteDatabase>();
+
+/**
+ * Open a storage transaction, refusing to nest.
+ *
+ * Call this OUTSIDE the try block that owns the rollback, so a refusal
+ * propagates without rolling back the transaction that is already open.
+ */
+function beginSqliteTransaction(db: SqliteDatabase): void {
+  if (openSqliteTransactions.has(db)) {
+    throw new Error(
+      "a SQLite storage transaction is already open on this connection; "
+        + "nested transactions are not supported",
+    );
+  }
+  db.exec("BEGIN IMMEDIATE");
+  openSqliteTransactions.add(db);
+}
+
+function commitSqliteTransaction(db: SqliteDatabase): void {
+  db.exec("COMMIT");
+  openSqliteTransactions.delete(db);
+}
+
 function rollbackSqliteTransaction(db: SqliteDatabase): void {
+  openSqliteTransactions.delete(db);
   try {
     db.exec("ROLLBACK");
   } catch {

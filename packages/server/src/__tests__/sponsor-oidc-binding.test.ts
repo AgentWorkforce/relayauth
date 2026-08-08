@@ -16,6 +16,7 @@ import {
 
 const OIDC_KEY_PAIR = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
 const OIDC_KID = "fixture-rs256-key";
+const ROTATED_OIDC_KID = "fixture-rs256-key-rotated";
 const OIDC_PUBLIC_JWK = {
   ...(OIDC_KEY_PAIR.publicKey.export({ format: "jwk" }) as JsonWebKey),
   alg: "RS256",
@@ -76,6 +77,57 @@ async function startOidcFixture(
   }));
   return {
     issuer,
+    requestCount: (path: string) => requestCounts.get(path) ?? 0,
+  };
+}
+
+/**
+ * An IdP that rotates its signing key and its `jwks_uri` in the same step.
+ *
+ * This is the case a cached discovery document hides: the new key is only
+ * published at the new URI, so a client that refreshes the JWKS without
+ * re-resolving discovery refetches the retired URI and never finds it.
+ */
+async function startRotatingOidcFixture(
+  t: test.TestContext,
+  cacheControl = "public, max-age=0",
+): Promise<{ issuer: string; rotate(): void; requestCount(path: string): number }> {
+  let issuer = "";
+  let jwksPath = "/jwks-initial";
+  let servedKid = OIDC_KID;
+  const requestCounts = new Map<string, number>();
+  const server = createServer((request, response) => {
+    const path = request.url ?? "";
+    requestCounts.set(path, (requestCounts.get(path) ?? 0) + 1);
+    response.setHeader("content-type", "application/json");
+    response.setHeader("cache-control", cacheControl);
+    if (path === "/.well-known/openid-configuration") {
+      response.end(JSON.stringify({ issuer, jwks_uri: `${issuer}${jwksPath}` }));
+      return;
+    }
+    if (path === jwksPath) {
+      response.end(JSON.stringify({ keys: [{ ...OIDC_PUBLIC_JWK, kid: servedKid }] }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not_found" }));
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+  issuer = `http://127.0.0.1:${address.port}`;
+  t.after(() => new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  }));
+  return {
+    issuer,
+    rotate: () => {
+      jwksPath = "/jwks-rotated";
+      servedKid = ROTATED_OIDC_KID;
+    },
     requestCount: (path: string) => requestCounts.get(path) ?? 0,
   };
 }
@@ -485,10 +537,55 @@ test("unknown OIDC kids cannot bypass JWKS cache or forced-refresh cooldown", as
   );
 
   await assertJsonResponse<SponsorProof>(await proofRequest(OIDC_KID), 201);
-  await assertJsonResponse<{ code: string }>(await proofRequest("attacker-kid-1"), 403);
-  await assertJsonResponse<{ code: string }>(await proofRequest("attacker-kid-2"), 403);
-  assert.equal(requestCount("/.well-known/openid-configuration"), 1);
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await assertJsonResponse<{ code: string }>(await proofRequest(`attacker-kid-${attempt}`), 403);
+  }
+  // The cooldown admits one forced refresh per issuer however many unknown
+  // kids arrive, and max-age=0 cannot drive a fetch per request because the
+  // parsed cache lifetime has a floor. That single refresh re-resolves the
+  // discovery document as well as the JWKS, so the ceiling is one extra fetch
+  // of each per window rather than one of each per request.
+  assert.equal(requestCount("/.well-known/openid-configuration"), 2);
   assert.equal(requestCount("/jwks"), 2);
+});
+
+test("a provider that rotates its signing key and jwks_uri together stays reachable", async (t) => {
+  const { issuer, rotate } = await startRotatingOidcFixture(t);
+  const org = "org_oidc_jwks_uri_rotation";
+  const app = createTestApp({
+    RELAYAUTH_SPONSOR_FEDERATIONS: JSON.stringify({
+      [org]: { sponsorBinding: "oidc", issuer, clientId: "chief-fixture" },
+    }),
+  });
+  const apiKey = await createWorkspaceApiKey(app, org);
+  const now = Math.floor(Date.now() / 1000);
+  const proofRequest = (kid: string) => app.request(
+    createTestRequest(
+      "POST",
+      "/v1/sponsors/proof",
+      {
+        idToken: signIdToken({
+          iss: issuer,
+          sub: "alice",
+          aud: "chief-fixture",
+          iat: now,
+          exp: now + 300,
+        }, kid),
+        intent: "approval",
+      },
+      { "x-api-key": apiKey },
+    ),
+    undefined,
+    app.bindings,
+  );
+
+  await assertJsonResponse<SponsorProof>(await proofRequest(OIDC_KID), 201);
+  rotate();
+  // The unknown kid drives the one permitted forced refresh. That refresh has
+  // to re-resolve discovery too: resolving only the JWKS would refetch the
+  // retired jwks_uri, so the rotated key would stay unreachable and every
+  // sponsor proof for this org would fail until the discovery cache expired.
+  await assertJsonResponse<SponsorProof>(await proofRequest(ROTATED_OIDC_KID), 201);
 });
 
 test("OIDC subject mapping is collision-free for raw and encoded-looking values", async (t) => {

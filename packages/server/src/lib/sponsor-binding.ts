@@ -413,9 +413,12 @@ export class SponsorOidcService {
       return validateJwks(config.jwks);
     }
 
-    // Key rotation refreshes the JWKS itself; the separately cached discovery
-    // document must not be refetched for every attacker-controlled unknown kid.
-    const jwksUri = config.jwksUri ?? await this.#resolveJwksUri(config, false);
+    // A provider can rotate its signing keys and its jwks_uri together, so the
+    // forced refresh must be able to re-resolve discovery too — otherwise the
+    // rotated key is fetched from the stale URI and never found. This path is
+    // reachable only behind #canForceRefresh, which caps an attacker-controlled
+    // unknown kid at one discovery + one JWKS fetch per issuer per cooldown.
+    const jwksUri = config.jwksUri ?? await this.#resolveJwksUri(config, forceRefresh);
     assertSecureProviderUrl(jwksUri, "jwksUri");
     const cached = this.#jwksCache.get(jwksUri);
     if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
