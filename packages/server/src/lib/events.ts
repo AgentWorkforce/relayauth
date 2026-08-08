@@ -1,3 +1,11 @@
+export type IdentityCreatedPayload = {
+  id: string;
+  org: string;
+  name?: string;
+  sponsorId: string;
+  sponsorBinding: import("@relayauth/types").SponsorBinding;
+};
+
 export type ObserverEvent =
   | {
       type: "token.verified";
@@ -46,13 +54,7 @@ export type ObserverEvent =
   | {
       type: "identity.created";
       timestamp: string;
-      payload: {
-        id: string;
-        org: string;
-        name?: string;
-        sponsorId: string;
-        sponsorBinding: import("@relayauth/types").SponsorBinding;
-      };
+      payload: IdentityCreatedPayload;
     }
   | {
       type: "budget.alert";
