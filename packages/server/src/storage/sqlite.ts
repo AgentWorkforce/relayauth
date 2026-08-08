@@ -14,6 +14,7 @@ import type {
   IdentityType,
   Policy,
   Role,
+  SponsorBinding,
 } from "@relayauth/types";
 import type {
   CreateApiKeyInput,
@@ -3456,6 +3457,7 @@ function normalizeStoredIdentity(
     orgId: requireString(identity.orgId, "orgId is required"),
     workspaceId: requireString(identity.workspaceId, "workspaceId is required"),
     sponsorId: requireString(identity.sponsorId, "sponsorId is required"),
+    sponsorBinding: normalizeSponsorBinding(identity.sponsorBinding),
     sponsorChain: normalizedSponsorChain,
     status: normalizeIdentityStatus(identity.status) ?? "active",
     scopes: normalizeStringArray(identity.scopes),
@@ -3732,6 +3734,7 @@ function toAgentIdentity(identity: StoredIdentity): AgentIdentity {
     metadata: { ...identity.metadata },
     createdAt: identity.createdAt,
     updatedAt: identity.updatedAt,
+    sponsorBinding: normalizeSponsorBinding(identity.sponsorBinding),
     ...(identity.lastActiveAt ? { lastActiveAt: identity.lastActiveAt } : {}),
     ...(identity.suspendedAt ? { suspendedAt: identity.suspendedAt } : {}),
     ...(identity.suspendReason
@@ -4535,6 +4538,28 @@ function normalizeIdentityStatus(value: unknown): IdentityStatus | undefined {
   return value === "active" || value === "suspended" || value === "retired"
     ? value
     : undefined;
+}
+
+function normalizeSponsorBinding(value: SponsorBinding | undefined): SponsorBinding {
+  if (
+    value?.mode === "oidc"
+    && typeof value.issuer === "string"
+    && value.issuer.trim()
+    && typeof value.subject === "string"
+    && value.subject.trim()
+    && Number.isInteger(value.issuedAt)
+  ) {
+    return {
+      mode: "oidc",
+      issuer: value.issuer.trim(),
+      subject: value.subject.trim(),
+      issuedAt: value.issuedAt,
+      ...(typeof value.tokenId === "string" && value.tokenId.trim()
+        ? { tokenId: value.tokenId.trim() }
+        : {}),
+    };
+  }
+  return { mode: "legacy" };
 }
 
 function normalizePolicyEffect(value: unknown): Policy["effect"] | undefined {
