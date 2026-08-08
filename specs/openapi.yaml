@@ -1918,7 +1918,11 @@ components:
           type: string
         sponsorProof:
           type: string
-          description: Intent-bound proof required for organizations using OIDC sponsor binding.
+          description: |-
+            Proof required for organizations using OIDC sponsor binding, obtained
+            from POST /v1/sponsors/proof. It must have been issued for the intent
+            `identity.create` exactly; a proof bound to any other intent is
+            rejected, as is a proof whose sponsor does not match `sponsorId`.
     CreateIdentityRequest:
       $ref: "#/components/schemas/CreateIdentityInput"
     UpdateIdentityRequest:
@@ -1979,7 +1983,7 @@ components:
       enum: [relaycast, relayfile, cloud, relayauth]
     Action:
       type: string
-      enum: [read, write, create, delete, manage, run, send, invoke, "*"]
+      enum: [read, write, create, delete, manage, run, send, invoke, trigger, grant, "*"]
     ParsedScope:
       type: object
       required: [plane, resource, action, path, raw]
