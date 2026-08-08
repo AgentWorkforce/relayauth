@@ -479,6 +479,9 @@ identities.post("/", async (c) => {
 
     const timestamp = new Date().toISOString();
     const id = createIdentityId();
+    const sponsorChain = federation.sponsorBinding === "oidc"
+      ? oidcSponsorChain(auth.claims, sponsorId, id)
+      : [...auth.claims.sponsorChain, id];
     const budget = body.budget ?? await withStorageRetry(
       () => storage.identities.loadOrgBudget(auth.claims.org),
       { operation: "identities.load_org_budget" },
@@ -495,7 +498,7 @@ identities.post("/", async (c) => {
       createdAt: timestamp,
       updatedAt: timestamp,
       sponsorId,
-      sponsorChain: [...auth.claims.sponsorChain, id],
+      sponsorChain,
       sponsorBinding,
       workspaceId: normalizeWorkspaceId(body.workspaceId, auth.claims.wks),
       ...(budget ? { budget } : {}),
@@ -585,6 +588,17 @@ function identityCreateRateLimitKeys(claims: RelayAuthTokenClaims): string[] {
     `org:${claims.org}`,
     ...(apiKeyId ? [`api-key:${apiKeyId}`] : []),
   ];
+}
+
+function oidcSponsorChain(
+  claims: RelayAuthTokenClaims,
+  sponsorId: string,
+  identityId: string,
+): string[] {
+  if (claims.sponsorId === sponsorId && claims.sponsorChain[0] === sponsorId) {
+    return [...claims.sponsorChain, identityId];
+  }
+  return [sponsorId, identityId];
 }
 
 function normalizeCredential(value: unknown): string | undefined {

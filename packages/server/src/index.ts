@@ -29,3 +29,7 @@ export type {
   TokenStorage,
 } from "./storage/index.js";
 export type { AppConfig, AppEnv } from "./env.js";
+export type {
+  SponsorFederationConfig,
+  SponsorFederationMap,
+} from "./lib/sponsor-binding.js";
