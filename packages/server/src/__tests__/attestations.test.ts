@@ -13,6 +13,7 @@ import {
   TEST_RS256_PUBLIC_KEY_PEM,
 } from "./test-helpers.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
+import { ATTESTATION_LEDGER_GENESIS_HASH } from "../storage/interface.js";
 
 type GrantResponse = {
   jti: string;
@@ -154,6 +155,38 @@ test("finalize rejects a wrong key and an expired grant", async (t) => {
   });
 });
 
+test("ledger chains are independent for each organization", async (t) => {
+  const { app } = await createWorkspaceGrantClient();
+  t.after(() => app.close());
+  const first = await app.storage.attestations.appendAttestationLedgerEntry({
+    orgId: "org_chain_a",
+    entryType: "checkpoint",
+    payload: { event: "first" },
+    jws: "test-jws-a1",
+    createdAt: "2000-01-01T00:00:00.000Z",
+  });
+  const second = await app.storage.attestations.appendAttestationLedgerEntry({
+    orgId: "org_chain_a",
+    entryType: "checkpoint",
+    payload: { event: "second" },
+    jws: "test-jws-a2",
+    createdAt: "2000-01-01T00:00:01.000Z",
+  });
+  const independent = await app.storage.attestations.appendAttestationLedgerEntry({
+    orgId: "org_chain_b",
+    entryType: "checkpoint",
+    payload: { event: "first" },
+    jws: "test-jws-b1",
+    createdAt: "2000-01-01T00:00:00.000Z",
+  });
+  assert.equal(first.orgSeq, 1);
+  assert.equal(first.prevHash, ATTESTATION_LEDGER_GENESIS_HASH);
+  assert.equal(second.orgSeq, 2);
+  assert.equal(second.prevHash, first.entryHash);
+  assert.equal(independent.orgSeq, 1);
+  assert.equal(independent.prevHash, ATTESTATION_LEDGER_GENESIS_HASH);
+});
+
 test("ledger failure returns 5xx and leaves the grant unredeemed", async (t) => {
   const { app, key } = await createWorkspaceGrantClient();
   t.after(() => app.close());
@@ -184,6 +217,13 @@ test("ledger is immutable and retention only deletes audit_logs", async (t) => {
   const { app, key } = await createWorkspaceGrantClient();
   t.after(() => app.close());
   await grant(app, key);
+  await app.storage.attestations.appendAttestationLedgerEntry({
+    orgId: "org_attestation",
+    entryType: "checkpoint",
+    payload: { retained: true },
+    jws: "test-jws-retention",
+    createdAt: "2000-01-01T00:00:00.000Z",
+  });
   const row = await app.storage.DB.prepare(
     "SELECT seq, payload_json, prev_hash, entry_hash FROM attestation_ledger LIMIT 1",
   ).first<{ seq: number; payload_json: string; prev_hash: string; entry_hash: string }>();
@@ -223,5 +263,5 @@ test("ledger is immutable and retention only deletes audit_logs", async (t) => {
   const ledgerCount = await app.storage.DB.prepare(
     "SELECT COUNT(*) AS count FROM attestation_ledger",
   ).first<{ count: number }>();
-  assert.equal(ledgerCount?.count, 1);
+  assert.equal(ledgerCount?.count, 2);
 });
