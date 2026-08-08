@@ -169,6 +169,7 @@ export class SponsorOidcService {
       || header.alg !== "RS256"
       || typeof header.kid !== "string"
       || !header.kid
+      || (header.typ !== undefined && header.typ !== "JWT")
       || header.crit !== undefined
       || !claims
     ) {
@@ -316,6 +317,7 @@ export class SponsorOidcService {
       !header
       || header.alg !== "RS256"
       || header.kid !== expectedKid
+      || (header.typ !== undefined && header.typ !== "JWT")
       || header.crit !== undefined
       || !claims
     ) {
@@ -514,9 +516,6 @@ function normalizeAudience(value: unknown): string[] {
 }
 
 function mapSponsorId(claim: string, prefix: string): string {
-  if (SPONSOR_ID_PATTERN.test(claim)) {
-    return claim;
-  }
   if (!/^user_[A-Za-z0-9_-]*$/u.test(prefix)) {
     throw configurationError("sponsorIdPrefix must begin with user_ and contain only token-safe characters");
   }
