@@ -34,6 +34,7 @@ const BUILT_IN_ACTIONS = [
   "send",
   "invoke",
   "trigger",
+  "grant",
   "*",
 ] as const;
 const GRANT_TYPES = [

@@ -20,7 +20,7 @@ function createIdentity(
   index: number,
   overrides: Partial<AgentIdentity> = {},
 ): AgentIdentity {
-  return generateTestIdentity({
+  const identity = generateTestIdentity({
     id: overrides.id ?? `agent_${String(index).padStart(3, "0")}`,
     name: overrides.name ?? `Identity ${index}`,
     type: overrides.type ?? "agent",
@@ -35,6 +35,10 @@ function createIdentity(
     ...(overrides.suspendedAt !== undefined ? { suspendedAt: overrides.suspendedAt } : {}),
     ...(overrides.suspendReason !== undefined ? { suspendReason: overrides.suspendReason } : {}),
   });
+  return {
+    ...identity,
+    sponsorBinding: overrides.sponsorBinding ?? { mode: "legacy" },
+  };
 }
 
 function decodeCursorCandidate(

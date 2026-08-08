@@ -567,6 +567,35 @@ test("TestSqliteIdentityCRUD", async (t) => {
   assert.deepEqual(afterDelete, []);
 });
 
+test("TestSqliteIdentityRejectsMalformedOidcSponsorBinding", async (t) => {
+  const { storage } = createTempStorage(t);
+
+  await assert.rejects(
+    storage.identities.create({
+      id: "agent_invalid_oidc_binding",
+      name: "Invalid OIDC Binding",
+      type: "agent",
+      orgId: "org_invalid_oidc_binding",
+      status: "active",
+      createdAt: "2026-08-08T20:00:00.000Z",
+      updatedAt: "2026-08-08T20:00:00.000Z",
+      workspaceId: "ws_invalid_oidc_binding",
+      sponsorId: "user_invalid",
+      sponsorChain: ["user_invalid", "agent_invalid_oidc_binding"],
+      sponsorBinding: {
+        mode: "oidc",
+        issuer: "",
+        subject: "subject",
+        iat: 1,
+      },
+      scopes: [],
+      roles: [],
+      metadata: {},
+    }),
+    (error: unknown) => error instanceof StorageError && error.code === "invalid_sponsor_binding",
+  );
+});
+
 test("TestSqliteIdentitySuspendRetire", async (t) => {
   const { storage } = createTempStorage(t);
 

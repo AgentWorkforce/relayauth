@@ -269,6 +269,42 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
+  /v1/sponsors/proof:
+    post:
+      tags: [Identities]
+      summary: Create verified human principal proof
+      description: |-
+        Verify a fresh OIDC ID token and return a short-lived proof bound to
+        the requested intent. Consumers must reject proofs issued for a
+        different intent.
+      operationId: createSponsorProof
+      x-required-scopes: [relayauth:identity:manage]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSponsorProofRequest"
+      responses:
+        "201":
+          description: Verified human principal proof created
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SponsorProof"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /v1/identities:
     post:
       tags: [Identities]
@@ -1592,6 +1628,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: Service unavailable because a required verifier or dependency failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
   schemas:
     ErrorResponse:
       type: object
@@ -1736,6 +1778,60 @@ components:
     IdentityType:
       type: string
       enum: [agent, human, service]
+    SponsorProofIntent:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: "^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$"
+      examples: [identity.create, approval]
+    SponsorBinding:
+      oneOf:
+        - type: object
+          required: [mode]
+          additionalProperties: false
+          properties:
+            mode:
+              const: legacy
+        - type: object
+          required: [mode, issuer, subject, iat]
+          additionalProperties: false
+          properties:
+            mode:
+              const: oidc
+            issuer:
+              type: string
+              format: uri
+            subject:
+              type: string
+            iat:
+              type: integer
+              format: int64
+            jti:
+              type: string
+    CreateSponsorProofRequest:
+      type: object
+      required: [idToken, intent]
+      additionalProperties: false
+      properties:
+        idToken:
+          type: string
+          minLength: 1
+        intent:
+          $ref: "#/components/schemas/SponsorProofIntent"
+    SponsorProof:
+      type: object
+      required: [sponsorId, sponsorProof, expiresAt, intent]
+      additionalProperties: false
+      properties:
+        sponsorId:
+          type: string
+        sponsorProof:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        intent:
+          $ref: "#/components/schemas/SponsorProofIntent"
     AgentIdentity:
       type: object
       required:
@@ -1780,6 +1876,8 @@ components:
           type: array
           items:
             type: string
+        sponsorBinding:
+          $ref: "#/components/schemas/SponsorBinding"
         createdAt:
           type: string
           format: date-time
@@ -1796,7 +1894,7 @@ components:
           type: string
     CreateIdentityInput:
       type: object
-      required: [name]
+      required: [name, sponsorId]
       properties:
         name:
           type: string
@@ -1816,6 +1914,15 @@ components:
             type: string
         workspaceId:
           type: string
+        sponsorId:
+          type: string
+        sponsorProof:
+          type: string
+          description: |-
+            Proof required for organizations using OIDC sponsor binding, obtained
+            from POST /v1/sponsors/proof. It must have been issued for the intent
+            `identity.create` exactly; a proof bound to any other intent is
+            rejected, as is a proof whose sponsor does not match `sponsorId`.
     CreateIdentityRequest:
       $ref: "#/components/schemas/CreateIdentityInput"
     UpdateIdentityRequest:
@@ -1876,7 +1983,7 @@ components:
       enum: [relaycast, relayfile, cloud, relayauth]
     Action:
       type: string
-      enum: [read, write, create, delete, manage, run, send, invoke, "*"]
+      enum: [read, write, create, delete, manage, run, send, invoke, trigger, grant, "*"]
     ParsedScope:
       type: object
       required: [plane, resource, action, path, raw]

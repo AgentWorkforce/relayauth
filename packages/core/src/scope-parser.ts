@@ -13,6 +13,7 @@ const ACTIONS = [
   "send",
   "invoke",
   "trigger",
+  "grant",
   "*",
 ] as const;
 const IDENTIFIER_PATTERN = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;

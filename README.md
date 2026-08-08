@@ -139,6 +139,35 @@ RELAYAUTH_SIGNING_KEY_PEM_PUBLIC="$(cat public.pem)" \
   npm run start
 ```
 
+### OIDC sponsor binding
+
+Organizations can require identity sponsors to be established by an OIDC
+provider. Organizations omitted from `RELAYAUTH_SPONSOR_FEDERATIONS` remain in
+the backward-compatible `legacy` mode.
+
+```bash
+RELAYAUTH_SPONSOR_FEDERATIONS='{
+  "org_example": {
+    "sponsorBinding": "oidc",
+    "issuer": "https://id.example.com",
+    "clientId": "relayauth-registration",
+    "allowedAudiences": ["relayauth-registration"],
+    "sponsorIdClaim": "sub"
+  }
+}'
+```
+
+An authenticated caller exchanges a fresh IdP token at
+`POST /v1/sponsors/proof` with
+`{ "idToken": "...", "intent": "identity.create" }`. The returned short-lived,
+intent-bound `sponsorProof` names the verified human principal. A proof whose
+intent is `identity.create` must accompany `sponsorId` on
+`POST /v1/identities`; proofs issued for other purposes, such as `approval`,
+cannot be substituted. RelayAuth checks the issuer, audience, lifetime, RS256
+signature, intent, and matching sponsor before creating the identity. The
+identity response records whether its sponsor was established in `legacy` or
+`oidc` mode.
+
 ## Scope Format
 
 Scopes follow `plane:resource:action:path`:

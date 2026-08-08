@@ -31,6 +31,7 @@ const VALID_ACTIONS = new Set([
   "send",
   "invoke",
   "trigger",
+  "grant",
   "*",
 ]);
 
@@ -274,6 +275,7 @@ test("discovery response includes issuer, jwks_uri, token_endpoint, and identity
 test("discovery response publishes supported scopes metadata with the documented format", async () => {
   const body = await getAgentConfigurationJson();
   assertPublishedScopeFormat(body);
+  assert.ok(body.scope_format.actions.includes("grant"));
 });
 
 test("discovery response includes supported grant types", async () => {

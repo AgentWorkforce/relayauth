@@ -14,6 +14,7 @@ import type {
   IdentityType,
   Policy,
   Role,
+  SponsorBinding,
 } from "@relayauth/types";
 import type {
   CreateApiKeyInput,
@@ -27,6 +28,11 @@ import type {
 } from "./identity-types.js";
 import type {
   ApiKeyStorage,
+  AppendAttestationLedgerEntryInput,
+  AttestationGrant,
+  AttestationLedgerEntry,
+  AttestationStorage,
+  CreateAttestationGrantWithLedgerInput,
   AuditEntryRecord,
   AuditStorage,
   AuditWebhookStorage,
@@ -54,6 +60,7 @@ import type {
   PolicyUpdate,
   RevokedTokenAudit,
   RevocationStorage,
+  RedeemAttestationGrantInput,
   RoleStorage,
   StoredTokenRecord,
   TokenLineageRecord,
@@ -63,12 +70,14 @@ import type {
   WorkspaceContextRecord,
 } from "./interface.js";
 import {
+  ATTESTATION_LEDGER_GENESIS_HASH,
   normalizeAuditArchiveCursorBoundaries,
   normalizeAuditQueryCursor,
   normalizeAuditQueryTimestamp,
   StorageError,
 } from "./interface.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
+import { canonicalizeJson } from "../lib/canonical-json.js";
 
 const DEFAULT_DB_PATH = ".relay/relayauth.db";
 const DEFAULT_INTERNAL_SECRET = "internal-test-secret";
@@ -429,6 +438,56 @@ const UPDATE_API_KEY_LAST_USED_SQL = `
     AND (last_used_at IS NULL OR last_used_at < ?)
 `;
 
+const INSERT_ATTESTATION_GRANT_SQL = `
+  INSERT INTO attestation_grants (
+    jti, org_id, agent_id, sponsor_id, sponsor_chain_json, repo, task_ref,
+    not_after, finalize_key_hash, redeemed_at, late, created_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+const SELECT_ATTESTATION_GRANT_SQL = `
+  SELECT
+    jti, org_id, agent_id, sponsor_id, sponsor_chain_json, repo, task_ref,
+    not_after, finalize_key_hash, redeemed_at, late, created_at
+  FROM attestation_grants
+  WHERE jti = ?
+  LIMIT 1
+`;
+
+const REDEEM_ATTESTATION_GRANT_SQL = `
+  UPDATE attestation_grants
+  SET redeemed_at = ?
+  WHERE jti = ? AND redeemed_at IS NULL
+`;
+
+const SELECT_LAST_ATTESTATION_LEDGER_ENTRY_SQL = `
+  SELECT
+    seq, org_id, org_seq, entry_type, jti, commit_sha, repo, agent_id,
+    sponsor_id, payload_json, jws, prev_hash, entry_hash, created_at
+  FROM attestation_ledger
+  WHERE org_id = ?
+  ORDER BY org_seq DESC
+  LIMIT 1
+`;
+
+const INSERT_ATTESTATION_LEDGER_ENTRY_SQL = `
+  INSERT INTO attestation_ledger (
+    org_id, org_seq, entry_type, jti, commit_sha, repo, agent_id, sponsor_id,
+    payload_json, jws, prev_hash, entry_hash, created_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+const SELECT_ATTESTATION_LEDGER_ENTRY_BY_HASH_SQL = `
+  SELECT
+    seq, org_id, org_seq, entry_type, jti, commit_sha, repo, agent_id,
+    sponsor_id, payload_json, jws, prev_hash, entry_hash, created_at
+  FROM attestation_ledger
+  WHERE org_id = ? AND entry_hash = ?
+  LIMIT 1
+`;
+
 const LIST_ACTIVE_TOKENS_SQL = `
   SELECT id, jti, token_id
   FROM tokens
@@ -787,6 +846,36 @@ type ApiKeyRow = {
   last_used_at?: string | null;
   revoked_at?: string | null;
 };
+type AttestationGrantRow = {
+  jti?: string;
+  org_id?: string;
+  agent_id?: string;
+  sponsor_id?: string;
+  sponsor_chain_json?: string | null;
+  repo?: string;
+  task_ref?: string | null;
+  not_after?: string;
+  finalize_key_hash?: string;
+  redeemed_at?: string | null;
+  late?: number | boolean | null;
+  created_at?: string;
+};
+type AttestationLedgerRow = {
+  seq?: number | string | null;
+  org_id?: string;
+  org_seq?: number | string | null;
+  entry_type?: string;
+  jti?: string | null;
+  commit_sha?: string | null;
+  repo?: string | null;
+  agent_id?: string | null;
+  sponsor_id?: string | null;
+  payload_json?: string;
+  jws?: string;
+  prev_hash?: string;
+  entry_hash?: string;
+  created_at?: string;
+};
 type AuditRow = {
   id?: string;
   action?: AuditAction | string;
@@ -883,6 +972,11 @@ type RevokedTokenRecord = {
   revokedAt?: string;
 };
 
+type MemoryAttestationState = {
+  grants: Map<string, AttestationGrant>;
+  ledger: AttestationLedgerEntry[];
+};
+
 type MemoryState = {
   identities: Map<string, StoredIdentity>;
   identityLineages: Map<string, MemoryIdentityLineageSnapshot>;
@@ -896,6 +990,7 @@ type MemoryState = {
   orgBudgets: Map<string, IdentityBudget | undefined>;
   tokens: Map<string, MemoryTokenRecord>;
   revokedTokens: Map<string, RevokedTokenRecord>;
+  attestations: MemoryAttestationState;
 };
 
 type BackendContext =
@@ -924,6 +1019,7 @@ export function createSqliteStorage(
     roles: new SqliteRoleStorage(provider),
     policies: new SqlitePolicyStorage(provider),
     apiKeys: new SqliteApiKeyStorage(provider),
+    attestations: new SqliteAttestationStorage(provider),
     audit: new SqliteAuditStorage(provider),
     auditWebhooks: new SqliteAuditWebhookStorage(provider),
     contexts: new SqliteContextStorage(provider),
@@ -1740,7 +1836,7 @@ class SqliteTokenStorage implements TokenStorage {
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       backend.db
         .prepare(INSERT_TOKEN_SQL)
@@ -1758,13 +1854,9 @@ class SqliteTokenStorage implements TokenStorage {
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(auditEntry));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating storage error.
-      }
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -1799,7 +1891,7 @@ class SqliteTokenStorage implements TokenStorage {
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const insertToken = backend.db.prepare(INSERT_TOKEN_SQL);
       for (const token of [input.accessToken, input.refreshToken]) {
@@ -1818,14 +1910,11 @@ class SqliteTokenStorage implements TokenStorage {
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(auditEntry));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating storage error (for example SQLITE_FULL);
-        // rollback errors must not hide the retry/capacity classification.
-      }
+      // Rollback errors must not hide the originating storage error (for
+      // example SQLITE_FULL) or its retry/capacity classification.
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -1887,7 +1976,7 @@ class SqliteTokenStorage implements TokenStorage {
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const insertToken = backend.db.prepare(INSERT_TOKEN_SQL);
       for (const token of [input.accessToken, input.refreshToken]) {
@@ -1930,13 +2019,9 @@ class SqliteTokenStorage implements TokenStorage {
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(revokedAudit));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating storage error.
-      }
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -2245,7 +2330,7 @@ class SqliteRevocationStorage implements RevocationStorage {
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const upsertRevokedToken = backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL);
       const updateTokenStatus = backend.db.prepare(UPDATE_TOKEN_STATUS_SQL);
@@ -2256,13 +2341,10 @@ class SqliteRevocationStorage implements RevocationStorage {
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(auditEntry));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating audit or storage failure.
-      }
+      // Preserve the originating audit or storage failure.
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -2471,6 +2553,217 @@ class SqliteApiKeyStorage implements ApiKeyStorage {
     }
 
     return apiKey;
+  }
+}
+
+class SqliteAttestationStorage implements AttestationStorage {
+  constructor(private readonly provider: BackendProvider) {}
+
+  async createIdentityWithLedgerEntry(
+    identity: StoredIdentity,
+    ledgerEntry: AppendAttestationLedgerEntryInput,
+  ): Promise<StoredIdentity> {
+    const normalized = normalizeStoredIdentity(identity, { generateId: true });
+    const budgetResult = applyBudgetPolicy(
+      normalized,
+      normalized,
+      normalizeTimestamp(normalized.updatedAt),
+    );
+    const finalIdentity = budgetResult.identity;
+    if (
+      ledgerEntry.entryType !== "identity.created" ||
+      ledgerEntry.orgId !== finalIdentity.orgId ||
+      ledgerEntry.agentId !== finalIdentity.id ||
+      ledgerEntry.sponsorId !== finalIdentity.sponsorId
+    ) {
+      throw new Error("identity.created ledger entry must bind the created identity");
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      if (backend.state.identities.has(finalIdentity.id)) {
+        throw new StorageError("identity_already_exists", 409, "identity_already_exists");
+      }
+      const entry = createMemoryLedgerEntry(
+        backend.state.attestations.ledger,
+        ledgerEntry,
+      );
+      backend.state.identities.set(finalIdentity.id, cloneStoredIdentity(finalIdentity));
+      backend.state.attestations.ledger.push(entry);
+      if (budgetResult.shouldWriteAuditEvent) {
+        emitBudgetAlert(finalIdentity);
+      }
+      return cloneStoredIdentity(finalIdentity);
+    }
+
+    beginSqliteTransaction(backend.db);
+    try {
+      const existing = backend.db
+        .prepare<DataRow>(SELECT_STORED_IDENTITY_SQL)
+        .get(finalIdentity.id);
+      if (existing) {
+        throw new StorageError("identity_already_exists", 409, "identity_already_exists");
+      }
+      backend.db.prepare(INSERT_IDENTITY_SQL).run(...toIdentityParams(finalIdentity));
+      this.appendSqliteLedgerEntry(backend.db, ledgerEntry);
+      commitSqliteTransaction(backend.db);
+    } catch (error) {
+      rollbackSqliteTransaction(backend.db);
+      throw error;
+    }
+
+    if (budgetResult.shouldWriteAuditEvent) {
+      emitBudgetAlert(finalIdentity);
+    }
+    return cloneStoredIdentity(finalIdentity);
+  }
+
+  async getGrant(jti: string): Promise<AttestationGrant | null> {
+    const normalizedJti = requireString(jti, "jti is required");
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const grant = backend.state.attestations.grants.get(normalizedJti);
+      return grant ? cloneAttestationGrant(grant) : null;
+    }
+
+    return hydrateAttestationGrant(
+      backend.db
+        .prepare<AttestationGrantRow>(SELECT_ATTESTATION_GRANT_SQL)
+        .get(normalizedJti),
+    );
+  }
+
+  async createGrantWithLedgerEntry(
+    input: CreateAttestationGrantWithLedgerInput,
+  ): Promise<AttestationGrant> {
+    const grant = normalizeAttestationGrant(input.grant);
+    const entry = input.ledgerEntry;
+    if (entry.orgId !== grant.orgId || entry.jti !== grant.jti) {
+      throw new Error("grant ledger entry must match the grant organization and jti");
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      if (backend.state.attestations.grants.has(grant.jti)) {
+        throw new StorageError("attestation_grant_already_exists", 409, "attestation_grant_already_exists");
+      }
+      const ledgerEntry = createMemoryLedgerEntry(
+        backend.state.attestations.ledger,
+        entry,
+      );
+      backend.state.attestations.grants.set(grant.jti, cloneAttestationGrant(grant));
+      backend.state.attestations.ledger.push(ledgerEntry);
+      return cloneAttestationGrant(grant);
+    }
+
+    beginSqliteTransaction(backend.db);
+    try {
+      backend.db.prepare(INSERT_ATTESTATION_GRANT_SQL).run(
+        ...toAttestationGrantParams(grant),
+      );
+      this.appendSqliteLedgerEntry(backend.db, entry);
+      commitSqliteTransaction(backend.db);
+      return grant;
+    } catch (error) {
+      rollbackSqliteTransaction(backend.db);
+      throw error;
+    }
+  }
+
+  async appendAttestationLedgerEntry(
+    input: AppendAttestationLedgerEntryInput,
+  ): Promise<AttestationLedgerEntry> {
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const entry = createMemoryLedgerEntry(backend.state.attestations.ledger, input);
+      backend.state.attestations.ledger.push(entry);
+      return cloneAttestationLedgerEntry(entry);
+    }
+
+    beginSqliteTransaction(backend.db);
+    try {
+      const entry = this.appendSqliteLedgerEntry(backend.db, input);
+      commitSqliteTransaction(backend.db);
+      return entry;
+    } catch (error) {
+      rollbackSqliteTransaction(backend.db);
+      throw error;
+    }
+  }
+
+  async redeemGrantWithLedgerEntries(
+    input: RedeemAttestationGrantInput,
+  ): Promise<AttestationLedgerEntry[]> {
+    const jti = requireString(input.jti, "jti is required");
+    const keyHash = requireString(input.finalizeKeyHash, "finalizeKeyHash is required");
+    const redeemedAt = normalizeTimestamp(input.redeemedAt);
+    if (input.ledgerEntries.length === 0) {
+      throw new Error("at least one ledger entry is required to redeem a grant");
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const grant = backend.state.attestations.grants.get(jti) ?? null;
+      assertGrantCanRedeem(grant, keyHash, redeemedAt);
+      const entries: AttestationLedgerEntry[] = [];
+      for (const entry of input.ledgerEntries) {
+        assertFinalizeEntryMatchesGrant(entry, grant!);
+        entries.push(createMemoryLedgerEntry(
+          [...backend.state.attestations.ledger, ...entries],
+          entry,
+        ));
+      }
+      backend.state.attestations.grants.set(
+        jti,
+        cloneAttestationGrant({ ...grant!, redeemedAt }),
+      );
+      backend.state.attestations.ledger.push(...entries);
+      return entries.map(cloneAttestationLedgerEntry);
+    }
+
+    beginSqliteTransaction(backend.db);
+    try {
+      const grant = hydrateAttestationGrant(
+        backend.db
+          .prepare<AttestationGrantRow>(SELECT_ATTESTATION_GRANT_SQL)
+          .get(jti),
+      );
+      assertGrantCanRedeem(grant, keyHash, redeemedAt);
+      const entries = input.ledgerEntries.map((entry) => {
+        assertFinalizeEntryMatchesGrant(entry, grant!);
+        return this.appendSqliteLedgerEntry(backend.db, entry);
+      });
+      backend.db.prepare(REDEEM_ATTESTATION_GRANT_SQL).run(redeemedAt, jti);
+      commitSqliteTransaction(backend.db);
+      return entries;
+    } catch (error) {
+      rollbackSqliteTransaction(backend.db);
+      throw error;
+    }
+  }
+
+  private appendSqliteLedgerEntry(
+    db: SqliteDatabase,
+    input: AppendAttestationLedgerEntryInput,
+  ): AttestationLedgerEntry {
+    const last = hydrateAttestationLedgerEntry(
+      db
+        .prepare<AttestationLedgerRow>(SELECT_LAST_ATTESTATION_LEDGER_ENTRY_SQL)
+        .get(requireString(input.orgId, "orgId is required")),
+    );
+    const entry = prepareAttestationLedgerEntry(input, last);
+    db.prepare(INSERT_ATTESTATION_LEDGER_ENTRY_SQL).run(
+      ...toAttestationLedgerEntryParams(entry),
+    );
+    const stored = hydrateAttestationLedgerEntry(
+      db
+        .prepare<AttestationLedgerRow>(SELECT_ATTESTATION_LEDGER_ENTRY_BY_HASH_SQL)
+        .get(entry.orgId, entry.entryHash),
+    );
+    if (!stored) {
+      throw new Error("attestation ledger insert did not return a row");
+    }
+    return stored;
   }
 }
 
@@ -3044,6 +3337,331 @@ async function importOptional<T>(specifier: string): Promise<T | null> {
   }
 }
 
+type PreparedAttestationLedgerEntry = Omit<AttestationLedgerEntry, "seq">;
+
+/**
+ * Every field bound into an entry's chain hash. Optional identifiers are
+ * carried as `null` when absent so the preimage stays total.
+ */
+type AttestationLedgerHashPreimage = {
+  orgId: string;
+  orgSeq: number;
+  entryType: string;
+  jti: string | null;
+  commitSha: string | null;
+  repo: string | null;
+  agentId: string | null;
+  sponsorId: string | null;
+  payloadJson: string;
+  jws: string;
+  createdAt: string;
+  prevHash: string;
+};
+
+function normalizeAttestationGrant(input: AttestationGrant): AttestationGrant {
+  return {
+    jti: requireString(input.jti, "jti is required"),
+    orgId: requireString(input.orgId, "orgId is required"),
+    agentId: requireString(input.agentId, "agentId is required"),
+    sponsorId: requireString(input.sponsorId, "sponsorId is required"),
+    sponsorChain: normalizeRequiredStringArray(
+      input.sponsorChain,
+      "sponsorChain is required",
+    ),
+    repo: requireString(input.repo, "repo is required"),
+    ...(normalizeOptionalString(input.taskRef)
+      ? { taskRef: normalizeOptionalString(input.taskRef) }
+      : {}),
+    notAfter: normalizeTimestamp(input.notAfter),
+    finalizeKeyHash: requireString(
+      input.finalizeKeyHash,
+      "finalizeKeyHash is required",
+    ),
+    ...(normalizeOptionalString(input.redeemedAt)
+      ? { redeemedAt: normalizeTimestamp(input.redeemedAt) }
+      : {}),
+    late: input.late === true,
+    createdAt: normalizeTimestamp(input.createdAt),
+  };
+}
+
+function hydrateAttestationGrant(row: AttestationGrantRow | undefined): AttestationGrant | null {
+  if (!row) {
+    return null;
+  }
+  try {
+    const sponsorChain = JSON.parse(row.sponsor_chain_json ?? "") as unknown;
+    return normalizeAttestationGrant({
+      jti: row.jti ?? "",
+      orgId: row.org_id ?? "",
+      agentId: row.agent_id ?? "",
+      sponsorId: row.sponsor_id ?? "",
+      sponsorChain: normalizeRequiredStringArray(sponsorChain, "invalid sponsor chain"),
+      repo: row.repo ?? "",
+      ...(normalizeOptionalString(row.task_ref ?? undefined)
+        ? { taskRef: row.task_ref ?? undefined }
+        : {}),
+      notAfter: row.not_after ?? "",
+      finalizeKeyHash: row.finalize_key_hash ?? "",
+      ...(normalizeOptionalString(row.redeemed_at ?? undefined)
+        ? { redeemedAt: row.redeemed_at ?? undefined }
+        : {}),
+      late: row.late === true || row.late === 1,
+      createdAt: row.created_at ?? "",
+    });
+  } catch {
+    return null;
+  }
+}
+
+function cloneAttestationGrant(grant: AttestationGrant): AttestationGrant {
+  return { ...grant, sponsorChain: [...grant.sponsorChain] };
+}
+
+function prepareAttestationLedgerEntry(
+  input: AppendAttestationLedgerEntryInput,
+  previous: AttestationLedgerEntry | null,
+): PreparedAttestationLedgerEntry {
+  const orgId = requireString(input.orgId, "orgId is required");
+  const payloadJson = canonicalizeJson(input.payload);
+  const prevHash = previous?.entryHash ?? ATTESTATION_LEDGER_GENESIS_HASH;
+  const orgSeq = (previous?.orgSeq ?? 0) + 1;
+  const entryType = requireString(input.entryType, "entryType is required");
+  const jti = normalizeOptionalString(input.jti);
+  const commitSha = normalizeOptionalString(input.commitSha);
+  const repo = normalizeOptionalString(input.repo);
+  const agentId = normalizeOptionalString(input.agentId);
+  const sponsorId = normalizeOptionalString(input.sponsorId);
+  const jws = requireString(input.jws, "jws is required");
+  const createdAt = normalizeTimestamp(input.createdAt);
+  const entryHash = attestationLedgerEntryHash({
+    orgId,
+    orgSeq,
+    entryType,
+    jti: jti ?? null,
+    commitSha: commitSha ?? null,
+    repo: repo ?? null,
+    agentId: agentId ?? null,
+    sponsorId: sponsorId ?? null,
+    payloadJson,
+    jws,
+    createdAt,
+    prevHash,
+  });
+  return {
+    orgId,
+    orgSeq,
+    entryType,
+    ...(jti ? { jti } : {}),
+    ...(commitSha ? { commitSha } : {}),
+    ...(repo ? { repo } : {}),
+    ...(agentId ? { agentId } : {}),
+    ...(sponsorId ? { sponsorId } : {}),
+    payloadJson,
+    jws,
+    prevHash,
+    entryHash,
+    createdAt,
+  };
+}
+
+/**
+ * Hash the whole ledger entry, not just its payload and link.
+ *
+ * The chain is the tamper-evidence for attestation evidence, so every column a
+ * verifier reads has to be inside the preimage. Hashing only `payloadJson` and
+ * `prevHash` would leave `entryType`, `createdAt`, `jws` and the identifiers
+ * rewritable by anyone with database access while every hash still verified —
+ * an `attestation.late` entry could be relabelled `attestation.issued`, or a
+ * signature swapped between entries, with no break in the chain.
+ *
+ * `null` is used for absent optional fields rather than omitting the key, so
+ * that an absent value and an empty one cannot produce the same preimage.
+ */
+function attestationLedgerEntryHash(preimage: AttestationLedgerHashPreimage): string {
+  return crypto
+    .createHash("sha256")
+    .update(canonicalizeJson(preimage), "utf8")
+    .digest("hex");
+}
+
+function createMemoryLedgerEntry(
+  existing: AttestationLedgerEntry[],
+  input: AppendAttestationLedgerEntryInput,
+): AttestationLedgerEntry {
+  const orgId = requireString(input.orgId, "orgId is required");
+  const previous = [...existing]
+    .filter((entry) => entry.orgId === orgId)
+    .sort((left, right) => right.orgSeq - left.orgSeq)[0] ?? null;
+  return {
+    seq: existing.reduce((maximum, entry) => Math.max(maximum, entry.seq), 0) + 1,
+    ...prepareAttestationLedgerEntry(input, previous),
+  };
+}
+
+function hydrateAttestationLedgerEntry(
+  row: AttestationLedgerRow | undefined,
+): AttestationLedgerEntry | null {
+  if (!row) {
+    return null;
+  }
+  const seq = normalizeNumber(row.seq);
+  const orgSeq = normalizeNumber(row.org_seq);
+  const payloadJson = normalizeOptionalString(row.payload_json);
+  const jws = normalizeOptionalString(row.jws);
+  const prevHash = normalizeOptionalString(row.prev_hash);
+  const entryHash = normalizeOptionalString(row.entry_hash);
+  if (!seq || !orgSeq || !payloadJson || !jws || !prevHash || !entryHash) {
+    return null;
+  }
+  try {
+    return {
+      seq,
+      orgId: requireString(row.org_id, "invalid ledger org"),
+      orgSeq,
+      entryType: requireString(row.entry_type, "invalid ledger entry type"),
+      ...(normalizeOptionalString(row.jti ?? undefined)
+        ? { jti: normalizeOptionalString(row.jti ?? undefined) }
+        : {}),
+      ...(normalizeOptionalString(row.commit_sha ?? undefined)
+        ? { commitSha: normalizeOptionalString(row.commit_sha ?? undefined) }
+        : {}),
+      ...(normalizeOptionalString(row.repo ?? undefined)
+        ? { repo: normalizeOptionalString(row.repo ?? undefined) }
+        : {}),
+      ...(normalizeOptionalString(row.agent_id ?? undefined)
+        ? { agentId: normalizeOptionalString(row.agent_id ?? undefined) }
+        : {}),
+      ...(normalizeOptionalString(row.sponsor_id ?? undefined)
+        ? { sponsorId: normalizeOptionalString(row.sponsor_id ?? undefined) }
+        : {}),
+      payloadJson,
+      jws,
+      prevHash,
+      entryHash,
+      createdAt: normalizeTimestamp(row.created_at),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function cloneAttestationLedgerEntry(
+  entry: AttestationLedgerEntry,
+): AttestationLedgerEntry {
+  return { ...entry };
+}
+
+function toAttestationGrantParams(grant: AttestationGrant): unknown[] {
+  return [
+    grant.jti,
+    grant.orgId,
+    grant.agentId,
+    grant.sponsorId,
+    JSON.stringify(grant.sponsorChain),
+    grant.repo,
+    grant.taskRef ?? null,
+    grant.notAfter,
+    grant.finalizeKeyHash,
+    grant.redeemedAt ?? null,
+    grant.late ? 1 : 0,
+    grant.createdAt,
+  ];
+}
+
+function toAttestationLedgerEntryParams(
+  entry: PreparedAttestationLedgerEntry,
+): unknown[] {
+  return [
+    entry.orgId,
+    entry.orgSeq,
+    entry.entryType,
+    entry.jti ?? null,
+    entry.commitSha ?? null,
+    entry.repo ?? null,
+    entry.agentId ?? null,
+    entry.sponsorId ?? null,
+    entry.payloadJson,
+    entry.jws,
+    entry.prevHash,
+    entry.entryHash,
+    entry.createdAt,
+  ];
+}
+
+function assertGrantCanRedeem(
+  grant: AttestationGrant | null,
+  finalizeKeyHash: string,
+  redeemedAt: string,
+): asserts grant is AttestationGrant {
+  if (!grant || !constantTimeEquals(finalizeKeyHash, grant.finalizeKeyHash)) {
+    throw new StorageError("invalid_finalize_key", 401, "invalid_finalize_key");
+  }
+  if (grant.redeemedAt) {
+    throw new StorageError("attestation_grant_redeemed", 409, "attestation_grant_redeemed");
+  }
+  if (Date.parse(grant.notAfter) <= Date.parse(redeemedAt)) {
+    throw new StorageError("attestation_grant_expired", 410, "attestation_grant_expired");
+  }
+}
+
+function assertFinalizeEntryMatchesGrant(
+  entry: AppendAttestationLedgerEntryInput,
+  grant: AttestationGrant,
+): void {
+  if (
+    entry.orgId !== grant.orgId ||
+    entry.jti !== grant.jti ||
+    entry.repo !== grant.repo ||
+    entry.agentId !== grant.agentId ||
+    entry.sponsorId !== grant.sponsorId
+  ) {
+    throw new Error("attestation ledger entry does not match its grant");
+  }
+}
+
+/**
+ * Connections with a storage transaction currently open.
+ *
+ * SQLite has no nested transactions: a second BEGIN IMMEDIATE on the same
+ * connection throws, and the surrounding catch would then ROLLBACK the *outer*
+ * transaction, discarding writes this layer never owned. Tracking it here
+ * rather than reading a driver flag keeps the guard identical across
+ * better-sqlite3 and node:sqlite, neither of which exposes the same property.
+ */
+const openSqliteTransactions = new WeakSet<SqliteDatabase>();
+
+/**
+ * Open a storage transaction, refusing to nest.
+ *
+ * Call this OUTSIDE the try block that owns the rollback, so a refusal
+ * propagates without rolling back the transaction that is already open.
+ */
+function beginSqliteTransaction(db: SqliteDatabase): void {
+  if (openSqliteTransactions.has(db)) {
+    throw new Error(
+      "a SQLite storage transaction is already open on this connection; "
+        + "nested transactions are not supported",
+    );
+  }
+  db.exec("BEGIN IMMEDIATE");
+  openSqliteTransactions.add(db);
+}
+
+function commitSqliteTransaction(db: SqliteDatabase): void {
+  db.exec("COMMIT");
+  openSqliteTransactions.delete(db);
+}
+
+function rollbackSqliteTransaction(db: SqliteDatabase): void {
+  openSqliteTransactions.delete(db);
+  try {
+    db.exec("ROLLBACK");
+  } catch {
+    // Preserve the failure that caused rollback.
+  }
+}
+
 function createMemoryBackend(): BackendContext {
   return {
     kind: "memory",
@@ -3060,6 +3678,10 @@ function createMemoryBackend(): BackendContext {
       orgBudgets: new Map<string, IdentityBudget | undefined>(),
       tokens: new Map<string, MemoryTokenRecord>(),
       revokedTokens: new Map<string, RevokedTokenRecord>(),
+      attestations: {
+        grants: new Map<string, AttestationGrant>(),
+        ledger: [],
+      },
     },
   };
 }
@@ -3223,6 +3845,7 @@ function normalizeStoredIdentity(
     orgId: requireString(identity.orgId, "orgId is required"),
     workspaceId: requireString(identity.workspaceId, "workspaceId is required"),
     sponsorId: requireString(identity.sponsorId, "sponsorId is required"),
+    sponsorBinding: normalizeSponsorBinding(identity.sponsorBinding),
     sponsorChain: normalizedSponsorChain,
     status: normalizeIdentityStatus(identity.status) ?? "active",
     scopes: normalizeStringArray(identity.scopes),
@@ -3499,6 +4122,7 @@ function toAgentIdentity(identity: StoredIdentity): AgentIdentity {
     metadata: { ...identity.metadata },
     createdAt: identity.createdAt,
     updatedAt: identity.updatedAt,
+    sponsorBinding: normalizeSponsorBinding(identity.sponsorBinding),
     ...(identity.lastActiveAt ? { lastActiveAt: identity.lastActiveAt } : {}),
     ...(identity.suspendedAt ? { suspendedAt: identity.suspendedAt } : {}),
     ...(identity.suspendReason
@@ -4304,6 +4928,30 @@ function normalizeIdentityStatus(value: unknown): IdentityStatus | undefined {
     : undefined;
 }
 
+function normalizeSponsorBinding(value: SponsorBinding | undefined): SponsorBinding {
+  if (value?.mode === "oidc") {
+    if (
+      typeof value.issuer !== "string"
+      || !value.issuer.trim()
+      || typeof value.subject !== "string"
+      || !value.subject.trim()
+      || !Number.isInteger(value.iat)
+    ) {
+      throw new StorageError("invalid sponsor binding", 400, "invalid_sponsor_binding");
+    }
+    return {
+      mode: "oidc",
+      issuer: value.issuer.trim(),
+      subject: value.subject.trim(),
+      iat: value.iat,
+      ...(typeof value.jti === "string" && value.jti.trim()
+        ? { jti: value.jti.trim() }
+        : {}),
+    };
+  }
+  return { mode: "legacy" };
+}
+
 function normalizePolicyEffect(value: unknown): Policy["effect"] | undefined {
   return value === "allow" || value === "deny" ? value : undefined;
 }
@@ -4314,6 +4962,17 @@ function normalizeStringArray(value: unknown): string[] {
   }
 
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function normalizeRequiredStringArray(value: unknown, message: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(message);
+  }
+  const normalized = value.map((item) => requireString(item, message));
+  if (normalized.length === 0) {
+    throw new Error(message);
+  }
+  return normalized;
 }
 
 function parseStringArrayField(

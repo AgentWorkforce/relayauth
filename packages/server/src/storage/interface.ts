@@ -473,6 +473,97 @@ export interface ApiKeyStorage {
   touchLastUsed(id: string, usedAt: string): Promise<void>;
 }
 
+/** The fixed predecessor for the first entry in every organization chain. */
+export const ATTESTATION_LEDGER_GENESIS_HASH =
+  "0000000000000000000000000000000000000000000000000000000000000000";
+
+export type AttestationLedgerEntryType =
+  | "attestation.granted"
+  | "attestation.issued"
+  | "attestation.late"
+  | "identity.created"
+  | "key.rotated"
+  | "checkpoint";
+
+export type AttestationGrant = {
+  jti: string;
+  orgId: string;
+  agentId: string;
+  sponsorId: string;
+  sponsorChain: string[];
+  repo: string;
+  taskRef?: string;
+  notAfter: string;
+  finalizeKeyHash: string;
+  redeemedAt?: string;
+  late: boolean;
+  createdAt: string;
+};
+
+export type AttestationLedgerEntry = {
+  seq: number;
+  orgId: string;
+  orgSeq: number;
+  entryType: AttestationLedgerEntryType | string;
+  jti?: string;
+  commitSha?: string;
+  repo?: string;
+  agentId?: string;
+  sponsorId?: string;
+  payloadJson: string;
+  jws: string;
+  prevHash: string;
+  entryHash: string;
+  createdAt: string;
+};
+
+export type AppendAttestationLedgerEntryInput = {
+  orgId: string;
+  entryType: AttestationLedgerEntryType | string;
+  jti?: string;
+  commitSha?: string;
+  repo?: string;
+  agentId?: string;
+  sponsorId?: string;
+  payload: Record<string, unknown>;
+  jws: string;
+  createdAt?: string;
+};
+
+export type CreateAttestationGrantWithLedgerInput = {
+  grant: AttestationGrant;
+  ledgerEntry: AppendAttestationLedgerEntryInput;
+};
+
+export type RedeemAttestationGrantInput = {
+  jti: string;
+  finalizeKeyHash: string;
+  redeemedAt: string;
+  ledgerEntries: AppendAttestationLedgerEntryInput[];
+};
+
+export interface AttestationStorage {
+  /**
+   * Persists an identity and its identity.created ledger entry as one atomic
+   * operation. Call this instead of identities.create when the caller must
+   * fail closed on ledger persistence.
+   */
+  createIdentityWithLedgerEntry(
+    identity: StoredIdentity,
+    ledgerEntry: AppendAttestationLedgerEntryInput,
+  ): Promise<StoredIdentity>;
+  getGrant(jti: string): Promise<AttestationGrant | null>;
+  createGrantWithLedgerEntry(
+    input: CreateAttestationGrantWithLedgerInput,
+  ): Promise<AttestationGrant>;
+  appendAttestationLedgerEntry(
+    input: AppendAttestationLedgerEntryInput,
+  ): Promise<AttestationLedgerEntry>;
+  redeemGrantWithLedgerEntries(
+    input: RedeemAttestationGrantInput,
+  ): Promise<AttestationLedgerEntry[]>;
+}
+
 export interface AuthStorage {
   identities: IdentityStorage;
   tokens: TokenStorage;
@@ -483,6 +574,7 @@ export interface AuthStorage {
   auditWebhooks: AuditWebhookStorage;
   contexts: ContextStorage;
   apiKeys: ApiKeyStorage;
+  attestations: AttestationStorage;
 }
 
 export class StorageError extends Error {

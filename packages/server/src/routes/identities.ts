@@ -4,12 +4,18 @@ import type {
   IdentityStatus,
   IdentityType,
   RelayAuthTokenClaims,
+  SponsorBinding,
 } from "@relayauth/types";
 import { matchScope } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext, authenticateBearerOrApiKey, authorizeClaims, decodeBase64UrlJson } from "../lib/auth.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
+import {
+  IDENTITY_CREATE_SPONSOR_INTENT,
+  SponsorBindingError,
+  type IdentityCreatedLedgerPayload,
+} from "../lib/sponsor-binding.js";
 import {
   isStorageCapacityExhausted,
   isTransientStorageOverload,
@@ -478,6 +484,25 @@ identities.post("/", async (c) => {
 
   const storage = c.get("storage");
   try {
+    const federation = c.get("sponsorOidcService").resolveConfig(c.env, auth.claims.org);
+    let sponsorBinding: SponsorBinding = { mode: "legacy" };
+    if (federation.sponsorBinding === "oidc") {
+      const sponsorProof = typeof body.sponsorProof === "string" ? body.sponsorProof.trim() : "";
+      if (!sponsorProof) {
+        return c.json({
+          error: "sponsorProof is required for this organization",
+          code: "sponsor_proof_required",
+        }, 403);
+      }
+      sponsorBinding = await c.get("sponsorOidcService").verifySponsorProof(
+        c.env,
+        sponsorProof,
+        auth.claims.org,
+        sponsorId,
+        IDENTITY_CREATE_SPONSOR_INTENT,
+      );
+    }
+
     const duplicate = await withStorageRetry(
       () => storage.identities.findDuplicate(auth.claims.org, name),
       { operation: "identities.find_duplicate" },
@@ -488,6 +513,9 @@ identities.post("/", async (c) => {
 
     const timestamp = new Date().toISOString();
     const id = createIdentityId();
+    const sponsorChain = federation.sponsorBinding === "oidc"
+      ? oidcSponsorChain(auth.claims, sponsorId, id)
+      : [...auth.claims.sponsorChain, id];
     const budget = body.budget ?? await withStorageRetry(
       () => storage.identities.loadOrgBudget(auth.claims.org),
       { operation: "identities.load_org_budget" },
@@ -504,7 +532,8 @@ identities.post("/", async (c) => {
       createdAt: timestamp,
       updatedAt: timestamp,
       sponsorId,
-      sponsorChain: [...auth.claims.sponsorChain, id],
+      sponsorChain,
+      sponsorBinding,
       workspaceId: normalizeWorkspaceId(body.workspaceId, auth.claims.wks),
       ...(budget ? { budget } : {}),
     };
@@ -514,10 +543,44 @@ identities.post("/", async (c) => {
       // Identity creation is not guaranteed to be idempotent across storage
       // adapters. Never retry a write that may have committed before its
       // adapter surfaced an overload error.
-      createdIdentity = await storage.identities.create(storedIdentity);
+      if (sponsorBinding.mode === "oidc") {
+        const ledgerPayload: IdentityCreatedLedgerPayload = {
+          agentId: storedIdentity.id,
+          sponsorId,
+          intent: IDENTITY_CREATE_SPONSOR_INTENT,
+          issuer: sponsorBinding.issuer,
+          subject: sponsorBinding.subject,
+          iat: sponsorBinding.iat,
+          ...(sponsorBinding.jti ? { jti: sponsorBinding.jti } : {}),
+          sponsorBinding,
+          ts: timestamp,
+        };
+        const jws = await c.get("sponsorOidcService").signIdentityCreatedLedgerPayload(
+          c.env,
+          ledgerPayload,
+        );
+        createdIdentity = await storage.attestations.createIdentityWithLedgerEntry(
+          storedIdentity,
+          {
+            orgId: storedIdentity.orgId,
+            entryType: "identity.created",
+            agentId: storedIdentity.id,
+            sponsorId,
+            ...(sponsorBinding.jti ? { jti: sponsorBinding.jti } : {}),
+            payload: ledgerPayload,
+            jws,
+            createdAt: timestamp,
+          },
+        );
+      } else {
+        createdIdentity = await storage.identities.create(storedIdentity);
+      }
     } catch (error) {
       if (isTransientStorageOverload(error)) {
-        throw new StorageOverloadedError("identities.create", 1, { cause: error });
+        const operation = sponsorBinding.mode === "oidc"
+          ? "attestations.create_identity_with_ledger"
+          : "identities.create";
+        throw new StorageOverloadedError(operation, 1, { cause: error });
       }
       throw error;
     }
@@ -528,10 +591,15 @@ identities.post("/", async (c) => {
         id: createdIdentity.id,
         org: createdIdentity.orgId,
         name: createdIdentity.name,
+        sponsorId: createdIdentity.sponsorId,
+        sponsorBinding,
       },
     });
     return c.json(createdIdentity, 201);
   } catch (error) {
+    if (error instanceof SponsorBindingError) {
+      return c.json({ error: error.message, code: error.code }, error.status);
+    }
     if (isStorageCapacityExhausted(error)) {
       throw error;
     }
@@ -588,6 +656,17 @@ function identityCreateRateLimitKeys(claims: RelayAuthTokenClaims): string[] {
     `org:${claims.org}`,
     ...(apiKeyId ? [`api-key:${apiKeyId}`] : []),
   ];
+}
+
+function oidcSponsorChain(
+  claims: RelayAuthTokenClaims,
+  sponsorId: string,
+  identityId: string,
+): string[] {
+  if (claims.sponsorId === sponsorId && claims.sponsorChain[0] === sponsorId) {
+    return [...claims.sponsorChain, identityId];
+  }
+  return [sponsorId, identityId];
 }
 
 function normalizeCredential(value: unknown): string | undefined {
@@ -696,7 +775,7 @@ function sanitizeIdentityUpdate(body: UpdateIdentityRequest): UpdateIdentityRequ
     update.type = body.type;
   }
 
-  // status, sponsorId, sponsorChain, workspaceId are not allowed via PATCH —
+  // status, sponsorId, sponsorChain, sponsorBinding, workspaceId are not allowed via PATCH —
   // use dedicated endpoints (suspend, retire, reactivate) for status changes.
 
   if ("scopes" in body) {
