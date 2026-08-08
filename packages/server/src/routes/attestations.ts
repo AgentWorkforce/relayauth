@@ -87,6 +87,7 @@ attestations.post("/grants", async (c) => {
   if (
     !identity ||
     identity.orgId !== auth.claims.org ||
+    (!late && identity.status !== "active") ||
     (workspaceToken && identity.workspaceId !== workspaceToken.workspaceId)
   ) {
     return c.json({ error: "identity_not_found", code: "identity_not_found" }, 404);

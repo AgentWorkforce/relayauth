@@ -23,6 +23,7 @@ from .types import (
     RelayAuthTokenClaims,
     Role,
     ScopeTemplate,
+    SponsorProof,
     TokenBudget,
     TokenPair,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "Role",
     "ScopeChecker",
     "ScopeTemplate",
+    "SponsorProof",
     "TokenBudget",
     "TokenExpiredError",
     "TokenPair",

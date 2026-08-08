@@ -14,6 +14,7 @@ import type {
   IdentityType,
   Policy,
   Role,
+  SponsorBinding,
 } from "@relayauth/types";
 import type {
   CreateApiKeyInput,
@@ -46,6 +47,7 @@ import type {
   DashboardAuditQuery,
   DuplicateIdentityRecord,
   IdentityChildSummary,
+  IdentityLineageRecord,
   IdentityStorage,
   IdentityStatusCounts,
   IssuedTokenAudit,
@@ -61,6 +63,8 @@ import type {
   RedeemAttestationGrantInput,
   RoleStorage,
   StoredTokenRecord,
+  TokenLineageRecord,
+  TokenLineageSnapshot,
   TokenStorage,
   RoleUpdate,
   WorkspaceContextRecord,
@@ -77,6 +81,8 @@ import { canonicalizeJson } from "../lib/canonical-json.js";
 
 const DEFAULT_DB_PATH = ".relay/relayauth.db";
 const DEFAULT_INTERNAL_SECRET = "internal-test-secret";
+const MAX_LINEAGE_TOKEN_RECORDS = 1_000;
+const LINEAGE_TOKEN_QUERY_LIMIT = MAX_LINEAGE_TOKEN_RECORDS + 1;
 
 /**
  * D1-compatible shim for test helpers that access .DB.prepare().
@@ -513,6 +519,64 @@ const INSERT_TOKEN_SQL = `
   VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
 `;
 
+const SELECT_IDENTITY_LINEAGE_SQL = `
+  SELECT identity_id, org_id, workspace_id, sponsor_id, created_at
+  FROM identity_lineages
+  WHERE identity_id = ?
+  LIMIT 1
+`;
+
+const SELECT_IDENTITY_LINEAGE_MEMBERS_SQL = `
+  SELECT principal_id
+  FROM identity_lineage_members
+  WHERE identity_id = ?
+  ORDER BY chain_position ASC
+`;
+
+const SELECT_TOKEN_LINEAGES_SQL = `
+  SELECT token_id, issued_token_id, identity_id, org_id, workspace_id, sponsor_id, token_type, created_at
+  FROM token_lineages
+  WHERE identity_id = ?
+  ORDER BY created_at ASC, token_id ASC
+  LIMIT ?
+`;
+
+const SELECT_TOKEN_LINEAGE_MEMBERS_BY_IDENTITY_SQL = `
+  WITH selected_tokens AS (
+    SELECT token_id, created_at
+    FROM token_lineages
+    WHERE identity_id = ?
+    ORDER BY created_at ASC, token_id ASC
+    LIMIT ?
+  )
+  SELECT selected_tokens.token_id, token_lineage_members.principal_id
+  FROM selected_tokens
+  INNER JOIN token_lineage_members
+    ON token_lineage_members.token_id = selected_tokens.token_id
+  ORDER BY selected_tokens.created_at ASC,
+    selected_tokens.token_id ASC,
+    token_lineage_members.chain_position ASC
+`;
+
+const INSERT_TOKEN_LINEAGE_SQL = `
+  INSERT INTO token_lineages (
+    token_id,
+    issued_token_id,
+    identity_id,
+    org_id,
+    workspace_id,
+    sponsor_id,
+    token_type,
+    created_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+const INSERT_TOKEN_LINEAGE_MEMBER_SQL = `
+  INSERT INTO token_lineage_members (token_id, chain_position, principal_id)
+  VALUES (?, ?, ?)
+`;
+
 const UPSERT_REVOKED_TOKEN_SQL = `
   INSERT OR REPLACE INTO revoked_tokens (jti, expires_at)
   VALUES (?, ?)
@@ -718,6 +782,20 @@ type TokenRow = {
   session_id?: string | null;
   expires_at?: number | string | null;
 };
+type IdentityLineageRow = {
+  identity_id?: string | null;
+  org_id?: string | null;
+  workspace_id?: string | null;
+  sponsor_id?: string | null;
+  created_at?: string | null;
+};
+type TokenLineageRow = IdentityLineageRow & {
+  token_id?: string | null;
+  issued_token_id?: string | null;
+  token_type?: "access" | "refresh" | null;
+};
+type LineageMemberRow = { principal_id?: string | null };
+type TokenLineageMemberRow = LineageMemberRow & { token_id?: string | null };
 type ExistsRow = { found?: number | string | bigint | null };
 type RevokedTokenRow = { expires_at?: number | string | null };
 type TableInfoRow = { name?: string | null };
@@ -857,7 +935,28 @@ type MemoryTokenRecord = {
   issuedAt: number;
   expiresAt: number;
   createdAt: string;
+  lineage?: TokenLineageSnapshot;
 };
+
+function toMemoryTokenRecord(token: IssuedTokenRecord): MemoryTokenRecord {
+  return {
+    ...token,
+    status: "active",
+    ...(token.lineage
+      ? {
+          lineage: {
+            ...token.lineage,
+            sponsorChain: [...token.lineage.sponsorChain],
+          },
+        }
+      : {}),
+  };
+}
+
+type MemoryIdentityLineageSnapshot = Omit<
+  IdentityLineageRecord,
+  "tokens" | "tokensTruncated"
+>;
 
 type RevokedTokenRecord = {
   expiresAt: number;
@@ -872,6 +971,7 @@ type MemoryAttestationState = {
 
 type MemoryState = {
   identities: Map<string, StoredIdentity>;
+  identityLineages: Map<string, MemoryIdentityLineageSnapshot>;
   roles: Map<string, Role>;
   policies: Map<string, Policy>;
   apiKeys: Map<string, StoredApiKey>;
@@ -1169,6 +1269,14 @@ class SqliteIdentityStorage implements IdentityStorage {
         finalIdentity.id,
         cloneStoredIdentity(finalIdentity),
       );
+      backend.state.identityLineages.set(finalIdentity.id, {
+        identityId: finalIdentity.id,
+        orgId: finalIdentity.orgId,
+        workspaceId: finalIdentity.workspaceId,
+        sponsorId: finalIdentity.sponsorId,
+        sponsorChain: [...finalIdentity.sponsorChain],
+        createdAt: finalIdentity.createdAt,
+      });
       if (budgetResult.shouldWriteAuditEvent) {
         emitBudgetAlert(finalIdentity);
       }
@@ -1497,6 +1605,130 @@ class SqliteIdentityStorage implements IdentityStorage {
     return summarizeIdentityCounts(rows);
   }
 
+  async getLineage(identityId: string): Promise<IdentityLineageRecord | null> {
+    const normalizedIdentityId = normalizeOptionalString(identityId);
+    if (!normalizedIdentityId) {
+      return null;
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const identityLineage = backend.state.identityLineages.get(
+        normalizedIdentityId,
+      );
+      if (!identityLineage) {
+        return null;
+      }
+
+      const lineageTokens = [...backend.state.tokens.values()]
+        .filter(
+          (token) =>
+            token.identityId === normalizedIdentityId && token.lineage !== undefined,
+        )
+        .sort(
+          (left, right) =>
+            left.createdAt.localeCompare(right.createdAt) ||
+            left.tokenId.localeCompare(right.tokenId),
+        );
+      const tokensTruncated = lineageTokens.length > MAX_LINEAGE_TOKEN_RECORDS;
+      const tokens = lineageTokens
+        .slice(0, MAX_LINEAGE_TOKEN_RECORDS)
+        .map((token): TokenLineageRecord => ({
+          tokenId: token.tokenId,
+          identityId: token.identityId,
+          orgId: token.lineage!.orgId,
+          workspaceId: token.lineage!.workspaceId,
+          sponsorId: token.lineage!.sponsorId,
+          sponsorChain: [...token.lineage!.sponsorChain],
+          tokenType: token.lineage!.tokenType,
+          createdAt: token.createdAt,
+        }));
+
+      return {
+        ...identityLineage,
+        sponsorChain: [...identityLineage.sponsorChain],
+        tokens,
+        tokensTruncated,
+      };
+    }
+
+    // Keep identity, member, and token snapshots consistent when another
+    // connection issues a token while this lineage request is in flight.
+    backend.db.exec("BEGIN");
+    try {
+      const lineage = backend.db
+        .prepare<IdentityLineageRow>(SELECT_IDENTITY_LINEAGE_SQL)
+        .get(normalizedIdentityId);
+      if (!lineage) {
+        backend.db.exec("COMMIT");
+        return null;
+      }
+
+      const identityRecord = hydrateIdentityLineage(lineage);
+      if (!identityRecord) {
+        backend.db.exec("COMMIT");
+        return null;
+      }
+      const sponsorChain = backend.db
+        .prepare<LineageMemberRow>(SELECT_IDENTITY_LINEAGE_MEMBERS_SQL)
+        .all(normalizedIdentityId)
+        .map((row) => normalizeOptionalString(row.principal_id))
+        .filter((value): value is string => Boolean(value));
+
+      const tokenMembers = backend.db
+        .prepare<TokenLineageMemberRow>(
+          SELECT_TOKEN_LINEAGE_MEMBERS_BY_IDENTITY_SQL,
+        )
+        .all(normalizedIdentityId, LINEAGE_TOKEN_QUERY_LIMIT)
+        .reduce((byToken, member) => {
+          const tokenId = normalizeOptionalString(member.token_id);
+          const principalId = normalizeOptionalString(member.principal_id);
+          if (tokenId && principalId) {
+            const members = byToken.get(tokenId) ?? [];
+            members.push(principalId);
+            byToken.set(tokenId, members);
+          }
+          return byToken;
+        }, new Map<string, string[]>());
+
+      const tokenRows = backend.db
+        .prepare<TokenLineageRow>(SELECT_TOKEN_LINEAGES_SQL)
+        .all(normalizedIdentityId, LINEAGE_TOKEN_QUERY_LIMIT);
+      const tokensTruncated = tokenRows.length > MAX_LINEAGE_TOKEN_RECORDS;
+      const tokens = tokenRows
+        .slice(0, MAX_LINEAGE_TOKEN_RECORDS)
+        .map((row) => {
+          const token = hydrateTokenLineage(row);
+          if (!token) {
+            return null;
+          }
+          return {
+            ...token,
+            sponsorChain: [
+              ...(tokenMembers.get(normalizeOptionalString(row.token_id) ?? "") ?? []),
+            ],
+          };
+        })
+        .filter((token): token is TokenLineageRecord => token !== null);
+
+      const result = {
+        ...identityRecord,
+        sponsorChain,
+        tokens,
+        tokensTruncated,
+      };
+      backend.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the original query failure.
+      }
+      throw error;
+    }
+  }
+
   private async getRequired(id: string): Promise<StoredIdentity> {
     const identity = await this.get(id);
     if (!identity) {
@@ -1546,25 +1778,34 @@ class SqliteTokenStorage implements TokenStorage {
     const backend = await this.provider.getBackend();
 
     if (backend.kind === "memory") {
-      backend.state.tokens.set(token.id, {
-        ...token,
-        status: "active",
-      });
+      backend.state.tokens.set(token.id, toMemoryTokenRecord(token));
       return;
     }
 
-    backend.db
-      .prepare(INSERT_TOKEN_SQL)
-      .run(
-        token.id,
-        token.tokenId,
-        token.jti,
-        token.identityId,
-        token.sessionId ?? null,
-        token.issuedAt,
-        token.expiresAt,
-        token.createdAt,
-      );
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      backend.db
+        .prepare(INSERT_TOKEN_SQL)
+        .run(
+          token.id,
+          token.tokenId,
+          token.jti,
+          token.identityId,
+          token.sessionId ?? null,
+          token.issuedAt,
+          token.expiresAt,
+          token.createdAt,
+        );
+      insertTokenLineage(backend.db, token);
+      backend.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the originating storage error.
+      }
+      throw error;
+    }
   }
 
   async persistIssuedWithAudit(input: IssuedTokenAudit): Promise<void> {
@@ -1582,16 +1823,13 @@ class SqliteTokenStorage implements TokenStorage {
           "token_already_exists",
         );
       }
-      backend.state.tokens.set(input.token.id, {
-        ...input.token,
-        status: "active",
-      });
+      backend.state.tokens.set(input.token.id, toMemoryTokenRecord(input.token));
       backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
       backend.state.auditLogs.sort(compareAuditRecordDesc);
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       backend.db
         .prepare(INSERT_TOKEN_SQL)
@@ -1605,16 +1843,13 @@ class SqliteTokenStorage implements TokenStorage {
           input.token.expiresAt,
           input.token.createdAt,
         );
+      insertTokenLineage(backend.db, input.token);
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(auditEntry));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating storage error.
-      }
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -1636,20 +1871,20 @@ class SqliteTokenStorage implements TokenStorage {
         );
       }
 
-      backend.state.tokens.set(input.accessToken.id, {
-        ...input.accessToken,
-        status: "active",
-      });
-      backend.state.tokens.set(input.refreshToken.id, {
-        ...input.refreshToken,
-        status: "active",
-      });
+      backend.state.tokens.set(
+        input.accessToken.id,
+        toMemoryTokenRecord(input.accessToken),
+      );
+      backend.state.tokens.set(
+        input.refreshToken.id,
+        toMemoryTokenRecord(input.refreshToken),
+      );
       backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
       backend.state.auditLogs.sort(compareAuditRecordDesc);
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const insertToken = backend.db.prepare(INSERT_TOKEN_SQL);
       for (const token of [input.accessToken, input.refreshToken]) {
@@ -1663,18 +1898,16 @@ class SqliteTokenStorage implements TokenStorage {
           token.expiresAt,
           token.createdAt,
         );
+        insertTokenLineage(backend.db, token);
       }
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(auditEntry));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating storage error (for example SQLITE_FULL);
-        // rollback errors must not hide the retry/capacity classification.
-      }
+      // Rollback errors must not hide the originating storage error (for
+      // example SQLITE_FULL) or its retry/capacity classification.
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -1714,14 +1947,14 @@ class SqliteTokenStorage implements TokenStorage {
           "token_rotation_conflict",
         );
       }
-      backend.state.tokens.set(input.accessToken.id, {
-        ...input.accessToken,
-        status: "active",
-      });
-      backend.state.tokens.set(input.refreshToken.id, {
-        ...input.refreshToken,
-        status: "active",
-      });
+      backend.state.tokens.set(
+        input.accessToken.id,
+        toMemoryTokenRecord(input.accessToken),
+      );
+      backend.state.tokens.set(
+        input.refreshToken.id,
+        toMemoryTokenRecord(input.refreshToken),
+      );
       previousToken.status = "revoked";
       backend.state.revokedTokens.set(previous.id, {
         expiresAt: previous.expiresAt,
@@ -1736,7 +1969,7 @@ class SqliteTokenStorage implements TokenStorage {
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const insertToken = backend.db.prepare(INSERT_TOKEN_SQL);
       for (const token of [input.accessToken, input.refreshToken]) {
@@ -1750,6 +1983,7 @@ class SqliteTokenStorage implements TokenStorage {
           token.expiresAt,
           token.createdAt,
         );
+        insertTokenLineage(backend.db, token);
       }
       const revoked = backend.db
         .prepare(
@@ -1778,13 +2012,9 @@ class SqliteTokenStorage implements TokenStorage {
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(revokedAudit));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating storage error.
-      }
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -1917,6 +2147,82 @@ function toStoredTokenRecord(
   };
 }
 
+function insertTokenLineage(db: SqliteDatabase, token: IssuedTokenRecord): void {
+  const lineage = token.lineage;
+  if (!lineage) {
+    return;
+  }
+
+  db.prepare(INSERT_TOKEN_LINEAGE_SQL).run(
+    token.id,
+    token.tokenId,
+    token.identityId,
+    lineage.orgId,
+    lineage.workspaceId,
+    lineage.sponsorId,
+    lineage.tokenType,
+    token.createdAt,
+  );
+  const insertMember = db.prepare(INSERT_TOKEN_LINEAGE_MEMBER_SQL);
+  lineage.sponsorChain.forEach((principalId, chainPosition) => {
+    insertMember.run(token.id, chainPosition, principalId);
+  });
+}
+
+function hydrateIdentityLineage(
+  row: IdentityLineageRow,
+): Omit<
+  IdentityLineageRecord,
+  "sponsorChain" | "tokens" | "tokensTruncated"
+> | null {
+  const identityId = normalizeOptionalString(row.identity_id);
+  const orgId = normalizeOptionalString(row.org_id);
+  const workspaceId = normalizeOptionalString(row.workspace_id);
+  const sponsorId = normalizeOptionalString(row.sponsor_id);
+  const createdAt = normalizeOptionalString(row.created_at);
+  if (!identityId || !orgId || !workspaceId || !sponsorId || !createdAt) {
+    return null;
+  }
+
+  return { identityId, orgId, workspaceId, sponsorId, createdAt };
+}
+
+function hydrateTokenLineage(row: TokenLineageRow): Omit<TokenLineageRecord, "sponsorChain"> | null {
+  const tokenId = normalizeOptionalString(row.issued_token_id);
+  const identityId = normalizeOptionalString(row.identity_id);
+  const orgId = normalizeOptionalString(row.org_id);
+  const workspaceId = normalizeOptionalString(row.workspace_id);
+  const sponsorId = normalizeOptionalString(row.sponsor_id);
+  const createdAt = normalizeOptionalString(row.created_at);
+  const tokenType = row.token_type;
+  if (
+    !tokenId ||
+    !identityId ||
+    !orgId ||
+    !workspaceId ||
+    !sponsorId ||
+    !createdAt ||
+    (tokenType !== "access" && tokenType !== "refresh")
+  ) {
+    console.warn("Ignoring malformed token lineage record", {
+      tokenId: row.issued_token_id,
+      storageTokenId: row.token_id,
+      identityId: row.identity_id,
+    });
+    return null;
+  }
+
+  return {
+    tokenId,
+    identityId,
+    orgId,
+    workspaceId,
+    sponsorId,
+    tokenType,
+    createdAt,
+  };
+}
+
 class SqliteRevocationStorage implements RevocationStorage {
   constructor(private readonly provider: BackendProvider) {}
 
@@ -2017,7 +2323,7 @@ class SqliteRevocationStorage implements RevocationStorage {
       return;
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const upsertRevokedToken = backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL);
       const updateTokenStatus = backend.db.prepare(UPDATE_TOKEN_STATUS_SQL);
@@ -2028,13 +2334,10 @@ class SqliteRevocationStorage implements RevocationStorage {
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(auditEntry));
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
-      try {
-        backend.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the originating audit or storage failure.
-      }
+      // Preserve the originating audit or storage failure.
+      rollbackSqliteTransaction(backend.db);
       throw error;
     }
   }
@@ -2286,7 +2589,7 @@ class SqliteAttestationStorage implements AttestationStorage {
       return cloneStoredIdentity(finalIdentity);
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const existing = backend.db
         .prepare<DataRow>(SELECT_STORED_IDENTITY_SQL)
@@ -2296,7 +2599,7 @@ class SqliteAttestationStorage implements AttestationStorage {
       }
       backend.db.prepare(INSERT_IDENTITY_SQL).run(...toIdentityParams(finalIdentity));
       this.appendSqliteLedgerEntry(backend.db, ledgerEntry);
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
     } catch (error) {
       rollbackSqliteTransaction(backend.db);
       throw error;
@@ -2347,13 +2650,13 @@ class SqliteAttestationStorage implements AttestationStorage {
       return cloneAttestationGrant(grant);
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       backend.db.prepare(INSERT_ATTESTATION_GRANT_SQL).run(
         ...toAttestationGrantParams(grant),
       );
       this.appendSqliteLedgerEntry(backend.db, entry);
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
       return grant;
     } catch (error) {
       rollbackSqliteTransaction(backend.db);
@@ -2371,10 +2674,10 @@ class SqliteAttestationStorage implements AttestationStorage {
       return cloneAttestationLedgerEntry(entry);
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const entry = this.appendSqliteLedgerEntry(backend.db, input);
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
       return entry;
     } catch (error) {
       rollbackSqliteTransaction(backend.db);
@@ -2415,7 +2718,7 @@ class SqliteAttestationStorage implements AttestationStorage {
       return entries.map(cloneAttestationLedgerEntry);
     }
 
-    backend.db.exec("BEGIN IMMEDIATE");
+    beginSqliteTransaction(backend.db);
     try {
       const grant = hydrateAttestationGrant(
         backend.db
@@ -2428,7 +2731,7 @@ class SqliteAttestationStorage implements AttestationStorage {
         return this.appendSqliteLedgerEntry(backend.db, entry);
       });
       backend.db.prepare(REDEEM_ATTESTATION_GRANT_SQL).run(redeemedAt, jti);
-      backend.db.exec("COMMIT");
+      commitSqliteTransaction(backend.db);
       return entries;
     } catch (error) {
       rollbackSqliteTransaction(backend.db);
@@ -3030,6 +3333,25 @@ async function importOptional<T>(specifier: string): Promise<T | null> {
 
 type PreparedAttestationLedgerEntry = Omit<AttestationLedgerEntry, "seq">;
 
+/**
+ * Every field bound into an entry's chain hash. Optional identifiers are
+ * carried as `null` when absent so the preimage stays total.
+ */
+type AttestationLedgerHashPreimage = {
+  orgId: string;
+  orgSeq: number;
+  entryType: string;
+  jti: string | null;
+  commitSha: string | null;
+  repo: string | null;
+  agentId: string | null;
+  sponsorId: string | null;
+  payloadJson: string;
+  jws: string;
+  createdAt: string;
+  prevHash: string;
+};
+
 function normalizeAttestationGrant(input: AttestationGrant): AttestationGrant {
   return {
     jti: requireString(input.jti, "jti is required"),
@@ -3081,7 +3403,13 @@ function hydrateAttestationGrant(row: AttestationGrantRow | undefined): Attestat
       late: row.late === true || row.late === 1,
       createdAt: row.created_at ?? "",
     });
-  } catch {
+  } catch (error) {
+    // A malformed row (bad JSON, missing required field) surfaces to the
+    // caller the same as "no such grant" — that's the right caller-facing
+    // behavior (an auth-adjacent endpoint shouldn't distinguish "corrupted"
+    // from "unknown" to an external client), but it must not be silent to
+    // operators, since a genuinely corrupted row is a data-integrity signal.
+    console.error("Failed to hydrate attestation grant row", { jti: row.jti, error });
     return null;
   }
 }
@@ -3097,32 +3425,64 @@ function prepareAttestationLedgerEntry(
   const orgId = requireString(input.orgId, "orgId is required");
   const payloadJson = canonicalizeJson(input.payload);
   const prevHash = previous?.entryHash ?? ATTESTATION_LEDGER_GENESIS_HASH;
-  const entryHash = crypto
-    .createHash("sha256")
-    .update(payloadJson, "utf8")
-    .update(prevHash, "utf8")
-    .digest("hex");
+  const orgSeq = (previous?.orgSeq ?? 0) + 1;
+  const entryType = requireString(input.entryType, "entryType is required");
+  const jti = normalizeOptionalString(input.jti);
+  const commitSha = normalizeOptionalString(input.commitSha);
+  const repo = normalizeOptionalString(input.repo);
+  const agentId = normalizeOptionalString(input.agentId);
+  const sponsorId = normalizeOptionalString(input.sponsorId);
+  const jws = requireString(input.jws, "jws is required");
+  const createdAt = normalizeTimestamp(input.createdAt);
+  const entryHash = attestationLedgerEntryHash({
+    orgId,
+    orgSeq,
+    entryType,
+    jti: jti ?? null,
+    commitSha: commitSha ?? null,
+    repo: repo ?? null,
+    agentId: agentId ?? null,
+    sponsorId: sponsorId ?? null,
+    payloadJson,
+    jws,
+    createdAt,
+    prevHash,
+  });
   return {
     orgId,
-    orgSeq: (previous?.orgSeq ?? 0) + 1,
-    entryType: requireString(input.entryType, "entryType is required"),
-    ...(normalizeOptionalString(input.jti) ? { jti: normalizeOptionalString(input.jti) } : {}),
-    ...(normalizeOptionalString(input.commitSha)
-      ? { commitSha: normalizeOptionalString(input.commitSha) }
-      : {}),
-    ...(normalizeOptionalString(input.repo) ? { repo: normalizeOptionalString(input.repo) } : {}),
-    ...(normalizeOptionalString(input.agentId)
-      ? { agentId: normalizeOptionalString(input.agentId) }
-      : {}),
-    ...(normalizeOptionalString(input.sponsorId)
-      ? { sponsorId: normalizeOptionalString(input.sponsorId) }
-      : {}),
+    orgSeq,
+    entryType,
+    ...(jti ? { jti } : {}),
+    ...(commitSha ? { commitSha } : {}),
+    ...(repo ? { repo } : {}),
+    ...(agentId ? { agentId } : {}),
+    ...(sponsorId ? { sponsorId } : {}),
     payloadJson,
-    jws: requireString(input.jws, "jws is required"),
+    jws,
     prevHash,
     entryHash,
-    createdAt: normalizeTimestamp(input.createdAt),
+    createdAt,
   };
+}
+
+/**
+ * Hash the whole ledger entry, not just its payload and link.
+ *
+ * The chain is the tamper-evidence for attestation evidence, so every column a
+ * verifier reads has to be inside the preimage. Hashing only `payloadJson` and
+ * `prevHash` would leave `entryType`, `createdAt`, `jws` and the identifiers
+ * rewritable by anyone with database access while every hash still verified —
+ * an `attestation.late` entry could be relabelled `attestation.issued`, or a
+ * signature swapped between entries, with no break in the chain.
+ *
+ * `null` is used for absent optional fields rather than omitting the key, so
+ * that an absent value and an empty one cannot produce the same preimage.
+ */
+function attestationLedgerEntryHash(preimage: AttestationLedgerHashPreimage): string {
+  return crypto
+    .createHash("sha256")
+    .update(canonicalizeJson(preimage), "utf8")
+    .digest("hex");
 }
 
 function createMemoryLedgerEntry(
@@ -3260,7 +3620,41 @@ function assertFinalizeEntryMatchesGrant(
   }
 }
 
+/**
+ * Connections with a storage transaction currently open.
+ *
+ * SQLite has no nested transactions: a second BEGIN IMMEDIATE on the same
+ * connection throws, and the surrounding catch would then ROLLBACK the *outer*
+ * transaction, discarding writes this layer never owned. Tracking it here
+ * rather than reading a driver flag keeps the guard identical across
+ * better-sqlite3 and node:sqlite, neither of which exposes the same property.
+ */
+const openSqliteTransactions = new WeakSet<SqliteDatabase>();
+
+/**
+ * Open a storage transaction, refusing to nest.
+ *
+ * Call this OUTSIDE the try block that owns the rollback, so a refusal
+ * propagates without rolling back the transaction that is already open.
+ */
+function beginSqliteTransaction(db: SqliteDatabase): void {
+  if (openSqliteTransactions.has(db)) {
+    throw new Error(
+      "a SQLite storage transaction is already open on this connection; "
+        + "nested transactions are not supported",
+    );
+  }
+  db.exec("BEGIN IMMEDIATE");
+  openSqliteTransactions.add(db);
+}
+
+function commitSqliteTransaction(db: SqliteDatabase): void {
+  db.exec("COMMIT");
+  openSqliteTransactions.delete(db);
+}
+
 function rollbackSqliteTransaction(db: SqliteDatabase): void {
+  openSqliteTransactions.delete(db);
   try {
     db.exec("ROLLBACK");
   } catch {
@@ -3273,6 +3667,7 @@ function createMemoryBackend(): BackendContext {
     kind: "memory",
     state: {
       identities: new Map<string, StoredIdentity>(),
+      identityLineages: new Map<string, MemoryIdentityLineageSnapshot>(),
       roles: new Map<string, Role>(),
       policies: new Map<string, Policy>(),
       apiKeys: new Map<string, StoredApiKey>(),
@@ -3450,6 +3845,7 @@ function normalizeStoredIdentity(
     orgId: requireString(identity.orgId, "orgId is required"),
     workspaceId: requireString(identity.workspaceId, "workspaceId is required"),
     sponsorId: requireString(identity.sponsorId, "sponsorId is required"),
+    sponsorBinding: normalizeSponsorBinding(identity.sponsorBinding),
     sponsorChain: normalizedSponsorChain,
     status: normalizeIdentityStatus(identity.status) ?? "active",
     scopes: normalizeStringArray(identity.scopes),
@@ -3726,6 +4122,7 @@ function toAgentIdentity(identity: StoredIdentity): AgentIdentity {
     metadata: { ...identity.metadata },
     createdAt: identity.createdAt,
     updatedAt: identity.updatedAt,
+    sponsorBinding: normalizeSponsorBinding(identity.sponsorBinding),
     ...(identity.lastActiveAt ? { lastActiveAt: identity.lastActiveAt } : {}),
     ...(identity.suspendedAt ? { suspendedAt: identity.suspendedAt } : {}),
     ...(identity.suspendReason
@@ -4529,6 +4926,30 @@ function normalizeIdentityStatus(value: unknown): IdentityStatus | undefined {
   return value === "active" || value === "suspended" || value === "retired"
     ? value
     : undefined;
+}
+
+function normalizeSponsorBinding(value: SponsorBinding | undefined): SponsorBinding {
+  if (value?.mode === "oidc") {
+    if (
+      typeof value.issuer !== "string"
+      || !value.issuer.trim()
+      || typeof value.subject !== "string"
+      || !value.subject.trim()
+      || !Number.isInteger(value.iat)
+    ) {
+      throw new StorageError("invalid sponsor binding", 400, "invalid_sponsor_binding");
+    }
+    return {
+      mode: "oidc",
+      issuer: value.issuer.trim(),
+      subject: value.subject.trim(),
+      iat: value.iat,
+      ...(typeof value.jti === "string" && value.jti.trim()
+        ? { jti: value.jti.trim() }
+        : {}),
+    };
+  }
+  return { mode: "legacy" };
 }
 
 function normalizePolicyEffect(value: unknown): Policy["effect"] | undefined {

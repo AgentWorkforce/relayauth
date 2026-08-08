@@ -135,6 +135,33 @@ test("createIdentity posts to /v1/identities with orgId in the JSON body", async
   });
 });
 
+test("createSponsorProof posts an OIDC id token to /v1/sponsors/proof", async (t) => {
+  const client = createClient();
+  const response = {
+    sponsorId: "user_alice",
+    sponsorProof: "signed-proof",
+    expiresAt: "2026-03-25T10:05:00.000Z",
+    intent: "identity.create",
+  };
+  const fetchMock = mockFetch(() => jsonResponse(response, 201));
+  t.after(() => fetchMock.restore());
+
+  const proof = await client.createSponsorProof({
+    idToken: "fixture-id-token",
+    intent: "identity.create",
+  });
+
+  assert.deepEqual(proof, response);
+  const request = await inspectCall(fetchMock.calls[0]);
+  assert.equal(request.url.toString(), `${baseUrl}/v1/sponsors/proof`);
+  assert.equal(request.method, "POST");
+  assertBearer(request.headers);
+  assert.deepEqual(JSON.parse(request.body), {
+    idToken: "fixture-id-token",
+    intent: "identity.create",
+  });
+});
+
 test("getIdentity fetches /v1/identities/:id with bearer auth", async (t) => {
   const client = createClient();
   const fetchMock = mockFetch(() => jsonResponse(identity));

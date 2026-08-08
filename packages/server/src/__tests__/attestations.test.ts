@@ -25,6 +25,51 @@ type FinalizeResponse = {
   attestations: Array<{ sha: string; jws: string }>;
 };
 
+type LedgerRow = {
+  seq: number;
+  org_id: string;
+  org_seq: number;
+  entry_type: string;
+  jti: string | null;
+  commit_sha: string | null;
+  repo: string | null;
+  agent_id: string | null;
+  sponsor_id: string | null;
+  payload_json: string;
+  jws: string;
+  prev_hash: string;
+  entry_hash: string;
+  created_at: string;
+};
+
+/**
+ * Recompute an entry's chain hash the way an external auditor would: from the
+ * stored columns alone, spelling out the canonical preimage rather than calling
+ * the production helper. If the preimage ever changes shape, this fails.
+ */
+function recomputeEntryHash(row: LedgerRow): string {
+  const preimage: Record<string, string | number | null> = {
+    agentId: row.agent_id,
+    commitSha: row.commit_sha,
+    createdAt: row.created_at,
+    entryType: row.entry_type,
+    jti: row.jti,
+    jws: row.jws,
+    orgId: row.org_id,
+    orgSeq: row.org_seq,
+    payloadJson: row.payload_json,
+    prevHash: row.prev_hash,
+    repo: row.repo,
+    sponsorId: row.sponsor_id,
+  };
+  const canonical = `{${
+    Object.keys(preimage).sort()
+      .map((key) => `${JSON.stringify(key)}:${JSON.stringify(preimage[key])}`)
+      .join(",")
+  }}`;
+  return crypto.createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
 function createIdentity(): StoredIdentity {
   const base = generateTestIdentity({
     id: "agent_attestation",
@@ -122,6 +167,27 @@ test("grant snapshots identity sponsorship and finalizes two verifiable attestat
   await assertJsonResponse<{ code: string }>(replay, 409, (body) => {
     assert.equal(body.code, "attestation_grant_redeemed");
   });
+});
+
+test("ordinary grants refuse suspended and retired identities", async (t) => {
+  for (const status of ["suspended", "retired"]) {
+    const { app, key } = await createWorkspaceGrantClient();
+    t.after(() => app.close());
+    if (status === "suspended") {
+      await app.storage.identities.suspend("agent_attestation", "review fixture");
+    } else {
+      await app.storage.identities.retire("agent_attestation", "review fixture");
+    }
+    const response = await app.fetch(createTestRequest(
+      "POST",
+      "/v1/attestations/grants",
+      { agentId: "agent_attestation", repo: "AgentWorkforce/example" },
+      { "x-api-key": key },
+    ));
+    await assertJsonResponse<{ code: string }>(response, 404, (body) => {
+      assert.equal(body.code, "identity_not_found");
+    });
+  }
 });
 
 test("finalize rejects a wrong key and an expired grant", async (t) => {
@@ -256,9 +322,11 @@ test("ledger is immutable and retention only deletes audit_logs", async (t) => {
     jws: "test-jws-retention",
     createdAt: "2000-01-01T00:00:00.000Z",
   });
-  const row = await app.storage.DB.prepare(
-    "SELECT seq, payload_json, prev_hash, entry_hash FROM attestation_ledger LIMIT 1",
-  ).first<{ seq: number; payload_json: string; prev_hash: string; entry_hash: string }>();
+  const row = await app.storage.DB.prepare(`
+    SELECT seq, org_id, org_seq, entry_type, jti, commit_sha, repo, agent_id, sponsor_id,
+           payload_json, jws, prev_hash, entry_hash, created_at
+    FROM attestation_ledger LIMIT 1
+  `).first<LedgerRow>();
   assert.ok(row);
   await assert.rejects(
     app.storage.DB.prepare("UPDATE attestation_ledger SET payload_json = ? WHERE seq = ?")
@@ -268,16 +336,29 @@ test("ledger is immutable and retention only deletes audit_logs", async (t) => {
     app.storage.DB.prepare("DELETE FROM attestation_ledger WHERE seq = ?")
       .bind(row.seq).run(),
   );
-  const recomputed = crypto.createHash("sha256")
-    .update(row.payload_json, "utf8")
-    .update(row.prev_hash, "utf8")
-    .digest("hex");
-  assert.equal(recomputed, row.entry_hash);
-  const handTampered = crypto.createHash("sha256")
-    .update('{"tampered":true}', "utf8")
-    .update(row.prev_hash, "utf8")
-    .digest("hex");
-  assert.notEqual(handTampered, row.entry_hash, "chain recomputation must detect a hand-tampered payload");
+  assert.equal(recomputeEntryHash(row), row.entry_hash);
+  // Every field a verifier reads must be inside the preimage, so tampering with
+  // any one of them has to break the chain — not just the payload.
+  assert.notEqual(
+    recomputeEntryHash({ ...row, payload_json: '{"tampered":true}' }),
+    row.entry_hash,
+    "chain recomputation must detect a hand-tampered payload",
+  );
+  assert.notEqual(
+    recomputeEntryHash({ ...row, entry_type: "attestation.issued" }),
+    row.entry_hash,
+    "chain recomputation must detect a relabelled entry_type",
+  );
+  assert.notEqual(
+    recomputeEntryHash({ ...row, jws: "swapped-signature" }),
+    row.entry_hash,
+    "chain recomputation must detect a swapped jws",
+  );
+  assert.notEqual(
+    recomputeEntryHash({ ...row, created_at: "1999-01-01T00:00:00.000Z" }),
+    row.entry_hash,
+    "chain recomputation must detect a rewritten created_at",
+  );
 
   await app.storage.DB.prepare(`
     INSERT INTO audit_logs (id, action, org_id, result, timestamp, created_at)

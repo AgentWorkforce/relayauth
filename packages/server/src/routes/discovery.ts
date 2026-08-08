@@ -114,14 +114,19 @@ const SCOPE_DEFINITIONS: ScopeDefinition[] = [
     name: "relayauth-attest",
     plane: "relayauth",
     resource: "attest",
-    pattern: "relayauth:attest:grant:{repo-or-*}",
+    pattern: "relayauth:attest:grant:*",
     actions: ["grant"],
     path_schema: {
       type: "identifier",
       required: false,
       wildcard_allowed: true,
-      description: "Repository selector or '*'.",
-      examples: ["*", "AgentWorkforce/relayauth"],
+      // POST /v1/attestations/grants currently authorizes only the wildcard
+      // path (matchPath requires an exact or "*" match against this fixed
+      // required scope) — a repo-scoped grant scope can never satisfy it, so
+      // don't advertise repo-scoped examples until per-repo authorization
+      // actually exists.
+      description: "Must be '*'; per-repository scoping is not yet enforced.",
+      examples: ["*"],
     },
     description: "Issue two-phase attestation grants that are redeemed against the append-only attestation ledger.",
     examples: ["relayauth:attest:grant:*"],

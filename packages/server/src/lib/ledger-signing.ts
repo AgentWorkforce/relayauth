@@ -22,9 +22,16 @@ export async function resolveLedgerSigningMaterial(
     throw new Error("RELAYAUTH_SIGNING_KEY_PEM must be set");
   }
   const publicKeyPem = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
-  const kid = publicKeyPem
-    ? await keyIdFromPublicJwk(await rsaPublicJwkFromPem(publicKeyPem, ""))
-    : "rs256-key";
+  if (!publicKeyPem) {
+    // Fail closed: /.well-known/jwks.json only ever publishes a key when this
+    // is set (see routes/jwks.ts). Without it, a ledger entry would sign with
+    // a fixed "rs256-key" kid that never appears in the JWKS — permanently
+    // unverifiable, since ledger rows are append-only and can't be re-signed.
+    throw new Error(
+      "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC must be set to sign ledger entries",
+    );
+  }
+  const kid = await keyIdFromPublicJwk(await rsaPublicJwkFromPem(publicKeyPem, ""));
   const privateKey = await importRsaPrivateKey(privateKeyPem);
   return { privateKey, kid };
 }

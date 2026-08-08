@@ -25,7 +25,13 @@ function canonicalizeValue(value: unknown): unknown {
   }
 
   if (Array.isArray(value)) {
-    if (Object.keys(value).length !== value.length) {
+    // Object.keys().length alone misses a hole compensated by a non-index
+    // own property (e.g. a "foo" key); findIndex visits every index,
+    // including holes, so it catches that case too.
+    if (
+      Object.keys(value).length !== value.length ||
+      value.findIndex((_, index) => !Object.hasOwn(value, index)) !== -1
+    ) {
       throw new Error("canonical JSON does not support sparse arrays");
     }
     return value.map(canonicalizeValue);

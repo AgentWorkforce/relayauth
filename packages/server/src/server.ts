@@ -20,6 +20,7 @@ import {
   toStorageCapacityExhaustedError,
 } from "./lib/storage-retry.js";
 import { apiKeyAuth } from "./middleware/api-key-auth.js";
+import { SponsorOidcService } from "./lib/sponsor-binding.js";
 import auditExport from "./routes/audit-export.js";
 import auditQuery from "./routes/audit-query.js";
 import auditWebhooks from "./routes/audit-webhooks.js";
@@ -35,6 +36,7 @@ import policies from "./routes/policies.js";
 import roleAssignments from "./routes/role-assignments.js";
 import roles from "./routes/roles.js";
 import tokens from "./routes/tokens.js";
+import sponsors from "./routes/sponsors.js";
 import type { AuthStorage } from "./storage/index.js";
 
 const PUBLIC_PATHS = new Set([
@@ -59,6 +61,7 @@ const sharedIdentityCreatePreAuthRateLimiter = new FixedWindowSketchRateLimiter(
   IDENTITY_CREATE_RATE_LIMIT,
   IDENTITY_CREATE_RATE_WINDOW_MS,
 );
+const sharedSponsorOidcService = new SponsorOidcService();
 
 export type CreateAppOptions = {
   storage?: AuthStorage;
@@ -70,6 +73,7 @@ export type CreateAppOptions = {
   deferTask?: DeferredTaskScheduler;
   identityCreatePreAuthRateLimiter?: RequestRateLimiter;
   identityCreateRateLimiter?: RequestRateLimiter;
+  sponsorOidcService?: SponsorOidcService;
 };
 
 export type StartServerOptions = {
@@ -106,6 +110,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   const identityCreateRateLimiter =
     options.identityCreateRateLimiter ?? sharedIdentityCreateRateLimiter;
   const config = normalizeConfig(options);
+  const sponsorOidcService = options.sponsorOidcService ?? sharedSponsorOidcService;
 
   app.onError((error, c) => {
     if (isStorageOverloadedError(error)) {
@@ -157,6 +162,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
     c.set("deferTask", resolveDeferredTaskScheduler(c, options.deferTask));
     c.set("identityCreatePreAuthRateLimiter", identityCreatePreAuthRateLimiter);
     c.set("identityCreateRateLimiter", identityCreateRateLimiter);
+    c.set("sponsorOidcService", sponsorOidcService);
     await next();
   });
 
@@ -195,6 +201,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   // through the middleware — see P0-1 in PR #20.
   app.use("/v1/identities", apiKeyAuth());
   app.use("/v1/identities/*", apiKeyAuth());
+  app.use("/v1/sponsors", apiKeyAuth());
+  app.use("/v1/sponsors/*", apiKeyAuth());
   app.use("/v1/tokens", apiKeyAuth());
   app.use("/v1/tokens/*", apiKeyAuth());
   app.use("/v1/api-keys", apiKeyAuth());
@@ -265,6 +273,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.route("/v1/policies", policies);
   app.route("/v1/roles", roles);
   app.route("/v1/stats", dashboardStats);
+  app.route("/v1/sponsors", sponsors);
   app.route("/v1/tokens", tokens);
 
   return app;
@@ -295,6 +304,8 @@ export async function startServer(options: StartServerOptions = {}) {
     RELAYAUTH_SIGNING_KEY_PEM_PUBLIC:
       options.config?.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC ?? process.env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC,
     RELAYAUTH_ENV_STAGE: options.config?.RELAYAUTH_ENV_STAGE ?? process.env.RELAYAUTH_ENV_STAGE,
+    RELAYAUTH_SPONSOR_FEDERATIONS:
+      options.config?.RELAYAUTH_SPONSOR_FEDERATIONS ?? process.env.RELAYAUTH_SPONSOR_FEDERATIONS,
   };
 
   const app = createApp({

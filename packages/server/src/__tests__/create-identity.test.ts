@@ -318,7 +318,7 @@ test("POST /v1/identities never retries a create that may already have committed
   }>(response, 503);
   assert.equal(attempts, 1);
   assert.equal(body.code, "storage_overloaded");
-  assert.equal(body.operation, "identities.create");
+  assert.equal(body.operation, "attestations.create_identity_with_ledger");
   assert.equal(body.attempts, 1);
   const stored = await storage.identities.list("org_auth_ctx");
   assert.equal(stored.filter((identity) => identity.name === "committed-before-overload").length, 1);

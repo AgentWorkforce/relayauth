@@ -23,6 +23,7 @@ from .types import (
     CreateIdentityInput,
     RelayAuthTokenClaims,
     Role,
+    SponsorProof,
     TokenPair,
 )
 
@@ -163,6 +164,14 @@ class RelayAuthClient:
         payload = {"orgId": org_id, **payload}
         data = await self._request("/v1/identities", method="POST", body=payload)
         return AgentIdentity.from_dict(data)
+
+    async def create_sponsor_proof(self, id_token: str, intent: str) -> SponsorProof:
+        data = await self._request(
+            "/v1/sponsors/proof",
+            method="POST",
+            body={"idToken": id_token, "intent": intent},
+        )
+        return SponsorProof.from_dict(data)
 
     async def get_identity(self, identity_id: str) -> AgentIdentity:
         data = await self._request(f"/v1/identities/{quote(identity_id, safe='')}")

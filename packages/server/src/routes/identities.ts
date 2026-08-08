@@ -4,6 +4,7 @@ import type {
   IdentityStatus,
   IdentityType,
   RelayAuthTokenClaims,
+  SponsorBinding,
 } from "@relayauth/types";
 import { matchScope } from "@relayauth/sdk";
 import { Hono, type Context } from "hono";
@@ -12,6 +13,11 @@ import { authenticateAndAuthorizeFromContext, authenticateBearerOrApiKey, author
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 import { resolveLedgerSigningMaterial, signLedgerPayload } from "../lib/ledger-signing.js";
 import type { AppendAttestationLedgerEntryInput } from "../storage/index.js";
+import {
+  IDENTITY_CREATE_SPONSOR_INTENT,
+  SponsorBindingError,
+  type IdentityCreatedLedgerPayload,
+} from "../lib/sponsor-binding.js";
 import {
   isStorageCapacityExhausted,
   isTransientStorageOverload,
@@ -167,6 +173,35 @@ identities.get("/", async (c) => {
     },
     200,
   );
+});
+
+identities.get("/:id/lineage", async (c) => {
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
+    "relayauth:identity:read:*",
+    matchScope,
+  );
+  if (!auth.ok) {
+    return c.json({ error: auth.error }, auth.status);
+  }
+
+  const id = c.req.param("id").trim();
+  const storage = c.get("storage");
+  const identity = await storage.identities.get(id);
+  if (!identity || identity.orgId !== auth.claims.org) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
+  if (!storage.identities.getLineage) {
+    return c.json({ error: "lineage_unavailable" }, 501);
+  }
+
+  const lineage = await storage.identities.getLineage(id);
+  if (!lineage) {
+    return c.json({ error: "lineage_not_found" }, 404);
+  }
+
+  return c.json(lineage, 200);
 });
 
 identities.get("/:id", async (c) => {
@@ -451,6 +486,25 @@ identities.post("/", async (c) => {
 
   const storage = c.get("storage");
   try {
+    const federation = c.get("sponsorOidcService").resolveConfig(c.env, auth.claims.org);
+    let sponsorBinding: SponsorBinding = { mode: "legacy" };
+    if (federation.sponsorBinding === "oidc") {
+      const sponsorProof = typeof body.sponsorProof === "string" ? body.sponsorProof.trim() : "";
+      if (!sponsorProof) {
+        return c.json({
+          error: "sponsorProof is required for this organization",
+          code: "sponsor_proof_required",
+        }, 403);
+      }
+      sponsorBinding = await c.get("sponsorOidcService").verifySponsorProof(
+        c.env,
+        sponsorProof,
+        auth.claims.org,
+        sponsorId,
+        IDENTITY_CREATE_SPONSOR_INTENT,
+      );
+    }
+
     const duplicate = await withStorageRetry(
       () => storage.identities.findDuplicate(auth.claims.org, name),
       { operation: "identities.find_duplicate" },
@@ -461,6 +515,9 @@ identities.post("/", async (c) => {
 
     const timestamp = new Date().toISOString();
     const id = createIdentityId();
+    const sponsorChain = federation.sponsorBinding === "oidc"
+      ? oidcSponsorChain(auth.claims, sponsorId, id)
+      : [...auth.claims.sponsorChain, id];
     const budget = body.budget ?? await withStorageRetry(
       () => storage.identities.loadOrgBudget(auth.claims.org),
       { operation: "identities.load_org_budget" },
@@ -477,32 +534,67 @@ identities.post("/", async (c) => {
       createdAt: timestamp,
       updatedAt: timestamp,
       sponsorId,
-      sponsorChain: [...auth.claims.sponsorChain, id],
+      sponsorChain,
+      sponsorBinding,
       workspaceId: normalizeWorkspaceId(body.workspaceId, auth.claims.wks),
       ...(budget ? { budget } : {}),
     };
 
     let createdIdentity: StoredIdentity;
     try {
-      const signingMaterial = await resolveLedgerSigningMaterial(c.env);
-      const ledgerPayload: Record<string, unknown> = {
-        agentId: storedIdentity.id,
-        sponsorId: storedIdentity.sponsorId,
-        sponsorChain: storedIdentity.sponsorChain,
-        name: storedIdentity.name,
-        type: storedIdentity.type,
-        ts: timestamp,
-      };
-      const jws = await signLedgerPayload(signingMaterial, ledgerPayload);
-      const ledgerEntry: AppendAttestationLedgerEntryInput = {
-        orgId: storedIdentity.orgId,
-        entryType: "identity.created",
-        agentId: storedIdentity.id,
-        sponsorId: storedIdentity.sponsorId,
-        payload: ledgerPayload,
-        jws,
-        createdAt: timestamp,
-      };
+      // Every identity gets an atomic, signed identity.created ledger entry
+      // (fail-closed on ledger persistence) regardless of sponsor-binding
+      // mode — OIDC-bound orgs get the richer sponsor-proof payload signed
+      // by the sponsor OIDC service; legacy orgs get the standard ledger
+      // signing material.
+      let ledgerEntry: AppendAttestationLedgerEntryInput;
+      if (sponsorBinding.mode === "oidc") {
+        const ledgerPayload: IdentityCreatedLedgerPayload = {
+          agentId: storedIdentity.id,
+          sponsorId,
+          intent: IDENTITY_CREATE_SPONSOR_INTENT,
+          issuer: sponsorBinding.issuer,
+          subject: sponsorBinding.subject,
+          iat: sponsorBinding.iat,
+          ...(sponsorBinding.jti ? { jti: sponsorBinding.jti } : {}),
+          sponsorBinding,
+          ts: timestamp,
+        };
+        const jws = await c.get("sponsorOidcService").signIdentityCreatedLedgerPayload(
+          c.env,
+          ledgerPayload,
+        );
+        ledgerEntry = {
+          orgId: storedIdentity.orgId,
+          entryType: "identity.created",
+          agentId: storedIdentity.id,
+          sponsorId,
+          ...(sponsorBinding.jti ? { jti: sponsorBinding.jti } : {}),
+          payload: ledgerPayload,
+          jws,
+          createdAt: timestamp,
+        };
+      } else {
+        const signingMaterial = await resolveLedgerSigningMaterial(c.env);
+        const ledgerPayload: Record<string, unknown> = {
+          agentId: storedIdentity.id,
+          sponsorId: storedIdentity.sponsorId,
+          sponsorChain: storedIdentity.sponsorChain,
+          name: storedIdentity.name,
+          type: storedIdentity.type,
+          ts: timestamp,
+        };
+        const jws = await signLedgerPayload(signingMaterial, ledgerPayload);
+        ledgerEntry = {
+          orgId: storedIdentity.orgId,
+          entryType: "identity.created",
+          agentId: storedIdentity.id,
+          sponsorId: storedIdentity.sponsorId,
+          payload: ledgerPayload,
+          jws,
+          createdAt: timestamp,
+        };
+      }
       // Identity creation is not guaranteed to be idempotent across storage
       // adapters. Never retry a write that may have committed before its
       // adapter surfaced an overload error.
@@ -512,7 +604,7 @@ identities.post("/", async (c) => {
       );
     } catch (error) {
       if (isTransientStorageOverload(error)) {
-        throw new StorageOverloadedError("identities.create", 1, { cause: error });
+        throw new StorageOverloadedError("attestations.create_identity_with_ledger", 1, { cause: error });
       }
       throw error;
     }
@@ -523,10 +615,15 @@ identities.post("/", async (c) => {
         id: createdIdentity.id,
         org: createdIdentity.orgId,
         name: createdIdentity.name,
+        sponsorId: createdIdentity.sponsorId,
+        sponsorBinding,
       },
     });
     return c.json(createdIdentity, 201);
   } catch (error) {
+    if (error instanceof SponsorBindingError) {
+      return c.json({ error: error.message, code: error.code }, error.status);
+    }
     if (isStorageCapacityExhausted(error)) {
       throw error;
     }
@@ -583,6 +680,17 @@ function identityCreateRateLimitKeys(claims: RelayAuthTokenClaims): string[] {
     `org:${claims.org}`,
     ...(apiKeyId ? [`api-key:${apiKeyId}`] : []),
   ];
+}
+
+function oidcSponsorChain(
+  claims: RelayAuthTokenClaims,
+  sponsorId: string,
+  identityId: string,
+): string[] {
+  if (claims.sponsorId === sponsorId && claims.sponsorChain[0] === sponsorId) {
+    return [...claims.sponsorChain, identityId];
+  }
+  return [sponsorId, identityId];
 }
 
 function normalizeCredential(value: unknown): string | undefined {
@@ -691,7 +799,7 @@ function sanitizeIdentityUpdate(body: UpdateIdentityRequest): UpdateIdentityRequ
     update.type = body.type;
   }
 
-  // status, sponsorId, sponsorChain, workspaceId are not allowed via PATCH —
+  // status, sponsorId, sponsorChain, sponsorBinding, workspaceId are not allowed via PATCH —
   // use dedicated endpoints (suspend, retire, reactivate) for status changes.
 
   if ("scopes" in body) {

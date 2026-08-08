@@ -30,6 +30,7 @@ function createStoredIdentity(overrides: Partial<StoredIdentity> = {}): StoredId
     sponsorId,
     sponsorChain: overrides.sponsorChain ?? [sponsorId, "agent_reader_1", base.id],
     workspaceId: overrides.workspaceId ?? "ws_test",
+    sponsorBinding: overrides.sponsorBinding ?? { mode: "legacy" },
     ...(overrides.budget !== undefined ? { budget: overrides.budget } : {}),
     ...(overrides.budgetUsage !== undefined ? { budgetUsage: overrides.budgetUsage } : {}),
   };
