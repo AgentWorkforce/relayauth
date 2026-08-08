@@ -31,6 +31,7 @@ const VALID_ACTIONS = new Set([
   "send",
   "invoke",
   "trigger",
+  "grant",
   "*",
 ]);
 

@@ -25,6 +25,9 @@ function canonicalizeValue(value: unknown): unknown {
   }
 
   if (Array.isArray(value)) {
+    if (Object.keys(value).length !== value.length) {
+      throw new Error("canonical JSON does not support sparse arrays");
+    }
     return value.map(canonicalizeValue);
   }
 
@@ -35,7 +38,10 @@ function canonicalizeValue(value: unknown): unknown {
     }
 
     const object = value as Record<string, unknown>;
-    const normalized: Record<string, unknown> = {};
+    // Object.create(null) (rather than {}) so an own `__proto__` key is
+    // stored as a real property instead of silently reassigning the
+    // prototype, which would otherwise drop that key from the payload.
+    const normalized: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const key of Object.keys(object).sort()) {
       const nested = object[key];
       if (nested === undefined) {

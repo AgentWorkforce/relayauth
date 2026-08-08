@@ -40,8 +40,9 @@ CREATE TABLE IF NOT EXISTS attestation_ledger (
   UNIQUE (org_id, entry_hash)
 );
 
-CREATE INDEX IF NOT EXISTS idx_attestation_ledger_org_seq
-  ON attestation_ledger (org_id, org_seq);
+-- No separate index on (org_id, org_seq): the UNIQUE constraint above
+-- already creates that index; a duplicate would just add write
+-- amplification on every append to this high-volume, append-only table.
 
 CREATE TRIGGER IF NOT EXISTS prevent_attestation_ledger_update
 BEFORE UPDATE ON attestation_ledger

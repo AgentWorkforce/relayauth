@@ -597,7 +597,7 @@ than `maximum`.
     "path_optional": true,
     "wildcard": "*",
     "planes": ["relaycast", "relayfile", "cloud", "relayauth"],
-    "actions": ["read", "write", "create", "delete", "manage", "run", "send", "invoke", "trigger", "*"]
+    "actions": ["read", "write", "create", "delete", "manage", "run", "send", "invoke", "trigger", "grant", "*"]
   },
   "scope_definitions": [
     {
@@ -705,7 +705,7 @@ than `maximum`.
     "path_optional": true,
     "wildcard": "*",
     "planes": ["relaycast", "relayfile", "cloud", "relayauth"],
-    "actions": ["read", "write", "create", "delete", "manage", "run", "send", "invoke", "trigger", "*"],
+    "actions": ["read", "write", "create", "delete", "manage", "run", "send", "invoke", "trigger", "grant", "*"],
     "notes": [
       "A 3-segment scope normalizes to a 4-segment scope by appending '*'.",
       "Wildcard matching is segment-local only.",

@@ -12,7 +12,7 @@ A scope is a colon-delimited string with 3 required segments and 1 optional segm
 | ---------- | -------- | ------------------------------------------------ | --------------------------------- |
 | `plane`    | Yes      | The product plane being accessed                 | `relaycast`, `relayfile`, `cloud`, `relayauth` |
 | `resource` | Yes      | The resource type within the plane               | `channel`, `fs`, `workflow`, `token`, `identity` |
-| `action`   | Yes      | The operation being performed                    | `read`, `write`, `create`, `delete`, `manage`, `run`, `send`, `invoke`, `*` |
+| `action`   | Yes      | The operation being performed                    | `read`, `write`, `create`, `delete`, `manage`, `run`, `send`, `invoke`, `trigger`, `grant`, `*` |
 | `path`     | No       | Optional constraint or path qualifier            | `*`, `/src/api/*`, `#billing`     |
 
 When `path` is omitted, the scope applies to all paths/instances of that resource. A 3-segment scope `plane:resource:action` is equivalent to `plane:resource:action:*`.
@@ -109,7 +109,7 @@ A scope string is **valid** if and only if:
 1. **Segment count**: 3 or 4 colon-separated segments.
 2. **Plane**: must be one of the defined `Plane` values (`relaycast`, `relayfile`, `cloud`, `relayauth`) or `*`.
 3. **Resource**: must be a non-empty string of `[a-z][a-z0-9-]*` or `*`.
-4. **Action**: must be one of the defined `Action` values (`read`, `write`, `create`, `delete`, `manage`, `run`, `send`, `invoke`) or `*`.
+4. **Action**: must be one of the defined `Action` values (`read`, `write`, `create`, `delete`, `manage`, `run`, `send`, `invoke`, `trigger`, `grant`) or `*`.
 5. **Path** (if present): must be `*`, or a non-empty string. For `relayfile` plane, paths must start with `/` and must not contain `..`. Trailing `*` for prefix matching is permitted.
 6. **No empty segments**: `relaycast::read:*` is invalid.
 7. **No whitespace**: scope strings must not contain spaces or other whitespace characters.

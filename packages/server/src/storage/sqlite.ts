@@ -473,15 +473,6 @@ const INSERT_ATTESTATION_LEDGER_ENTRY_SQL = `
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
-const SELECT_ATTESTATION_LEDGER_ENTRY_BY_HASH_SQL = `
-  SELECT
-    seq, org_id, org_seq, entry_type, jti, commit_sha, repo, agent_id,
-    sponsor_id, payload_json, jws, prev_hash, entry_hash, created_at
-  FROM attestation_ledger
-  WHERE org_id = ? AND entry_hash = ?
-  LIMIT 1
-`;
-
 const LIST_ACTIVE_TOKENS_SQL = `
   SELECT id, jti, token_id
   FROM tokens
@@ -647,6 +638,7 @@ type DynamicImportFunction = <T = unknown>(specifier: string) => Promise<T>;
 
 type SqliteRunResult = {
   changes?: number | bigint;
+  lastInsertRowid?: number | bigint;
 };
 
 type SqliteRow = Record<string, unknown>;
@@ -1195,7 +1187,7 @@ class SqliteIdentityStorage implements IdentityStorage {
       .prepare(INSERT_IDENTITY_SQL)
       .run(...toIdentityParams(finalIdentity));
     if (budgetResult.shouldWriteAuditEvent) {
-      await this.writeBudgetAuditEvent(backend, finalIdentity);
+      await writeBudgetAuditEvent(backend, finalIdentity);
       emitBudgetAlert(finalIdentity);
     }
     return this.getRequired(finalIdentity.id);
@@ -1227,7 +1219,7 @@ class SqliteIdentityStorage implements IdentityStorage {
       .prepare(UPDATE_IDENTITY_SQL)
       .run(...toIdentityUpdateParams(finalIdentity), finalIdentity.id);
     if (budgetResult.shouldWriteAuditEvent) {
-      await this.writeBudgetAuditEvent(backend, finalIdentity);
+      await writeBudgetAuditEvent(backend, finalIdentity);
       emitBudgetAlert(finalIdentity);
     }
     return this.getRequired(finalIdentity.id);
@@ -1514,35 +1506,36 @@ class SqliteIdentityStorage implements IdentityStorage {
     return identity;
   }
 
-  private async writeBudgetAuditEvent(
-    backend: Extract<BackendContext, { kind: "sqlite" }>,
-    identity: StoredIdentity,
-  ): Promise<void> {
-    const payload = JSON.stringify({
-      eventType: "budget.exceeded",
-      status: identity.status,
-      sponsorId: identity.sponsorId,
-      sponsorChain: identity.sponsorChain,
-      budget: identity.budget,
-      budgetUsage: identity.budgetUsage,
-    });
+}
 
-    try {
-      backend.db
-        .prepare(INSERT_AUDIT_EVENT_SQL)
-        .run(
-          crypto.randomUUID(),
-          identity.orgId,
-          identity.workspaceId,
-          identity.id,
-          "identity.suspended",
-          "budget_exceeded",
-          payload,
-          identity.updatedAt,
-        );
-    } catch (error) {
-      console.error("Failed to write budget audit event", error);
-    }
+async function writeBudgetAuditEvent(
+  backend: Extract<BackendContext, { kind: "sqlite" }>,
+  identity: StoredIdentity,
+): Promise<void> {
+  const payload = JSON.stringify({
+    eventType: "budget.exceeded",
+    status: identity.status,
+    sponsorId: identity.sponsorId,
+    sponsorChain: identity.sponsorChain,
+    budget: identity.budget,
+    budgetUsage: identity.budgetUsage,
+  });
+
+  try {
+    backend.db
+      .prepare(INSERT_AUDIT_EVENT_SQL)
+      .run(
+        crypto.randomUUID(),
+        identity.orgId,
+        identity.workspaceId,
+        identity.id,
+        "identity.suspended",
+        "budget_exceeded",
+        payload,
+        identity.updatedAt,
+      );
+  } catch (error) {
+    console.error("Failed to write budget audit event", error);
   }
 }
 
@@ -2310,6 +2303,7 @@ class SqliteAttestationStorage implements AttestationStorage {
     }
 
     if (budgetResult.shouldWriteAuditEvent) {
+      await writeBudgetAuditEvent(backend, finalIdentity);
       emitBudgetAlert(finalIdentity);
     }
     return cloneStoredIdentity(finalIdentity);
@@ -2393,7 +2387,10 @@ class SqliteAttestationStorage implements AttestationStorage {
   ): Promise<AttestationLedgerEntry[]> {
     const jti = requireString(input.jti, "jti is required");
     const keyHash = requireString(input.finalizeKeyHash, "finalizeKeyHash is required");
-    const redeemedAt = normalizeTimestamp(input.redeemedAt);
+    // Stamped here, at the point the redemption transaction actually runs,
+    // rather than accepted from the caller — expiry must be enforced
+    // against current time at commit, not a pre-signing request timestamp.
+    const redeemedAt = normalizeTimestamp(new Date().toISOString());
     if (input.ledgerEntries.length === 0) {
       throw new Error("at least one ledger entry is required to redeem a grant");
     }
@@ -2449,18 +2446,15 @@ class SqliteAttestationStorage implements AttestationStorage {
         .get(requireString(input.orgId, "orgId is required")),
     );
     const entry = prepareAttestationLedgerEntry(input, last);
-    db.prepare(INSERT_ATTESTATION_LEDGER_ENTRY_SQL).run(
+    const result = db.prepare(INSERT_ATTESTATION_LEDGER_ENTRY_SQL).run(
       ...toAttestationLedgerEntryParams(entry),
     );
-    const stored = hydrateAttestationLedgerEntry(
-      db
-        .prepare<AttestationLedgerRow>(SELECT_ATTESTATION_LEDGER_ENTRY_BY_HASH_SQL)
-        .get(entry.orgId, entry.entryHash),
-    );
-    if (!stored) {
-      throw new Error("attestation ledger insert did not return a row");
+    // seq is an INTEGER PRIMARY KEY (rowid alias), so it equals the
+    // insert's lastInsertRowid — no need for a second SELECT round-trip.
+    if (result.lastInsertRowid === undefined) {
+      throw new Error("attestation ledger insert did not return lastInsertRowid");
     }
-    return stored;
+    return { ...entry, seq: Number(result.lastInsertRowid) };
   }
 }
 

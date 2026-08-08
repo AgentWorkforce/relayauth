@@ -34,6 +34,7 @@ const BUILT_IN_ACTIONS = [
   "send",
   "invoke",
   "trigger",
+  "grant",
   "*",
 ] as const;
 const GRANT_TYPES = [
@@ -108,6 +109,22 @@ const SCOPE_DEFINITIONS: ScopeDefinition[] = [
     },
     description: "Administrative capabilities for identities within the relayauth plane.",
     examples: ["relayauth:identity:manage:*", "relayauth:identity:read:agent_8x2k"],
+  },
+  {
+    name: "relayauth-attest",
+    plane: "relayauth",
+    resource: "attest",
+    pattern: "relayauth:attest:grant:{repo-or-*}",
+    actions: ["grant"],
+    path_schema: {
+      type: "identifier",
+      required: false,
+      wildcard_allowed: true,
+      description: "Repository selector or '*'.",
+      examples: ["*", "AgentWorkforce/relayauth"],
+    },
+    description: "Issue two-phase attestation grants that are redeemed against the append-only attestation ledger.",
+    examples: ["relayauth:attest:grant:*"],
   },
 ];
 
