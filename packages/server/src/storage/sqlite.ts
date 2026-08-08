@@ -2292,6 +2292,7 @@ class SqliteAttestationGrantStorage implements AttestationGrantStorage {
       return;
     }
 
+    const appendLedgerEntry = await resolveAttestationLedgerTransactionAppender();
     backend.db.exec("BEGIN IMMEDIATE");
     try {
       const grant = hydrateAttestationGrant(
@@ -2300,7 +2301,7 @@ class SqliteAttestationGrantStorage implements AttestationGrantStorage {
       assertGrantCanRedeem(grant, keyHash, redeemedAt);
       for (const entry of input.ledgerEntries) {
         assertLedgerEntryMatchesGrant(entry, grant);
-        appendAttestationLedgerEntryInTransaction(backend.db, entry);
+        appendLedgerEntry(backend.db, entry);
       }
       const result = backend.db.prepare(REDEEM_ATTESTATION_GRANT_SQL).run(
         redeemedAt,
@@ -4456,7 +4457,22 @@ function assertLedgerEntryMatchesGrant(
   }
 }
 
-function appendAttestationLedgerEntryInTransaction(
+type AttestationLedgerTransactionAppender = (
+  db: SqliteDatabase,
+  entry: AttestationLedgerAppendInput,
+) => unknown;
+
+async function resolveAttestationLedgerTransactionAppender(): Promise<
+  AttestationLedgerTransactionAppender
+> {
+  const ledgerModule = await importOptional<{
+    appendAttestationLedgerEntryInTransaction?: AttestationLedgerTransactionAppender;
+  }>("./attestation-ledger.js");
+  return ledgerModule?.appendAttestationLedgerEntryInTransaction
+    ?? appendAttestationLedgerEntryCompatibility;
+}
+
+function appendAttestationLedgerEntryCompatibility(
   db: SqliteDatabase,
   entry: AttestationLedgerAppendInput,
 ): void {
@@ -4466,10 +4482,19 @@ function appendAttestationLedgerEntryInTransaction(
   const orgSeq = normalizeNumber(previous?.org_seq) + 1;
   const prevHash = normalizeOptionalString(previous?.entry_hash) ?? "0".repeat(64);
   const payloadJson = canonicalizeJson(entry.payload);
+  assertRs256JwsMatchesPayload(entry.jws, payloadJson);
+  const createdAt = normalizeTimestamp(entry.createdAt);
   const entryHash = crypto
     .createHash("sha256")
-    .update(payloadJson, "utf8")
-    .update(prevHash, "utf8")
+    .update(canonicalizeJson({
+      createdAt,
+      entryType: entry.entryType,
+      jws: entry.jws,
+      orgId: entry.orgId,
+      orgSeq,
+      payload: entry.payload,
+      prevHash,
+    }), "utf8")
     .digest("hex");
   db.prepare(INSERT_ATTESTATION_LEDGER_ENTRY_SQL).run(
     entry.orgId,
@@ -4479,8 +4504,28 @@ function appendAttestationLedgerEntryInTransaction(
     entry.jws,
     prevHash,
     entryHash,
-    normalizeTimestamp(entry.createdAt),
+    createdAt,
   );
+}
+
+function assertRs256JwsMatchesPayload(jws: string, payloadJson: string): void {
+  const segments = jws.split(".");
+  if (segments.length !== 3 || segments.some((segment) => !/^[A-Za-z0-9_-]+$/u.test(segment))) {
+    throw new Error("jws must be a compact JWS with three base64url segments");
+  }
+  const header = JSON.parse(Buffer.from(segments[0]!, "base64url").toString("utf8")) as {
+    alg?: unknown;
+    kid?: unknown;
+  };
+  if (header.alg !== "RS256" || typeof header.kid !== "string" || !header.kid.trim()) {
+    throw new Error("jws must use RS256 and identify its signing key");
+  }
+  const signedPayload = JSON.parse(
+    Buffer.from(segments[1]!, "base64url").toString("utf8"),
+  ) as unknown;
+  if (canonicalizeJson(signedPayload) !== payloadJson) {
+    throw new Error("jws payload does not match the ledger payload");
+  }
 }
 
 function canonicalizeJson(value: unknown): string {
