@@ -41,6 +41,7 @@ import type {
   DashboardAuditQuery,
   DuplicateIdentityRecord,
   IdentityChildSummary,
+  IdentityLineageRecord,
   IdentityStorage,
   IdentityStatusCounts,
   IssuedTokenAudit,
@@ -55,6 +56,8 @@ import type {
   RevocationStorage,
   RoleStorage,
   StoredTokenRecord,
+  TokenLineageRecord,
+  TokenLineageSnapshot,
   TokenStorage,
   RoleUpdate,
   WorkspaceContextRecord,
@@ -464,6 +467,52 @@ const INSERT_TOKEN_SQL = `
   VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
 `;
 
+const SELECT_IDENTITY_LINEAGE_SQL = `
+  SELECT identity_id, org_id, workspace_id, sponsor_id, created_at
+  FROM identity_lineages
+  WHERE identity_id = ?
+  LIMIT 1
+`;
+
+const SELECT_IDENTITY_LINEAGE_MEMBERS_SQL = `
+  SELECT principal_id
+  FROM identity_lineage_members
+  WHERE identity_id = ?
+  ORDER BY chain_position ASC
+`;
+
+const SELECT_TOKEN_LINEAGES_SQL = `
+  SELECT token_id, identity_id, org_id, workspace_id, sponsor_id, token_type, created_at
+  FROM token_lineages
+  WHERE identity_id = ?
+  ORDER BY created_at ASC, token_id ASC
+`;
+
+const SELECT_TOKEN_LINEAGE_MEMBERS_SQL = `
+  SELECT principal_id
+  FROM token_lineage_members
+  WHERE token_id = ?
+  ORDER BY chain_position ASC
+`;
+
+const INSERT_TOKEN_LINEAGE_SQL = `
+  INSERT INTO token_lineages (
+    token_id,
+    identity_id,
+    org_id,
+    workspace_id,
+    sponsor_id,
+    token_type,
+    created_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`;
+
+const INSERT_TOKEN_LINEAGE_MEMBER_SQL = `
+  INSERT INTO token_lineage_members (token_id, chain_position, principal_id)
+  VALUES (?, ?, ?)
+`;
+
 const UPSERT_REVOKED_TOKEN_SQL = `
   INSERT OR REPLACE INTO revoked_tokens (jti, expires_at)
   VALUES (?, ?)
@@ -668,6 +717,18 @@ type TokenRow = {
   session_id?: string | null;
   expires_at?: number | string | null;
 };
+type IdentityLineageRow = {
+  identity_id?: string | null;
+  org_id?: string | null;
+  workspace_id?: string | null;
+  sponsor_id?: string | null;
+  created_at?: string | null;
+};
+type TokenLineageRow = IdentityLineageRow & {
+  token_id?: string | null;
+  token_type?: "access" | "refresh" | null;
+};
+type LineageMemberRow = { principal_id?: string | null };
 type ExistsRow = { found?: number | string | bigint | null };
 type RevokedTokenRow = { expires_at?: number | string | null };
 type TableInfoRow = { name?: string | null };
@@ -777,6 +838,7 @@ type MemoryTokenRecord = {
   issuedAt: number;
   expiresAt: number;
   createdAt: string;
+  lineage?: TokenLineageSnapshot;
 };
 
 type RevokedTokenRecord = {
@@ -1410,6 +1472,92 @@ class SqliteIdentityStorage implements IdentityStorage {
     return summarizeIdentityCounts(rows);
   }
 
+  async getLineage(identityId: string): Promise<IdentityLineageRecord | null> {
+    const normalizedIdentityId = normalizeOptionalString(identityId);
+    if (!normalizedIdentityId) {
+      return null;
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const identity = backend.state.identities.get(normalizedIdentityId);
+      if (!identity) {
+        return null;
+      }
+
+      const tokens = [...backend.state.tokens.values()]
+        .filter(
+          (token) =>
+            token.identityId === normalizedIdentityId && token.lineage !== undefined,
+        )
+        .sort(
+          (left, right) =>
+            left.createdAt.localeCompare(right.createdAt) ||
+            left.tokenId.localeCompare(right.tokenId),
+        )
+        .map((token): TokenLineageRecord => ({
+          tokenId: token.tokenId,
+          identityId: token.identityId,
+          orgId: token.lineage!.orgId,
+          workspaceId: token.lineage!.workspaceId,
+          sponsorId: token.lineage!.sponsorId,
+          sponsorChain: [...token.lineage!.sponsorChain],
+          tokenType: token.lineage!.tokenType,
+          createdAt: token.createdAt,
+        }));
+
+      return {
+        identityId: identity.id,
+        orgId: identity.orgId,
+        workspaceId: identity.workspaceId,
+        sponsorId: identity.sponsorId,
+        sponsorChain: [...identity.sponsorChain],
+        createdAt: identity.createdAt,
+        tokens,
+      };
+    }
+
+    const lineage = backend.db
+      .prepare<IdentityLineageRow>(SELECT_IDENTITY_LINEAGE_SQL)
+      .get(normalizedIdentityId);
+    if (!lineage) {
+      return null;
+    }
+
+    const identityRecord = hydrateIdentityLineage(lineage);
+    if (!identityRecord) {
+      return null;
+    }
+    const sponsorChain = backend.db
+      .prepare<LineageMemberRow>(SELECT_IDENTITY_LINEAGE_MEMBERS_SQL)
+      .all(normalizedIdentityId)
+      .map((row) => normalizeOptionalString(row.principal_id))
+      .filter((value): value is string => Boolean(value));
+
+    const tokens = backend.db
+      .prepare<TokenLineageRow>(SELECT_TOKEN_LINEAGES_SQL)
+      .all(normalizedIdentityId)
+      .map((row) => {
+        const token = hydrateTokenLineage(row);
+        if (!token) {
+          return null;
+        }
+        const tokenSponsorChain = backend.db
+          .prepare<LineageMemberRow>(SELECT_TOKEN_LINEAGE_MEMBERS_SQL)
+          .all(token.tokenId)
+          .map((member) => normalizeOptionalString(member.principal_id))
+          .filter((value): value is string => Boolean(value));
+        return { ...token, sponsorChain: tokenSponsorChain };
+      })
+      .filter((token): token is TokenLineageRecord => token !== null);
+
+    return {
+      ...identityRecord,
+      sponsorChain,
+      tokens,
+    };
+  }
+
   private async getRequired(id: string): Promise<StoredIdentity> {
     const identity = await this.get(id);
     if (!identity) {
@@ -1465,18 +1613,30 @@ class SqliteTokenStorage implements TokenStorage {
       return;
     }
 
-    backend.db
-      .prepare(INSERT_TOKEN_SQL)
-      .run(
-        token.id,
-        token.tokenId,
-        token.jti,
-        token.identityId,
-        token.sessionId ?? null,
-        token.issuedAt,
-        token.expiresAt,
-        token.createdAt,
-      );
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      backend.db
+        .prepare(INSERT_TOKEN_SQL)
+        .run(
+          token.id,
+          token.tokenId,
+          token.jti,
+          token.identityId,
+          token.sessionId ?? null,
+          token.issuedAt,
+          token.expiresAt,
+          token.createdAt,
+        );
+      insertTokenLineage(backend.db, token);
+      backend.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        backend.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the originating storage error.
+      }
+      throw error;
+    }
   }
 
   async persistIssuedWithAudit(input: IssuedTokenAudit): Promise<void> {
@@ -1517,6 +1677,7 @@ class SqliteTokenStorage implements TokenStorage {
           input.token.expiresAt,
           input.token.createdAt,
         );
+      insertTokenLineage(backend.db, input.token);
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
         .run(...toAuditParams(auditEntry));
@@ -1575,6 +1736,7 @@ class SqliteTokenStorage implements TokenStorage {
           token.expiresAt,
           token.createdAt,
         );
+        insertTokenLineage(backend.db, token);
       }
       backend.db
         .prepare(INSERT_AUDIT_LOG_SQL)
@@ -1662,6 +1824,7 @@ class SqliteTokenStorage implements TokenStorage {
           token.expiresAt,
           token.createdAt,
         );
+        insertTokenLineage(backend.db, token);
       }
       const revoked = backend.db
         .prepare(
@@ -1826,6 +1989,73 @@ function toStoredTokenRecord(
     status: token.status,
     sessionId: token.session_id,
     expiresAt: token.expires_at,
+  };
+}
+
+function insertTokenLineage(db: SqliteDatabase, token: IssuedTokenRecord): void {
+  const lineage = token.lineage;
+  if (!lineage) {
+    return;
+  }
+
+  db.prepare(INSERT_TOKEN_LINEAGE_SQL).run(
+    token.tokenId,
+    token.identityId,
+    lineage.orgId,
+    lineage.workspaceId,
+    lineage.sponsorId,
+    lineage.tokenType,
+    token.createdAt,
+  );
+  const insertMember = db.prepare(INSERT_TOKEN_LINEAGE_MEMBER_SQL);
+  lineage.sponsorChain.forEach((principalId, chainPosition) => {
+    insertMember.run(token.tokenId, chainPosition, principalId);
+  });
+}
+
+function hydrateIdentityLineage(
+  row: IdentityLineageRow,
+): Omit<IdentityLineageRecord, "sponsorChain" | "tokens"> | null {
+  const identityId = normalizeOptionalString(row.identity_id);
+  const orgId = normalizeOptionalString(row.org_id);
+  const workspaceId = normalizeOptionalString(row.workspace_id);
+  const sponsorId = normalizeOptionalString(row.sponsor_id);
+  const createdAt = normalizeOptionalString(row.created_at);
+  if (!identityId || !orgId || !workspaceId || !sponsorId || !createdAt) {
+    return null;
+  }
+
+  return { identityId, orgId, workspaceId, sponsorId, createdAt };
+}
+
+function hydrateTokenLineage(row: TokenLineageRow): Omit<TokenLineageRecord, "sponsorChain"> | null {
+  const tokenId = normalizeOptionalString(row.token_id);
+  const identityId = normalizeOptionalString(row.identity_id);
+  const orgId = normalizeOptionalString(row.org_id);
+  const workspaceId = normalizeOptionalString(row.workspace_id);
+  const sponsorId = normalizeOptionalString(row.sponsor_id);
+  const createdAt = normalizeOptionalString(row.created_at);
+  const tokenType = row.token_type;
+  if (
+    !tokenId ||
+    !identityId ||
+    !orgId ||
+    !workspaceId ||
+    !sponsorId ||
+    !createdAt ||
+    (tokenType !== "access" && tokenType !== "refresh")
+  ) {
+    return null;
+  }
+
+  return {
+    tokenId,
+    identityId,
+    orgId,
+    workspaceId,
+    sponsorId,
+    tokenType,
+    createdAt,
   };
 }
 

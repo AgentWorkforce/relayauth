@@ -265,6 +265,35 @@ export type IssuedTokenRecord = {
   issuedAt: number;
   expiresAt: number;
   createdAt: string;
+  /**
+   * A durable snapshot of the identity lineage at the moment this token was
+   * issued. Storage implementations persist this with the token record.
+   */
+  lineage?: TokenLineageSnapshot;
+};
+
+export type TokenLineageSnapshot = {
+  orgId: string;
+  workspaceId: string;
+  sponsorId: string;
+  sponsorChain: string[];
+  tokenType: "access" | "refresh";
+};
+
+export type TokenLineageRecord = TokenLineageSnapshot & {
+  tokenId: string;
+  identityId: string;
+  createdAt: string;
+};
+
+export type IdentityLineageRecord = {
+  identityId: string;
+  orgId: string;
+  workspaceId: string;
+  sponsorId: string;
+  sponsorChain: string[];
+  createdAt: string;
+  tokens: TokenLineageRecord[];
 };
 
 export type StoredTokenRecord = {
@@ -347,6 +376,8 @@ export interface IdentityStorage {
     sponsorId: string,
   ): Promise<IdentityChildSummary[]>;
   getStatusCounts(orgId: string): Promise<IdentityStatusCounts>;
+  /** Returns relational lineage snapshots when the storage backend supports them. */
+  getLineage?(identityId: string): Promise<IdentityLineageRecord | null>;
 }
 
 export interface TokenStorage {

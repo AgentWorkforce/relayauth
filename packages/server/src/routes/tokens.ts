@@ -31,6 +31,7 @@ import {
   isStorageError,
   type AuditLogWriteEntry,
   type AuthStorage,
+  type IssuedTokenRecord,
   type StoredTokenRecord,
 } from "../storage/index.js";
 
@@ -1085,7 +1086,10 @@ async function issueRelayhistoryAssertion(
   };
 }
 
-function toIssuedTokenRecord(identityId: string, claims: RelayAuthTokenClaims) {
+function toIssuedTokenRecord(
+  identityId: string,
+  claims: RelayAuthTokenClaims,
+): IssuedTokenRecord {
   return {
     id: claims.jti,
     tokenId: claims.jti,
@@ -1095,6 +1099,13 @@ function toIssuedTokenRecord(identityId: string, claims: RelayAuthTokenClaims) {
     issuedAt: claims.iat,
     expiresAt: claims.exp,
     createdAt: new Date(claims.iat * 1000).toISOString(),
+    lineage: {
+      orgId: claims.org,
+      workspaceId: claims.wks,
+      sponsorId: claims.sponsorId,
+      sponsorChain: [...claims.sponsorChain],
+      tokenType: claims.token_type,
+    },
   };
 }
 
