@@ -1,4 +1,5 @@
 import type { RelayAuthTokenClaims } from "@relayauth/types";
+import { canonicalizeJson } from "./canonical-json.js";
 
 const textEncoder = new TextEncoder();
 
@@ -61,6 +62,31 @@ export async function signRs256(
     {
       name: "RSASSA-PKCS1-v1_5",
     },
+    privateKey,
+    textEncoder.encode(signingInput),
+  );
+
+  return `${signingInput}.${encodeBytesAsBase64Url(signature)}`;
+}
+
+/** Sign a non-token payload using the ledger's canonical JSON representation. */
+export async function signCanonicalRs256(
+  payload: Record<string, unknown>,
+  key: CryptoKey | string,
+  kid: string,
+): Promise<string> {
+  const privateKey = typeof key === "string" ? await importRsaPrivateKey(key) : key;
+  const encodedHeader = encodeJsonAsBase64Url({
+    alg: "RS256",
+    typ: "JWT",
+    kid,
+  });
+  const encodedPayload = encodeBytesAsBase64Url(
+    textEncoder.encode(canonicalizeJson(payload)),
+  );
+  const signingInput = `${encodedHeader}.${encodedPayload}`;
+  const signature = await crypto.subtle.sign(
+    { name: "RSASSA-PKCS1-v1_5" },
     privateKey,
     textEncoder.encode(signingInput),
   );
