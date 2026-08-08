@@ -71,7 +71,8 @@ SELECT
   json_each.value
 FROM identities
 CROSS JOIN json_each(identities.sponsor_chain_json)
-WHERE json_each.type = 'text';
+WHERE json_valid(identities.sponsor_chain_json)
+  AND json_each.type = 'text';
 
 CREATE TRIGGER IF NOT EXISTS identities_record_lineage_after_insert
 AFTER INSERT ON identities
@@ -101,5 +102,6 @@ BEGIN
     CAST(json_each.key AS INTEGER),
     json_each.value
   FROM json_each(NEW.sponsor_chain_json)
-  WHERE json_each.type = 'text';
+  WHERE json_valid(NEW.sponsor_chain_json)
+    AND json_each.type = 'text';
 END;

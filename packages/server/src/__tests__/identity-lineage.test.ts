@@ -4,12 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
+import type { StoredIdentity } from "../storage/identity-types.js";
 import { createSqliteStorage } from "../storage/sqlite.js";
 import {
   assertJsonResponse,
   createTestApp,
   createTestRequest,
+  generateTestIdentity,
   generateTestToken,
+  seedStoredIdentity,
 } from "./test-helpers.js";
 
 type CreatedIdentity = {
@@ -173,6 +176,18 @@ test("identity lineage survives a SQLite server restart without reading an issue
 
 test("lineage endpoint never exposes an identity from another organization", async () => {
   const app = createTestApp();
+  const base = generateTestIdentity({
+    id: "agent_other_org",
+    orgId: "org_other",
+  });
+  const otherOrganizationIdentity: StoredIdentity = {
+    ...base,
+    workspaceId: "ws_other",
+    sponsorId: "user_other_owner",
+    sponsorChain: ["user_other_owner", "agent_other_org"],
+  };
+  await seedStoredIdentity(app, otherOrganizationIdentity);
+
   const response = await app.request(
     createTestRequest(
       "GET",

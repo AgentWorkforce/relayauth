@@ -376,7 +376,11 @@ export interface IdentityStorage {
     sponsorId: string,
   ): Promise<IdentityChildSummary[]>;
   getStatusCounts(orgId: string): Promise<IdentityStatusCounts>;
-  /** Returns relational lineage snapshots when the storage backend supports them. */
+  /**
+   * Returns relational lineage snapshots when the storage backend supports
+   * them. This stays optional while the external cloud adapter is upgraded;
+   * the Node/SQLite implementation always provides it.
+   */
   getLineage?(identityId: string): Promise<IdentityLineageRecord | null>;
 }
 
