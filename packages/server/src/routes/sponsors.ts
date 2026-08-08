@@ -2,11 +2,15 @@ import { matchScope } from "@relayauth/sdk";
 import { Hono } from "hono";
 import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
-import { SponsorBindingError } from "../lib/sponsor-binding.js";
+import {
+  normalizeSponsorProofIntent,
+  SponsorBindingError,
+} from "../lib/sponsor-binding.js";
 
 type SponsorProofRequest = {
   idToken?: unknown;
   id_token?: unknown;
+  intent?: unknown;
 };
 
 const sponsors = new Hono<AppEnv>();
@@ -31,6 +35,13 @@ sponsors.post("/proof", async (c) => {
   if (!idToken) {
     return c.json({ error: "idToken is required", code: "id_token_required" }, 400);
   }
+  const intent = normalizeSponsorProofIntent(body.intent);
+  if (!intent) {
+    return c.json({
+      error: "intent is required and must be a valid purpose",
+      code: "invalid_sponsor_intent",
+    }, 400);
+  }
 
   const service = c.get("sponsorOidcService");
   try {
@@ -43,7 +54,13 @@ sponsors.post("/proof", async (c) => {
     }
 
     const sponsor = await service.verifyIdToken(idToken, config);
-    const proof = await service.issueSponsorProof(c.env, auth.claims.org, sponsor, config);
+    const proof = await service.issueSponsorProof(
+      c.env,
+      auth.claims.org,
+      sponsor,
+      intent,
+      config,
+    );
     return c.json(proof, 201);
   } catch (error) {
     if (error instanceof SponsorBindingError) {

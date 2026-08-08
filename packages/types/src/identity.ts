@@ -2,6 +2,15 @@ export type IdentityStatus = "active" | "suspended" | "retired";
 
 export type IdentityType = "agent" | "human" | "service";
 
+/**
+ * Purpose bound into a verified-human-principal grant.
+ *
+ * Known values include "identity.create" and "approval"; the server accepts
+ * future lowercase, delimiter-separated values without requiring an SDK
+ * release.
+ */
+export type SponsorProofIntent = string;
+
 export type SponsorBinding =
   | {
       mode: "legacy";
@@ -46,10 +55,12 @@ export interface CreateIdentityInput {
 
 export interface CreateSponsorProofInput {
   idToken: string;
+  intent: SponsorProofIntent;
 }
 
 export interface SponsorProof {
   sponsorId: string;
   sponsorProof: string;
   expiresAt: string;
+  intent: SponsorProofIntent;
 }

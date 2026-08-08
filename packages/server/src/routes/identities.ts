@@ -12,6 +12,7 @@ import type { AppEnv } from "../env.js";
 import { authenticateAndAuthorizeFromContext, authenticateBearerOrApiKey, authorizeClaims, decodeBase64UrlJson } from "../lib/auth.js";
 import { emitObserverEvent, now as observerNow } from "../lib/events.js";
 import {
+  IDENTITY_CREATE_SPONSOR_INTENT,
   SponsorBindingError,
   type IdentityCreatedLedgerPayload,
 } from "../lib/sponsor-binding.js";
@@ -469,6 +470,7 @@ identities.post("/", async (c) => {
         sponsorProof,
         auth.claims.org,
         sponsorId,
+        IDENTITY_CREATE_SPONSOR_INTENT,
       );
     }
 
@@ -516,6 +518,7 @@ identities.post("/", async (c) => {
         const ledgerPayload: IdentityCreatedLedgerPayload = {
           agentId: storedIdentity.id,
           sponsorId,
+          intent: IDENTITY_CREATE_SPONSOR_INTENT,
           issuer: sponsorBinding.issuer,
           subject: sponsorBinding.subject,
           iat: sponsorBinding.iat,

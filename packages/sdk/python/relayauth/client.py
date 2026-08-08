@@ -165,11 +165,11 @@ class RelayAuthClient:
         data = await self._request("/v1/identities", method="POST", body=payload)
         return AgentIdentity.from_dict(data)
 
-    async def create_sponsor_proof(self, id_token: str) -> SponsorProof:
+    async def create_sponsor_proof(self, id_token: str, intent: str) -> SponsorProof:
         data = await self._request(
             "/v1/sponsors/proof",
             method="POST",
-            body={"idToken": id_token},
+            body={"idToken": id_token, "intent": intent},
         )
         return SponsorProof.from_dict(data)
 

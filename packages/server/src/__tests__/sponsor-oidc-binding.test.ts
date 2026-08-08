@@ -136,7 +136,7 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
     createTestRequest(
       "POST",
       "/v1/sponsors/proof",
-      { idToken },
+      { idToken, intent: "identity.create" },
       { "x-api-key": apiKey },
     ),
     undefined,
@@ -145,6 +145,13 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
   const proof = await assertJsonResponse<SponsorProof>(proofResponse, 201);
   assert.equal(proofResponse.headers.get("cache-control"), "no-store");
   assert.equal(proof.sponsorId, "user_alice");
+  assert.equal(proof.intent, "identity.create");
+  const [, encodedProofPayload] = proof.sponsorProof.split(".");
+  assert.ok(encodedProofPayload);
+  assert.equal(
+    JSON.parse(Buffer.from(encodedProofPayload, "base64url").toString("utf8")).intent,
+    "identity.create",
+  );
 
   const response = await app.request(
     createTestRequest(
@@ -207,6 +214,7 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
   assert.deepEqual(JSON.parse(ledger.payload_json), {
     agentId: identity.id,
     sponsorId: "user_alice",
+    intent: "identity.create",
     issuer,
     subject: "alice",
     iat: now,
@@ -285,6 +293,7 @@ test("OIDC-bound org refuses sponsorId that differs from verified proof", async 
           iat: now,
           exp: now + 300,
         }),
+        intent: "identity.create",
       },
       { "x-api-key": apiKey },
     ),
@@ -309,6 +318,90 @@ test("OIDC-bound org refuses sponsorId that differs from verified proof", async 
   );
   const body = await assertJsonResponse<{ code: string }>(response, 403);
   assert.equal(body.code, "invalid_sponsor_proof");
+});
+
+test("identity creation refuses a verified-human proof issued for approval", async (t) => {
+  const { issuer } = await startOidcFixture(t);
+  const org = "org_oidc_intent_bound";
+  const app = createTestApp({
+    RELAYAUTH_SPONSOR_FEDERATIONS: JSON.stringify({
+      [org]: { sponsorBinding: "oidc", issuer, clientId: "chief-fixture" },
+    }),
+  });
+  const apiKey = await createWorkspaceApiKey(app, org);
+  const now = Math.floor(Date.now() / 1000);
+  const proofResponse = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/sponsors/proof",
+      {
+        idToken: signIdToken({
+          iss: issuer,
+          sub: "alice",
+          aud: "chief-fixture",
+          iat: now,
+          exp: now + 300,
+        }),
+        intent: "approval",
+      },
+      { "x-api-key": apiKey },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const proof = await assertJsonResponse<SponsorProof>(proofResponse, 201);
+  assert.equal(proof.intent, "approval");
+
+  const response = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      {
+        name: "wrong-intent",
+        sponsorId: proof.sponsorId,
+        sponsorProof: proof.sponsorProof,
+      },
+      { "x-api-key": apiKey },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const body = await assertJsonResponse<{ code: string }>(response, 403);
+  assert.equal(body.code, "invalid_sponsor_proof");
+});
+
+test("sponsor proof requires a valid intent", async (t) => {
+  const { issuer } = await startOidcFixture(t);
+  const org = "org_oidc_intent_required";
+  const app = createTestApp({
+    RELAYAUTH_SPONSOR_FEDERATIONS: JSON.stringify({
+      [org]: { sponsorBinding: "oidc", issuer, clientId: "chief-fixture" },
+    }),
+  });
+  const apiKey = await createWorkspaceApiKey(app, org);
+  const now = Math.floor(Date.now() / 1000);
+  const idToken = signIdToken({
+    iss: issuer,
+    sub: "alice",
+    aud: "chief-fixture",
+    iat: now,
+    exp: now + 300,
+  });
+
+  for (const intent of [undefined, "Identity Create", "approval/../../transcript"]) {
+    const response = await app.request(
+      createTestRequest(
+        "POST",
+        "/v1/sponsors/proof",
+        { idToken, ...(intent === undefined ? {} : { intent }) },
+        { "x-api-key": apiKey },
+      ),
+      undefined,
+      app.bindings,
+    );
+    const body = await assertJsonResponse<{ code: string }>(response, 400);
+    assert.equal(body.code, "invalid_sponsor_intent");
+  }
 });
 
 test("legacy org creation remains unchanged and surfaces legacy binding mode", async (t) => {
@@ -354,6 +447,7 @@ test("sponsor proof refuses an id_token with the wrong audience", async (t) => {
           iat: now,
           exp: now + 300,
         }),
+        intent: "identity.create",
       },
       { "x-api-key": apiKey },
     ),
@@ -403,6 +497,7 @@ test("OIDC-bound identity creation rolls back when the signed ledger append fail
           iat: now,
           exp: now + 300,
         }),
+        intent: "identity.create",
       },
       { "x-api-key": apiKey },
     ),

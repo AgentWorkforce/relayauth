@@ -157,12 +157,16 @@ RELAYAUTH_SPONSOR_FEDERATIONS='{
 }'
 ```
 
-An authenticated identity manager exchanges a fresh IdP token at
-`POST /v1/sponsors/proof` with `{ "idToken": "..." }`. The returned short-lived
-`sponsorProof` must accompany `sponsorId` on `POST /v1/identities`. RelayAuth
-checks the issuer, audience, lifetime, RS256 signature, and matching sponsor
-before creating the identity. The identity response records whether its sponsor
-was established in `legacy` or `oidc` mode.
+An authenticated caller exchanges a fresh IdP token at
+`POST /v1/sponsors/proof` with
+`{ "idToken": "...", "intent": "identity.create" }`. The returned short-lived,
+intent-bound `sponsorProof` names the verified human principal. A proof whose
+intent is `identity.create` must accompany `sponsorId` on
+`POST /v1/identities`; proofs issued for other purposes, such as `approval`,
+cannot be substituted. RelayAuth checks the issuer, audience, lifetime, RS256
+signature, intent, and matching sponsor before creating the identity. The
+identity response records whether its sponsor was established in `legacy` or
+`oidc` mode.
 
 ## Scope Format
 

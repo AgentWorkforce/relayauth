@@ -402,19 +402,21 @@ async def test_client_create_sponsor_proof() -> None:
         "sponsorId": "user_alice",
         "sponsorProof": "signed-proof",
         "expiresAt": "2026-03-25T10:05:00.000Z",
+        "intent": "identity.create",
     }
     route = respx.post(f"{BASE_URL}/v1/sponsors/proof").mock(
         return_value=httpx_response(201, payload),
     )
     client = _create_client(base_url=BASE_URL, token=AUTH_TOKEN)
 
-    proof = await client.create_sponsor_proof("fixture-id-token")
+    proof = await client.create_sponsor_proof("fixture-id-token", "identity.create")
 
     assert _to_mapping(proof) == payload
     request = route.calls.last.request
     assert request.headers["authorization"] == f"Bearer {AUTH_TOKEN}"
     assert json.loads(request.content.decode("utf-8")) == {
-        "idToken": "fixture-id-token"
+        "idToken": "fixture-id-token",
+        "intent": "identity.create",
     }
 
 

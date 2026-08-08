@@ -193,6 +193,7 @@ class SponsorProof:
     sponsorId: str
     sponsorProof: str
     expiresAt: str
+    intent: str
 
     @classmethod
     def from_dict(cls, value: Any) -> SponsorProof:
@@ -201,6 +202,7 @@ class SponsorProof:
             sponsorId=str(data["sponsorId"]),
             sponsorProof=str(data["sponsorProof"]),
             expiresAt=str(data["expiresAt"]),
+            intent=str(data["intent"]),
         )
 
 

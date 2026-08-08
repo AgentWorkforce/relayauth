@@ -1,4 +1,4 @@
-import type { SponsorBinding } from "@relayauth/types";
+import type { SponsorBinding, SponsorProofIntent } from "@relayauth/types";
 import { rsaPublicJwkFromPem } from "./jwk.js";
 import {
   encodeBytesAsBase64Url,
@@ -22,6 +22,10 @@ const DEFAULT_JWKS_CACHE_SECONDS = 300;
 const MAX_JWKS_CACHE_SECONDS = 3600;
 const FETCH_TIMEOUT_MS = 5_000;
 const SPONSOR_ID_PATTERN = /^user_[A-Za-z0-9_-]+$/u;
+const SPONSOR_INTENT_PATTERN = /^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/u;
+const MAX_SPONSOR_INTENT_LENGTH = 128;
+
+export const IDENTITY_CREATE_SPONSOR_INTENT = "identity.create";
 
 export type SponsorFederationConfig =
   | {
@@ -62,11 +66,13 @@ export type IssuedSponsorProof = {
   sponsorId: string;
   sponsorProof: string;
   expiresAt: string;
+  intent: SponsorProofIntent;
 };
 
 export type IdentityCreatedLedgerPayload = {
   agentId: string;
   sponsorId: string;
+  intent: SponsorProofIntent;
   issuer: string;
   subject: string;
   iat: number;
@@ -105,6 +111,7 @@ type SponsorGrantClaims = {
   iat: number;
   exp: number;
   jti: string;
+  intent: SponsorProofIntent;
   token_type: typeof SPONSOR_GRANT_TOKEN_TYPE;
   oidc: {
     issuer: string;
@@ -263,12 +270,17 @@ export class SponsorOidcService {
     env: SponsorBindingEnv,
     orgId: string,
     sponsor: VerifiedOidcSponsor,
+    intent: SponsorProofIntent,
     config: Extract<SponsorFederationConfig, { sponsorBinding: "oidc" }>,
   ): Promise<IssuedSponsorProof> {
     const privateKey = env.RELAYAUTH_SIGNING_KEY_PEM?.trim();
     const publicKey = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
     if (!privateKey || !publicKey) {
       throw configurationError("RelayAuth signing keys are required for sponsor proofs");
+    }
+    const normalizedIntent = normalizeSponsorProofIntent(intent);
+    if (!normalizedIntent) {
+      throw invalidSponsorIntent();
     }
 
     const now = Math.floor(Date.now() / 1000);
@@ -289,6 +301,7 @@ export class SponsorOidcService {
       iat: now,
       exp,
       jti: `spg_${crypto.randomUUID().replace(/-/gu, "")}`,
+      intent: normalizedIntent,
       token_type: SPONSOR_GRANT_TOKEN_TYPE,
       oidc: {
         issuer: sponsor.issuer,
@@ -302,6 +315,7 @@ export class SponsorOidcService {
       sponsorId: sponsor.sponsorId,
       sponsorProof: await signRs256(claims, privateKey, kid),
       expiresAt: new Date(exp * 1000).toISOString(),
+      intent: normalizedIntent,
     };
   }
 
@@ -310,6 +324,7 @@ export class SponsorOidcService {
     proof: string,
     expectedOrgId: string,
     expectedSponsorId: string,
+    expectedIntent: SponsorProofIntent,
   ): Promise<Extract<SponsorBinding, { mode: "oidc" }>> {
     const publicKeyPem = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
     if (!publicKeyPem) {
@@ -349,6 +364,8 @@ export class SponsorOidcService {
       || claims.token_type !== SPONSOR_GRANT_TOKEN_TYPE
       || claims.org !== expectedOrgId
       || claims.sub !== expectedSponsorId
+      || claims.intent !== expectedIntent
+      || normalizeSponsorProofIntent(claims.intent) === null
       || !Number.isInteger(claims.iat)
       || !Number.isInteger(claims.exp)
       || claims.iat > now + DEFAULT_CLOCK_SKEW_SECONDS
@@ -437,6 +454,18 @@ export class SponsorOidcService {
     });
     return discovery.jwks_uri;
   }
+}
+
+export function normalizeSponsorProofIntent(value: unknown): SponsorProofIntent | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const intent = value.trim();
+  return intent.length > 0
+    && intent.length <= MAX_SPONSOR_INTENT_LENGTH
+    && SPONSOR_INTENT_PATTERN.test(intent)
+    ? intent
+    : null;
 }
 
 export function sponsorBindingMode(
@@ -691,6 +720,14 @@ function invalidIdToken(): SponsorBindingError {
 
 function invalidSponsorProof(): SponsorBindingError {
   return new SponsorBindingError("Invalid sponsor proof", "invalid_sponsor_proof", 403);
+}
+
+function invalidSponsorIntent(): SponsorBindingError {
+  return new SponsorBindingError(
+    "Invalid sponsor proof intent",
+    "invalid_sponsor_intent",
+    400,
+  );
 }
 
 function configurationError(message: string): SponsorBindingError {
