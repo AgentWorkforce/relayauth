@@ -169,6 +169,20 @@ test("OIDC-bound org accepts verified sponsor proof and records binding evidence
   );
   const stored = await assertJsonResponse<CreatedIdentity>(storedResponse, 200);
   assert.deepEqual(stored.sponsorBinding, identity.sponsorBinding);
+
+  const patchResponse = await app.request(
+    createTestRequest(
+      "PATCH",
+      `/v1/identities/${identity.id}`,
+      { name: "verified-agent-renamed", sponsorBinding: { mode: "legacy" } },
+      { "x-api-key": apiKey },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const patched = await assertJsonResponse<CreatedIdentity>(patchResponse, 200);
+  assert.equal(patched.name, "verified-agent-renamed");
+  assert.deepEqual(patched.sponsorBinding, identity.sponsorBinding);
 });
 
 test("OIDC-bound org refuses workspace API key creation without sponsor proof", async (t) => {
