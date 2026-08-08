@@ -436,6 +436,53 @@ export interface ApiKeyStorage {
   touchLastUsed(id: string, usedAt: string): Promise<void>;
 }
 
+export type AttestationGrant = {
+  jti: string;
+  orgId: string;
+  agentId: string;
+  sponsorId: string;
+  sponsorChain: string[];
+  repo: string;
+  taskRef?: string;
+  notAfter: string;
+  finalizeKeyHash: string;
+  redeemedAt?: string;
+  late: boolean;
+  createdAt: string;
+};
+
+/**
+ * Transaction-ready ledger entry supplied by attestation finalization. The
+ * ledger owns sequence and hash-chain fields; callers supply signed content.
+ */
+export type AttestationLedgerAppendInput = {
+  orgId: string;
+  entryType: "attestation.created" | string;
+  jti: string;
+  commitSha: string;
+  repo: string;
+  agentId: string;
+  sponsorId: string;
+  payload: Record<string, unknown>;
+  jws: string;
+  createdAt: string;
+  late: boolean;
+};
+
+export type RedeemAttestationGrantInput = {
+  jti: string;
+  finalizeKeyHash: string;
+  redeemedAt: string;
+  ledgerEntries: AttestationLedgerAppendInput[];
+};
+
+export interface AttestationGrantStorage {
+  get(jti: string): Promise<AttestationGrant | null>;
+  create(grant: AttestationGrant): Promise<AttestationGrant>;
+  /** Append every signed entry and redeem the grant in one transaction. */
+  redeemWithLedgerEntries(input: RedeemAttestationGrantInput): Promise<void>;
+}
+
 export interface AuthStorage {
   identities: IdentityStorage;
   tokens: TokenStorage;
@@ -446,6 +493,7 @@ export interface AuthStorage {
   auditWebhooks: AuditWebhookStorage;
   contexts: ContextStorage;
   apiKeys: ApiKeyStorage;
+  attestationGrants: AttestationGrantStorage;
 }
 
 export class StorageError extends Error {

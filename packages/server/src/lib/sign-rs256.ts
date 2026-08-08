@@ -49,13 +49,22 @@ export async function signRs256(
   key: CryptoKey | string,
   kid: string,
 ): Promise<string> {
+  return signRs256Payload(claims, key, kid);
+}
+
+/** Sign a compact JWS whose payload is not a RelayAuth access token. */
+export async function signRs256Payload(
+  payload: object,
+  key: CryptoKey | string,
+  kid: string,
+): Promise<string> {
   const privateKey = typeof key === "string" ? await importRsaPrivateKey(key) : key;
   const encodedHeader = encodeJsonAsBase64Url({
     alg: "RS256",
     typ: "JWT",
     kid,
   });
-  const encodedPayload = encodeJsonAsBase64Url(claims);
+  const encodedPayload = encodeJsonAsBase64Url(payload);
   const signingInput = `${encodedHeader}.${encodedPayload}`;
   const signature = await crypto.subtle.sign(
     {

@@ -27,6 +27,9 @@ import type {
 } from "./identity-types.js";
 import type {
   ApiKeyStorage,
+  AttestationGrant,
+  AttestationGrantStorage,
+  AttestationLedgerAppendInput,
   AuditEntryRecord,
   AuditStorage,
   AuditWebhookStorage,
@@ -52,6 +55,7 @@ import type {
   PolicyStorage,
   PolicyUpdate,
   RevokedTokenAudit,
+  RedeemAttestationGrantInput,
   RevocationStorage,
   RoleStorage,
   StoredTokenRecord,
@@ -424,6 +428,48 @@ const UPDATE_API_KEY_LAST_USED_SQL = `
     AND (last_used_at IS NULL OR last_used_at < ?)
 `;
 
+const INSERT_ATTESTATION_GRANT_SQL = `
+  INSERT INTO attestation_grants (
+    jti, org_id, agent_id, sponsor_id, sponsor_chain_json, repo, task_ref,
+    not_after, finalize_key_hash, redeemed_at, late, created_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+const SELECT_ATTESTATION_GRANT_SQL = `
+  SELECT
+    jti, org_id, agent_id, sponsor_id, sponsor_chain_json, repo, task_ref,
+    not_after, finalize_key_hash, redeemed_at, late, created_at
+  FROM attestation_grants
+  WHERE jti = ?
+  LIMIT 1
+`;
+
+const REDEEM_ATTESTATION_GRANT_SQL = `
+  UPDATE attestation_grants
+  SET redeemed_at = ?
+  WHERE jti = ? AND redeemed_at IS NULL AND finalize_key_hash = ?
+`;
+
+// Compatibility boundary for RA-2's append-only ledger schema. RA-2 owns the
+// table and public append API; RA-1 uses the same transaction so appends and
+// grant redemption commit or roll back together.
+const SELECT_LAST_ATTESTATION_LEDGER_ENTRY_SQL = `
+  SELECT org_seq, entry_hash
+  FROM attestation_ledger
+  WHERE org_id = ?
+  ORDER BY org_seq DESC
+  LIMIT 1
+`;
+
+const INSERT_ATTESTATION_LEDGER_ENTRY_SQL = `
+  INSERT INTO attestation_ledger (
+    org_id, org_seq, entry_type, jti, commit_sha, repo, agent_id, sponsor_id,
+    payload_json, jws, prev_hash, entry_hash, created_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
 const LIST_ACTIVE_TOKENS_SQL = `
   SELECT id, jti, token_id
   FROM tokens
@@ -710,6 +756,24 @@ type ApiKeyRow = {
   last_used_at?: string | null;
   revoked_at?: string | null;
 };
+type AttestationGrantRow = {
+  jti?: string;
+  org_id?: string;
+  agent_id?: string;
+  sponsor_id?: string;
+  sponsor_chain_json?: string;
+  repo?: string;
+  task_ref?: string | null;
+  not_after?: string;
+  finalize_key_hash?: string;
+  redeemed_at?: string | null;
+  late?: number | boolean | null;
+  created_at?: string;
+};
+type AttestationLedgerHeadRow = {
+  org_seq?: number | string | null;
+  entry_hash?: string | null;
+};
 type AuditRow = {
   id?: string;
   action?: AuditAction | string;
@@ -790,6 +854,7 @@ type MemoryState = {
   roles: Map<string, Role>;
   policies: Map<string, Policy>;
   apiKeys: Map<string, StoredApiKey>;
+  attestationGrants: Map<string, AttestationGrant>;
   auditLogs: AuditEntryRecord[];
   auditWebhooks: Map<string, AuditWebhookRecord>;
   organizations: Map<string, OrganizationContextRecord>;
@@ -825,6 +890,7 @@ export function createSqliteStorage(
     roles: new SqliteRoleStorage(provider),
     policies: new SqlitePolicyStorage(provider),
     apiKeys: new SqliteApiKeyStorage(provider),
+    attestationGrants: new SqliteAttestationGrantStorage(provider),
     audit: new SqliteAuditStorage(provider),
     auditWebhooks: new SqliteAuditWebhookStorage(provider),
     contexts: new SqliteContextStorage(provider),
@@ -2158,6 +2224,104 @@ class SqliteApiKeyStorage implements ApiKeyStorage {
   }
 }
 
+class SqliteAttestationGrantStorage implements AttestationGrantStorage {
+  constructor(private readonly provider: BackendProvider) {}
+
+  async get(jti: string): Promise<AttestationGrant | null> {
+    const normalizedJti = requireString(jti, "jti is required");
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const grant = backend.state.attestationGrants.get(normalizedJti);
+      return grant ? cloneAttestationGrant(grant) : null;
+    }
+    return hydrateAttestationGrant(
+      backend.db.prepare<AttestationGrantRow>(SELECT_ATTESTATION_GRANT_SQL).get(normalizedJti),
+    );
+  }
+
+  async create(input: AttestationGrant): Promise<AttestationGrant> {
+    const grant = normalizeAttestationGrant(input);
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      if (backend.state.attestationGrants.has(grant.jti)) {
+        throw new StorageError(
+          "attestation_grant_already_exists",
+          409,
+          "attestation_grant_already_exists",
+        );
+      }
+      backend.state.attestationGrants.set(grant.jti, cloneAttestationGrant(grant));
+      return cloneAttestationGrant(grant);
+    }
+    try {
+      backend.db.prepare(INSERT_ATTESTATION_GRANT_SQL).run(
+        ...toAttestationGrantParams(grant),
+      );
+    } catch (error) {
+      if (isSqliteConstraintError(error)) {
+        throw new StorageError(
+          "attestation_grant_already_exists",
+          409,
+          "attestation_grant_already_exists",
+        );
+      }
+      throw error;
+    }
+    return cloneAttestationGrant(grant);
+  }
+
+  async redeemWithLedgerEntries(input: RedeemAttestationGrantInput): Promise<void> {
+    const jti = requireString(input.jti, "jti is required");
+    const keyHash = requireString(input.finalizeKeyHash, "finalizeKeyHash is required");
+    const redeemedAt = normalizeTimestamp(input.redeemedAt);
+    if (input.ledgerEntries.length === 0) {
+      throw new Error("at least one ledger entry is required");
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const grant = backend.state.attestationGrants.get(jti) ?? null;
+      assertGrantCanRedeem(grant, keyHash, redeemedAt);
+      for (const entry of input.ledgerEntries) {
+        assertLedgerEntryMatchesGrant(entry, grant);
+      }
+      backend.state.attestationGrants.set(
+        jti,
+        cloneAttestationGrant({ ...grant, redeemedAt }),
+      );
+      return;
+    }
+
+    backend.db.exec("BEGIN IMMEDIATE");
+    try {
+      const grant = hydrateAttestationGrant(
+        backend.db.prepare<AttestationGrantRow>(SELECT_ATTESTATION_GRANT_SQL).get(jti),
+      );
+      assertGrantCanRedeem(grant, keyHash, redeemedAt);
+      for (const entry of input.ledgerEntries) {
+        assertLedgerEntryMatchesGrant(entry, grant);
+        appendAttestationLedgerEntryInTransaction(backend.db, entry);
+      }
+      const result = backend.db.prepare(REDEEM_ATTESTATION_GRANT_SQL).run(
+        redeemedAt,
+        jti,
+        keyHash,
+      );
+      if (Number(result.changes ?? 0) !== 1) {
+        throw new StorageError(
+          "attestation_grant_redeemed",
+          409,
+          "attestation_grant_redeemed",
+        );
+      }
+      backend.db.exec("COMMIT");
+    } catch (error) {
+      rollbackSqliteTransaction(backend.db);
+      throw error;
+    }
+  }
+}
+
 class SqliteRoleStorage implements RoleStorage {
   constructor(private readonly provider: BackendProvider) {}
 
@@ -2736,6 +2900,7 @@ function createMemoryBackend(): BackendContext {
       roles: new Map<string, Role>(),
       policies: new Map<string, Policy>(),
       apiKeys: new Map<string, StoredApiKey>(),
+      attestationGrants: new Map<string, AttestationGrant>(),
       auditLogs: [],
       auditWebhooks: new Map<string, AuditWebhookRecord>(),
       organizations: new Map<string, OrganizationContextRecord>(),
@@ -4178,6 +4343,184 @@ function requireUnixTimestamp(value: unknown, message: string): number {
   }
 
   return normalized;
+}
+
+function normalizeAttestationGrant(input: AttestationGrant): AttestationGrant {
+  const sponsorChain = normalizeStringArray(input.sponsorChain)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (sponsorChain.length === 0) {
+    throw new StorageError("sponsorChain is required", 400, "invalid_input");
+  }
+  return {
+    jti: requireString(input.jti, "jti is required"),
+    orgId: requireString(input.orgId, "orgId is required"),
+    agentId: requireString(input.agentId, "agentId is required"),
+    sponsorId: requireString(input.sponsorId, "sponsorId is required"),
+    sponsorChain,
+    repo: requireString(input.repo, "repo is required"),
+    ...(normalizeOptionalString(input.taskRef) ? { taskRef: input.taskRef!.trim() } : {}),
+    notAfter: requireString(input.notAfter, "notAfter is required"),
+    finalizeKeyHash: requireString(input.finalizeKeyHash, "finalizeKeyHash is required"),
+    ...(normalizeOptionalString(input.redeemedAt) ? { redeemedAt: input.redeemedAt!.trim() } : {}),
+    late: input.late === true,
+    createdAt: requireString(input.createdAt, "createdAt is required"),
+  };
+}
+
+function hydrateAttestationGrant(row: AttestationGrantRow | undefined): AttestationGrant | null {
+  if (!row) return null;
+  try {
+    return normalizeAttestationGrant({
+      jti: row.jti ?? "",
+      orgId: row.org_id ?? "",
+      agentId: row.agent_id ?? "",
+      sponsorId: row.sponsor_id ?? "",
+      sponsorChain: normalizeStringArray(parseJson<unknown>(row.sponsor_chain_json, [])),
+      repo: row.repo ?? "",
+      ...(normalizeOptionalString(row.task_ref) ? { taskRef: row.task_ref! } : {}),
+      notAfter: row.not_after ?? "",
+      finalizeKeyHash: row.finalize_key_hash ?? "",
+      ...(normalizeOptionalString(row.redeemed_at) ? { redeemedAt: row.redeemed_at! } : {}),
+      late: row.late === true || row.late === 1,
+      createdAt: row.created_at ?? "",
+    });
+  } catch {
+    return null;
+  }
+}
+
+function cloneAttestationGrant(grant: AttestationGrant): AttestationGrant {
+  return { ...grant, sponsorChain: [...grant.sponsorChain] };
+}
+
+function toAttestationGrantParams(grant: AttestationGrant): unknown[] {
+  return [
+    grant.jti,
+    grant.orgId,
+    grant.agentId,
+    grant.sponsorId,
+    JSON.stringify(grant.sponsorChain),
+    grant.repo,
+    grant.taskRef ?? null,
+    grant.notAfter,
+    grant.finalizeKeyHash,
+    grant.redeemedAt ?? null,
+    grant.late ? 1 : 0,
+    grant.createdAt,
+  ];
+}
+
+function assertGrantCanRedeem(
+  grant: AttestationGrant | null,
+  finalizeKeyHash: string,
+  redeemedAt: string,
+): asserts grant is AttestationGrant {
+  if (!grant || !constantTimeEquals(finalizeKeyHash, grant.finalizeKeyHash)) {
+    throw new StorageError("invalid_finalize_key", 401, "invalid_finalize_key");
+  }
+  if (grant.redeemedAt) {
+    throw new StorageError(
+      "attestation_grant_redeemed",
+      409,
+      "attestation_grant_redeemed",
+    );
+  }
+  if (Date.parse(grant.notAfter) <= Date.parse(redeemedAt)) {
+    throw new StorageError(
+      "attestation_grant_expired",
+      410,
+      "attestation_grant_expired",
+    );
+  }
+}
+
+function assertLedgerEntryMatchesGrant(
+  entry: AttestationLedgerAppendInput,
+  grant: AttestationGrant,
+): void {
+  if (
+    entry.orgId !== grant.orgId ||
+    entry.jti !== grant.jti ||
+    entry.repo !== grant.repo ||
+    entry.agentId !== grant.agentId ||
+    entry.sponsorId !== grant.sponsorId ||
+    entry.late !== grant.late
+  ) {
+    throw new Error("attestation ledger entry does not match its grant");
+  }
+}
+
+function appendAttestationLedgerEntryInTransaction(
+  db: SqliteDatabase,
+  entry: AttestationLedgerAppendInput,
+): void {
+  const previous = db
+    .prepare<AttestationLedgerHeadRow>(SELECT_LAST_ATTESTATION_LEDGER_ENTRY_SQL)
+    .get(entry.orgId);
+  const orgSeq = normalizeNumber(previous?.org_seq) + 1;
+  const prevHash = normalizeOptionalString(previous?.entry_hash) ?? "0".repeat(64);
+  const payloadJson = canonicalizeJson(entry.payload);
+  const entryHash = crypto
+    .createHash("sha256")
+    .update(payloadJson, "utf8")
+    .update(prevHash, "utf8")
+    .digest("hex");
+  db.prepare(INSERT_ATTESTATION_LEDGER_ENTRY_SQL).run(
+    entry.orgId,
+    orgSeq,
+    entry.entryType,
+    entry.jti,
+    entry.commitSha,
+    entry.repo,
+    entry.agentId,
+    entry.sponsorId,
+    payloadJson,
+    entry.jws,
+    prevHash,
+    entryHash,
+    entry.createdAt,
+  );
+}
+
+function canonicalizeJson(value: unknown): string {
+  return JSON.stringify(canonicalizeJsonValue(value));
+}
+
+function canonicalizeJsonValue(value: unknown): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.map(canonicalizeJsonValue);
+  if (typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      const nested = (value as Record<string, unknown>)[key];
+      if (nested === undefined) throw new Error("ledger payload contains undefined");
+      result[key] = canonicalizeJsonValue(nested);
+    }
+    return result;
+  }
+  throw new Error("ledger payload contains a non-JSON value");
+}
+
+function rollbackSqliteTransaction(db: SqliteDatabase): void {
+  try {
+    db.exec("ROLLBACK");
+  } catch {
+    // Preserve the original transaction failure.
+  }
+}
+
+function isSqliteConstraintError(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof (error as { code?: unknown }).code === "string" &&
+    (error as { code: string }).code.startsWith("SQLITE_CONSTRAINT"),
+  );
 }
 
 function cloneStoredIdentity(identity: StoredIdentity): StoredIdentity {
