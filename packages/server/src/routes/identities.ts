@@ -167,6 +167,35 @@ identities.get("/", async (c) => {
   );
 });
 
+identities.get("/:id/lineage", async (c) => {
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
+    "relayauth:identity:read:*",
+    matchScope,
+  );
+  if (!auth.ok) {
+    return c.json({ error: auth.error }, auth.status);
+  }
+
+  const id = c.req.param("id").trim();
+  const storage = c.get("storage");
+  const identity = await storage.identities.get(id);
+  if (!identity || identity.orgId !== auth.claims.org) {
+    return c.json({ error: "identity_not_found" }, 404);
+  }
+
+  if (!storage.identities.getLineage) {
+    return c.json({ error: "lineage_unavailable" }, 501);
+  }
+
+  const lineage = await storage.identities.getLineage(id);
+  if (!lineage) {
+    return c.json({ error: "lineage_not_found" }, 404);
+  }
+
+  return c.json(lineage, 200);
+});
+
 identities.get("/:id", async (c) => {
   const auth = await authenticateAndAuthorizeFromContext(
     c,
