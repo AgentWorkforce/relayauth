@@ -182,6 +182,16 @@ test("sessionRef is stored on the grant and appears in every finalized attestati
   const stored = await app.storage.attestations.getGrant(issued.jti);
   assert.equal(stored?.sessionRef, sessionId);
 
+  // Verify the grant-creation ledger entry (attestation.granted) also carries sessionRef.
+  const grantLedgerRow = await app.storage.DB.prepare(
+    "SELECT payload_json, jws FROM attestation_ledger WHERE jti = ? AND entry_type = 'attestation.granted' LIMIT 1",
+  ).bind(issued.jti).first<{ payload_json: string; jws: string }>();
+  assert.ok(grantLedgerRow, "grant-creation ledger entry must exist");
+  const grantLedgerPayload = JSON.parse(grantLedgerRow.payload_json) as Record<string, unknown>;
+  assert.equal(grantLedgerPayload.sessionRef, sessionId, "grant-creation ledger payload must carry sessionRef");
+  const grantLedgerJwsPayload = verifyJws(grantLedgerRow.jws);
+  assert.equal(grantLedgerJwsPayload.sessionRef, sessionId, "grant-creation JWS payload must carry sessionRef");
+
   // Finalize and verify sessionRef appears in every per-commit JWS payload.
   const response = await app.fetch(createTestRequest(
     "POST",
@@ -211,6 +221,18 @@ test("grants without sessionRef produce payloads without sessionRef field", asyn
   const stored = await app.storage.attestations.getGrant(issued.jti);
   assert.equal(stored?.sessionRef, undefined, "sessionRef should be absent when not provided");
 
+  // Verify the grant-creation ledger entry also has no sessionRef.
+  const grantLedgerRow = await app.storage.DB.prepare(
+    "SELECT payload_json, jws FROM attestation_ledger WHERE jti = ? AND entry_type = 'attestation.granted' LIMIT 1",
+  ).bind(issued.jti).first<{ payload_json: string; jws: string }>();
+  assert.ok(grantLedgerRow, "grant-creation ledger entry must exist");
+  const grantLedgerPayload = JSON.parse(grantLedgerRow.payload_json) as Record<string, unknown>;
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(grantLedgerPayload, "sessionRef"),
+    false,
+    "grant-creation ledger payload must not include sessionRef when absent",
+  );
+
   const response = await app.fetch(createTestRequest(
     "POST",
     "/v1/attestations/finalize",
@@ -222,7 +244,7 @@ test("grants without sessionRef produce payloads without sessionRef field", asyn
   assert.equal(
     Object.prototype.hasOwnProperty.call(payload, "sessionRef"),
     false,
-    "payload must not include a sessionRef key when no sessionRef was provided",
+    "finalize payload must not include a sessionRef key when no sessionRef was provided",
   );
 });
 
