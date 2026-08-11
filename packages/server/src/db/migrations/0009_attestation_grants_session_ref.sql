@@ -1,0 +1,11 @@
+-- Add session_ref to attestation_grants.
+--
+-- session_ref carries the ai-hist session UUID that identifies the Claude Code
+-- or Codex session in which the agent was running when the grant was issued.
+-- It completes the auditor chain:
+--   commit → attestation → OIDC-bound human → session → reasoning behind it
+--
+-- The column is nullable because grants issued by factory before the relay
+-- spawner injects RELAY_ATTEST_SESSION_ID will not have a session id, and
+-- late-grant paths (operator API key, no workspace token) also may omit it.
+ALTER TABLE attestation_grants ADD COLUMN session_ref TEXT;

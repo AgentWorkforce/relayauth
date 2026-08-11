@@ -169,6 +169,92 @@ test("grant snapshots identity sponsorship and finalizes two verifiable attestat
   });
 });
 
+test("sessionRef is stored on the grant and appears in every finalized attestation payload", async (t) => {
+  const { app, key } = await createWorkspaceGrantClient();
+  t.after(() => app.close());
+  const sessionId = "ai-hist-session-uuid-abc123";
+  const issued = await grant(app, key, {
+    taskRef: "task-session-ref",
+    sessionRef: sessionId,
+  });
+
+  // Verify the grant persisted sessionRef.
+  const stored = await app.storage.attestations.getGrant(issued.jti);
+  assert.equal(stored?.sessionRef, sessionId);
+
+  // Verify the grant-creation ledger entry (attestation.granted) also carries sessionRef.
+  const grantLedgerRow = await app.storage.DB.prepare(
+    "SELECT payload_json, jws FROM attestation_ledger WHERE jti = ? AND entry_type = 'attestation.granted' LIMIT 1",
+  ).bind(issued.jti).first<{ payload_json: string; jws: string }>();
+  assert.ok(grantLedgerRow, "grant-creation ledger entry must exist");
+  const grantLedgerPayload = JSON.parse(grantLedgerRow.payload_json) as Record<string, unknown>;
+  assert.equal(grantLedgerPayload.sessionRef, sessionId, "grant-creation ledger payload must carry sessionRef");
+  const grantLedgerJwsPayload = verifyJws(grantLedgerRow.jws);
+  assert.equal(grantLedgerJwsPayload.sessionRef, sessionId, "grant-creation JWS payload must carry sessionRef");
+
+  // Finalize and verify sessionRef appears in every per-commit JWS payload.
+  const response = await app.fetch(createTestRequest(
+    "POST",
+    "/v1/attestations/finalize",
+    {
+      jti: issued.jti,
+      commits: [
+        { sha: "a".repeat(40) },
+        { sha: "b".repeat(40) },
+      ],
+    },
+    { authorization: `Bearer ${issued.finalizeKey}` },
+  ));
+  const finalized = await assertJsonResponse<FinalizeResponse>(response, 201);
+  assert.equal(finalized.attestations.length, 2);
+  for (const attestation of finalized.attestations) {
+    const payload = verifyJws(attestation.jws);
+    assert.equal(payload.sessionRef, sessionId, "every commit attestation must carry the sessionRef");
+  }
+});
+
+test("grants without sessionRef produce payloads without sessionRef field", async (t) => {
+  const { app, key } = await createWorkspaceGrantClient();
+  t.after(() => app.close());
+  const issued = await grant(app, key, { taskRef: "task-no-session" });
+
+  const stored = await app.storage.attestations.getGrant(issued.jti);
+  assert.equal(stored?.sessionRef, undefined, "sessionRef should be absent when not provided");
+
+  // Verify the grant-creation ledger entry also has no sessionRef.
+  const grantLedgerRow = await app.storage.DB.prepare(
+    "SELECT payload_json, jws FROM attestation_ledger WHERE jti = ? AND entry_type = 'attestation.granted' LIMIT 1",
+  ).bind(issued.jti).first<{ payload_json: string; jws: string }>();
+  assert.ok(grantLedgerRow, "grant-creation ledger entry must exist");
+  const grantLedgerPayload = JSON.parse(grantLedgerRow.payload_json) as Record<string, unknown>;
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(grantLedgerPayload, "sessionRef"),
+    false,
+    "grant-creation ledger payload must not include sessionRef when absent",
+  );
+  // Also verify the signed JWS envelope does not leak sessionRef.
+  const grantLedgerJwsPayload = verifyJws(grantLedgerRow.jws);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(grantLedgerJwsPayload, "sessionRef"),
+    false,
+    "grant-creation ledger JWS must not include sessionRef when absent",
+  );
+
+  const response = await app.fetch(createTestRequest(
+    "POST",
+    "/v1/attestations/finalize",
+    { jti: issued.jti, commits: [{ sha: "c".repeat(40) }] },
+    { authorization: `Bearer ${issued.finalizeKey}` },
+  ));
+  const finalized = await assertJsonResponse<FinalizeResponse>(response, 201);
+  const payload = verifyJws(finalized.attestations[0]!.jws);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(payload, "sessionRef"),
+    false,
+    "finalize payload must not include a sessionRef key when no sessionRef was provided",
+  );
+});
+
 test("ordinary grants refuse suspended and retired identities", async (t) => {
   for (const status of ["suspended", "retired"]) {
     const { app, key } = await createWorkspaceGrantClient();

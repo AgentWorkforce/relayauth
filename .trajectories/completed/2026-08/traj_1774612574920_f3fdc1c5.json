@@ -8,8 +8,9 @@
       "id": "da6851a4e4b7b8331f6cd5c6"
     }
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-03-27T11:56:14.920Z",
+  "completedAt": "2026-08-11T05:46:55.459Z",
   "agents": [
     {
       "name": "orchestrator",
@@ -434,6 +435,7 @@
       "title": "Execution: merge-findings",
       "agentName": "synthesizer",
       "startedAt": "2026-03-27T12:03:30.530Z",
+      "endedAt": "2026-08-11T05:46:55.459Z",
       "events": [
         {
           "ts": 1774613010530,
@@ -475,6 +477,12 @@
             "focal:path-stub",
             "confidence:0.9"
           ]
+        },
+        {
+          "ts": 1786427215459,
+          "type": "note",
+          "content": "Abandoned: Stale trajectory from prior session - resuming with new SOC2 lead session (soc2-lead-0811b)",
+          "significance": "high"
         }
       ]
     }
