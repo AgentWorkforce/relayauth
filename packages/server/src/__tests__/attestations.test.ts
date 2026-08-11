@@ -232,6 +232,13 @@ test("grants without sessionRef produce payloads without sessionRef field", asyn
     false,
     "grant-creation ledger payload must not include sessionRef when absent",
   );
+  // Also verify the signed JWS envelope does not leak sessionRef.
+  const grantLedgerJwsPayload = verifyJws(grantLedgerRow.jws);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(grantLedgerJwsPayload, "sessionRef"),
+    false,
+    "grant-creation ledger JWS must not include sessionRef when absent",
+  );
 
   const response = await app.fetch(createTestRequest(
     "POST",
