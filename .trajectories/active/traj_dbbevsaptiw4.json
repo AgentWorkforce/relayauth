@@ -1,0 +1,50 @@
+{
+  "id": "traj_dbbevsaptiw4",
+  "version": 1,
+  "task": {
+    "title": "Add sessionRef to attestation grants (RA-4 session provenance for SOC-2)",
+    "source": {
+      "system": "plain",
+      "id": "soc2-agent-traceability"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-08-11T05:47:26.099Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-11T05:50:17.535Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_d5ulm0ril6jr",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-11T05:50:17.535Z",
+      "events": [
+        {
+          "ts": 1786427417536,
+          "type": "decision",
+          "content": "Implement sessionRef on current main (v0.2.28), not rebase of stale soc2-ra1/ra2 branches: Implement sessionRef on current main (v0.2.28), not rebase of stale soc2-ra1/ra2 branches",
+          "raw": {
+            "question": "Implement sessionRef on current main (v0.2.28), not rebase of stale soc2-ra1/ra2 branches",
+            "chosen": "Implement sessionRef on current main (v0.2.28), not rebase of stale soc2-ra1/ra2 branches",
+            "alternatives": [],
+            "reasoning": "Both soc2-ra1-grant-finalize and soc2-ra2-ledger are based on v0.2.26 — 4 commits behind main. They diverge from before #75/#76/#77 merged. Rebasing would require resolving substantial conflicts and would remove features (#76 lineage types). The net new value in both branches reduces to: (1) sessionRef field, (2) stricter CHECK constraints in ledger schema. Delivering (1) cleanly on main is faster, safer, and keeps CI green. (2) is a separate schema hardening that can follow if needed."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relayauth",
+  "tags": [],
+  "_trace": {
+    "startRef": "3e917af028628871d228931647e252ad8d95bf7d",
+    "endRef": "3e917af028628871d228931647e252ad8d95bf7d"
+  }
+}

@@ -493,6 +493,13 @@ export type AttestationGrant = {
   sponsorChain: string[];
   repo: string;
   taskRef?: string;
+  /**
+   * The ai-hist session UUID for the Claude Code / Codex session in which the
+   * agent was running when this grant was issued. Injected by the relay spawner
+   * via RELAY_ATTEST_SESSION_ID; absent for late grants and for agents spawned
+   * before that env var was added.
+   */
+  sessionRef?: string;
   notAfter: string;
   finalizeKeyHash: string;
   redeemedAt?: string;

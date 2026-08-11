@@ -441,15 +441,15 @@ const UPDATE_API_KEY_LAST_USED_SQL = `
 const INSERT_ATTESTATION_GRANT_SQL = `
   INSERT INTO attestation_grants (
     jti, org_id, agent_id, sponsor_id, sponsor_chain_json, repo, task_ref,
-    not_after, finalize_key_hash, redeemed_at, late, created_at
+    session_ref, not_after, finalize_key_hash, redeemed_at, late, created_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const SELECT_ATTESTATION_GRANT_SQL = `
   SELECT
     jti, org_id, agent_id, sponsor_id, sponsor_chain_json, repo, task_ref,
-    not_after, finalize_key_hash, redeemed_at, late, created_at
+    session_ref, not_after, finalize_key_hash, redeemed_at, late, created_at
   FROM attestation_grants
   WHERE jti = ?
   LIMIT 1
@@ -846,6 +846,7 @@ type AttestationGrantRow = {
   sponsor_chain_json?: string | null;
   repo?: string;
   task_ref?: string | null;
+  session_ref?: string | null;
   not_after?: string;
   finalize_key_hash?: string;
   redeemed_at?: string | null;
@@ -3366,6 +3367,9 @@ function normalizeAttestationGrant(input: AttestationGrant): AttestationGrant {
     ...(normalizeOptionalString(input.taskRef)
       ? { taskRef: normalizeOptionalString(input.taskRef) }
       : {}),
+    ...(normalizeOptionalString(input.sessionRef)
+      ? { sessionRef: normalizeOptionalString(input.sessionRef) }
+      : {}),
     notAfter: normalizeTimestamp(input.notAfter),
     finalizeKeyHash: requireString(
       input.finalizeKeyHash,
@@ -3394,6 +3398,9 @@ function hydrateAttestationGrant(row: AttestationGrantRow | undefined): Attestat
       repo: row.repo ?? "",
       ...(normalizeOptionalString(row.task_ref ?? undefined)
         ? { taskRef: row.task_ref ?? undefined }
+        : {}),
+      ...(normalizeOptionalString(row.session_ref ?? undefined)
+        ? { sessionRef: row.session_ref ?? undefined }
         : {}),
       notAfter: row.not_after ?? "",
       finalizeKeyHash: row.finalize_key_hash ?? "",
@@ -3561,6 +3568,7 @@ function toAttestationGrantParams(grant: AttestationGrant): unknown[] {
     JSON.stringify(grant.sponsorChain),
     grant.repo,
     grant.taskRef ?? null,
+    grant.sessionRef ?? null,
     grant.notAfter,
     grant.finalizeKeyHash,
     grant.redeemedAt ?? null,
