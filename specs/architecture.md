@@ -19,6 +19,20 @@ Every agent traces back to a human. When agent A spawns agent B, the chain is:
 `human → agent_A → agent_B`. Any audit query on agent_B shows the full chain.
 The sponsor is not optional.
 
+The root human is established by SSO, never by possession of a workspace key.
+Chief obtains an OIDC-bound sponsor proof for the authenticated principal and
+passes that proof with `sponsorId` when it creates the agent identity. RelayAuth
+verifies the proof's signature, organization, subject, purpose, and expiry,
+then persists the resulting `sponsorBinding` on the identity. An API-key or
+workspace-key caller cannot create a legacy-bound identity, and attestation
+issuance refuses any identity whose root sponsor is not OIDC-bound.
+
+The independently verifiable compliance evidence is stored in
+`attestation_ledger`. Entries are append-only, carry an RS256 JWS, and form a
+per-organization SHA-256 chain through `prev_hash` and `entry_hash`. The
+operational `audit_logs` feed is query/retention optimized and is not the
+write-once evidence ledger; retention never deletes from `attestation_ledger`.
+
 ### Token
 JWTs signed by relayauth, validated at the edge by any plane.
 Contains: identity, org, workspace, scopes, sponsor, expiry.
