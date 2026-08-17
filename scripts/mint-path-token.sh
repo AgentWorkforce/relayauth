@@ -170,13 +170,15 @@ NORMALIZED_SCOPES_JSON="$(jq -ce 'map(sub("/\\*\\*$"; "/*"))' <<<"$SCOPES_JSON")
 if [[ -z "$DELEGATION_NOT_AFTER" ]]; then
   DELEGATION_NOT_AFTER="$(node -e 'process.stdout.write(new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString())')"
 fi
-node -e '
+if ! DELEGATION_NOT_AFTER="$(node -e '
   const value = process.argv[1]
-  if (!Number.isFinite(Date.parse(value)) || Date.parse(value) <= Date.now()) process.exit(1)
-' "$DELEGATION_NOT_AFTER" || {
+  const millis = Date.parse(value)
+  if (!Number.isFinite(millis) || millis <= Date.now()) process.exit(1)
+  process.stdout.write(new Date(Math.floor(millis / 1000) * 1000).toISOString())
+' "$DELEGATION_NOT_AFTER")"; then
   echo "--delegation-not-after must be a future ISO timestamp" >&2
   exit 1
-}
+fi
 
 REQUEST_BODY="$(jq -cn \
   --arg workspaceId "$FACTORY_WORKSPACE_ID" \
@@ -226,12 +228,17 @@ REFRESH_FILE="$WORK_DIR/refresh-token"
 SESSION_FILE="$WORK_DIR/session-id"
 GH_ERROR_FILE="$WORK_DIR/gh-error"
 REVOKE_BODY_FILE="$WORK_DIR/revoke.json"
+PRESERVE_WORK_DIR=false
 
 cleanup() {
   unset ADMIN_BEARER ACCESS_TOKEN REFRESH_TOKEN
-  rm -f -- "$REQUEST_FILE" "$RESPONSE_FILE" "$ACCESS_FILE" "$REFRESH_FILE" \
-    "$SESSION_FILE" "$GH_ERROR_FILE" "$REVOKE_BODY_FILE"
-  rmdir "$WORK_DIR" 2>/dev/null || true
+  rm -f -- "$REQUEST_FILE" "$RESPONSE_FILE" "$GH_ERROR_FILE" "$REVOKE_BODY_FILE"
+  if [[ "$PRESERVE_WORK_DIR" == "true" ]]; then
+    echo "credential recovery files retained in $WORK_DIR (directory mode 700; files mode 600)" >&2
+  else
+    rm -f -- "$ACCESS_FILE" "$REFRESH_FILE" "$SESSION_FILE"
+    rmdir "$WORK_DIR" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -257,6 +264,19 @@ if [[ -n "$TO_GH_SECRET" ]]; then
   gh api "repos/$TO_GH_SECRET/actions/secrets/public-key" >/dev/null
 fi
 
+revoke_session() {
+  local session_id="$1"
+  jq -cn --arg sessionId "$session_id" '{sessionId: $sessionId}' > "$REVOKE_BODY_FILE"
+  chmod 600 "$REVOKE_BODY_FILE"
+  curl -sS \
+    -X POST "$RELAYAUTH_URL/v1/tokens/revoke" \
+    -H "Authorization: Bearer $ADMIN_BEARER" \
+    -H 'content-type: application/json' \
+    --data-binary "@$REVOKE_BODY_FILE" \
+    -o /dev/null \
+    -w '%{http_code}'
+}
+
 HTTP_CODE="$(curl -sS \
   -X POST "$RELAYAUTH_URL/v1/tokens/workspace-path" \
   -H "Authorization: Bearer $ADMIN_BEARER" \
@@ -270,7 +290,7 @@ if [[ "$HTTP_CODE" != "201" ]]; then
   exit 1
 fi
 
-node --input-type=module - "$REQUEST_FILE" "$RESPONSE_FILE" "$SESSION_FILE" <<'NODE'
+if ! node --input-type=module - "$REQUEST_FILE" "$RESPONSE_FILE" "$SESSION_FILE" <<'NODE'
 import { readFile, writeFile } from 'node:fs/promises'
 
 const [requestPath, responsePath, sessionPath] = process.argv.slice(2)
@@ -293,13 +313,15 @@ const decode = (token, label) => {
 const normalize = (value) => value.replace(/\/\*\*$/u, '/*')
 const expectedScopes = request.scopes.map(normalize)
 const expectedPaths = request.paths.map(normalize)
+const access = decode(pair.accessToken, 'access token')
+const refresh = decode(pair.refreshToken, 'refresh token')
+if (typeof access.sid !== 'string' || !access.sid || refresh.sid !== access.sid) fail('token session changed')
+await writeFile(sessionPath, access.sid, { mode: 0o600, flag: 'wx' })
 if (pair.tokenClass !== 'relay_pa') fail('token class changed')
 if (pair.workspaceId !== request.workspaceId) fail('workspace changed')
 if (pair.agentName !== request.agentName || pair.agentId !== `agent_${request.agentName}`) fail('agent changed')
 if (pair.delegationNotAfter !== request.delegationNotAfter) fail('delegation horizon changed')
 exact(pair.paths, expectedPaths, 'paths')
-const access = decode(pair.accessToken, 'access token')
-const refresh = decode(pair.refreshToken, 'refresh token')
 for (const [claims, label] of [[access, 'access token'], [refresh, 'refresh token']]) {
   if (claims.sub !== `agent_${request.agentName}` || claims.wks !== request.workspaceId) fail(`${label} identity changed`)
   if (claims.sid !== access.sid || typeof claims.sid !== 'string' || !claims.sid) fail(`${label} session changed`)
@@ -315,29 +337,32 @@ exact(JSON.parse(access.meta?.paths ?? 'null'), expectedPaths, 'access metadata 
 exact(JSON.parse(access.meta?.accessScopes ?? 'null'), expectedScopes, 'access metadata scopes')
 const accessLifetime = access.exp - access.iat
 const refreshLifetime = refresh.exp - refresh.iat
-if (!Number.isInteger(accessLifetime) || accessLifetime < request.expiresIn - 60 || accessLifetime > request.expiresIn) fail('access TTL changed')
-if (!Number.isInteger(refreshLifetime) || refreshLifetime < request.refreshTokenTtlSeconds - 60 || refreshLifetime > request.refreshTokenTtlSeconds) fail('refresh TTL changed')
+const horizonSeconds = Math.floor(Date.parse(request.delegationNotAfter) / 1000)
+const expectedAccessLifetime = Math.min(request.expiresIn, horizonSeconds - access.iat)
+const expectedRefreshLifetime = Math.min(request.refreshTokenTtlSeconds, horizonSeconds - refresh.iat)
+if (!Number.isInteger(accessLifetime) || accessLifetime < expectedAccessLifetime - 60 || accessLifetime > expectedAccessLifetime) fail('access TTL changed')
+if (!Number.isInteger(refreshLifetime) || refreshLifetime < expectedRefreshLifetime - 60 || refreshLifetime > expectedRefreshLifetime) fail('refresh TTL changed')
 if (Math.floor(Date.parse(pair.accessTokenExpiresAt) / 1000) !== access.exp) fail('access expiry changed')
 if (Math.floor(Date.parse(pair.refreshTokenExpiresAt) / 1000) !== refresh.exp) fail('refresh expiry changed')
-await writeFile(sessionPath, access.sid, { mode: 0o600, flag: 'wx' })
 NODE
+then
+  echo "minted path-token response failed validation; revoking the unpublished session" >&2
+  if [[ -s "$SESSION_FILE" ]]; then
+    VALIDATION_SESSION="$(<"$SESSION_FILE")"
+    if ! VALIDATION_REVOKE_HTTP="$(revoke_session "$VALIDATION_SESSION")"; then
+      echo "invalid-session cleanup request failed" >&2
+      PRESERVE_WORK_DIR=true
+    elif [[ "$VALIDATION_REVOKE_HTTP" != "204" && "$VALIDATION_REVOKE_HTTP" != "404" ]]; then
+      echo "invalid-session cleanup failed with HTTP $VALIDATION_REVOKE_HTTP" >&2
+      PRESERVE_WORK_DIR=true
+    fi
+  fi
+  exit 1
+fi
 
-jq -er '.accessToken' "$RESPONSE_FILE" > "$ACCESS_FILE"
-jq -er '.refreshToken' "$RESPONSE_FILE" > "$REFRESH_FILE"
+jq -erj '.accessToken' "$RESPONSE_FILE" > "$ACCESS_FILE"
+jq -erj '.refreshToken' "$RESPONSE_FILE" > "$REFRESH_FILE"
 chmod 600 "$ACCESS_FILE" "$REFRESH_FILE" "$SESSION_FILE"
-
-revoke_session() {
-  local session_id="$1"
-  jq -cn --arg sessionId "$session_id" '{sessionId: $sessionId}' > "$REVOKE_BODY_FILE"
-  chmod 600 "$REVOKE_BODY_FILE"
-  curl -sS \
-    -X POST "$RELAYAUTH_URL/v1/tokens/revoke" \
-    -H "Authorization: Bearer $ADMIN_BEARER" \
-    -H 'content-type: application/json' \
-    --data-binary "@$REVOKE_BODY_FILE" \
-    -o /dev/null \
-    -w '%{http_code}'
-}
 
 storage_failed=false
 if [[ -n "$TO_GH_SECRET" ]]; then
@@ -357,22 +382,40 @@ if [[ -n "$TO_GH_SECRET" ]]; then
     fi
   fi
 elif [[ -n "$TO_FILE" ]]; then
-  install -d -m 700 "$TO_FILE"
-  if [[ -e "$TO_FILE/access-token" || -e "$TO_FILE/refresh-token" ]]; then
+  if ! install -d -m 700 "$TO_FILE"; then
+    storage_failed=true
+  elif [[ -e "$TO_FILE/access-token" || -e "$TO_FILE/refresh-token" ]]; then
     echo "refusing to overwrite an existing token file in $TO_FILE" >&2
     storage_failed=true
   else
-    install -m 600 "$ACCESS_FILE" "$TO_FILE/access-token"
-    install -m 600 "$REFRESH_FILE" "$TO_FILE/refresh-token"
+    if ! install -m 600 "$ACCESS_FILE" "$TO_FILE/access-token" ||
+       ! install -m 600 "$REFRESH_FILE" "$TO_FILE/refresh-token"; then
+      storage_failed=true
+      rm -f -- "$TO_FILE/access-token" "$TO_FILE/refresh-token"
+    fi
   fi
 fi
 
 if [[ "$storage_failed" == "true" ]]; then
-  echo "pair minted but secure storage failed; revoking the unpublished session" >&2
   NEW_SESSION="$(<"$SESSION_FILE")"
-  REVOKE_HTTP="$(revoke_session "$NEW_SESSION")"
-  if [[ "$REVOKE_HTTP" != "204" && "$REVOKE_HTTP" != "404" ]]; then
-    echo "new session cleanup failed with HTTP $REVOKE_HTTP" >&2
+  if [[ -n "$TO_GH_SECRET" ]]; then
+    # GitHub secret PUTs are independent and unreadable after publication. A
+    # failed CLI call is also commit-ambiguous. Never revoke a session that a
+    # successfully or ambiguously updated refresh secret may now reference.
+    # Preserve the pair so the operator can safely retry both idempotent PUTs.
+    PRESERVE_WORK_DIR=true
+    echo "GitHub secret publication is incomplete; do not deploy until both secret updates are retried" >&2
+    echo "retry FACTORY_RELAYAUTH_REFRESH_TOKEN from $REFRESH_FILE, then FACTORY_RELAYAUTH_ACCESS_TOKEN from $ACCESS_FILE" >&2
+    echo "the new session was not revoked because a GitHub secret may already reference it" >&2
+  else
+    echo "pair minted but file storage failed; revoking the unpublished session" >&2
+    if ! REVOKE_HTTP="$(revoke_session "$NEW_SESSION")"; then
+      echo "new session cleanup request failed" >&2
+      PRESERVE_WORK_DIR=true
+    elif [[ "$REVOKE_HTTP" != "204" && "$REVOKE_HTTP" != "404" ]]; then
+      echo "new session cleanup failed with HTTP $REVOKE_HTTP" >&2
+      PRESERVE_WORK_DIR=true
+    fi
   fi
   exit 2
 fi
@@ -383,7 +426,10 @@ if [[ -n "$REVOKE_PRIOR" ]]; then
     echo "refusing to revoke the newly minted session" >&2
     exit 2
   fi
-  REVOKE_HTTP="$(revoke_session "$REVOKE_PRIOR")"
+  if ! REVOKE_HTTP="$(revoke_session "$REVOKE_PRIOR")"; then
+    echo "new pair stored, but prior-session revocation request failed" >&2
+    exit 2
+  fi
   if [[ "$REVOKE_HTTP" != "204" && "$REVOKE_HTTP" != "404" ]]; then
     echo "new pair stored, but prior-session revocation failed with HTTP $REVOKE_HTTP" >&2
     exit 2
