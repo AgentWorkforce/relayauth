@@ -820,10 +820,7 @@ tokens.post("/revoke", async (c) => {
     return c.json({ error: "token_not_found" }, 404);
   }
 
-  const firstIdentityId = normalizeOptionalString(targetTokens[0]?.identityId);
-  const identity = firstIdentityId
-    ? await storage.identities.get(firstIdentityId)
-    : null;
+  const identity = await resolveRevocationIdentity(storage, targetTokens);
   if (!identity || identity.orgId !== auth.claims.org) {
     return c.json({ error: "token_not_found" }, 404);
   }
@@ -1111,7 +1108,7 @@ function toIssuedTokenRecord(
 
 function createTokenAuditEntry(options: {
   action: "token.issued" | "token.refreshed" | "token.revoked";
-  identity: StoredIdentity;
+  identity: Pick<StoredIdentity, "id" | "orgId" | "workspaceId">;
   tokenId: string;
   actorId?: string;
 }): AuditLogWriteEntry {
@@ -1190,6 +1187,42 @@ async function findTargetTokensBySessionId(
   }
 
   return storage.tokens.listActiveBySessionId(normalizedSessionId);
+}
+
+async function resolveRevocationIdentity(
+  storage: AuthStorage,
+  targetTokens: StoredTokenRecord[],
+): Promise<Pick<StoredIdentity, "id" | "orgId" | "workspaceId"> | null> {
+  const identityId = normalizeOptionalString(targetTokens[0]?.identityId);
+  if (
+    !identityId ||
+    targetTokens.some(
+      (token) => normalizeOptionalString(token.identityId) !== identityId,
+    )
+  ) {
+    return null;
+  }
+
+  const identity = await storage.identities.get(identityId);
+  if (identity) {
+    return identity;
+  }
+
+  const orgId = normalizeOptionalString(targetTokens[0]?.orgId);
+  const workspaceId = normalizeOptionalString(targetTokens[0]?.workspaceId);
+  if (
+    !orgId ||
+    !workspaceId ||
+    targetTokens.some(
+      (token) =>
+        normalizeOptionalString(token.orgId) !== orgId ||
+        normalizeOptionalString(token.workspaceId) !== workspaceId,
+    )
+  ) {
+    return null;
+  }
+
+  return { id: identityId, orgId, workspaceId };
 }
 
 async function findStoredTokenById(

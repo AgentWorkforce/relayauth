@@ -2590,6 +2590,80 @@ test("POST /v1/tokens/revoke", async (t) => {
   });
 
   await t.test(
+    "revokes a synthetic workspace-path session from its token ownership snapshot",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:manage:*",
+            "relayfile:fs:read:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+      ]);
+      const mintResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "session-revoke-path-agent",
+            paths: ["/github/**"],
+            scopes: ["relayfile:fs:read:/github/**"],
+          },
+          headers: { "x-api-key": orgApiKey.key },
+        },
+      );
+      const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+        mintResponse,
+        201,
+      );
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.accessToken,
+        1,
+      );
+      const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.refreshToken,
+        1,
+      );
+
+      const crossOrgResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/revoke",
+        {
+          body: { sessionId: refreshClaims.sid },
+          headers: {
+            Authorization: `Bearer ${createAuthToken({
+              org: "org_other",
+              wks: "ws_other",
+              scopes: ["relayauth:token:manage:*"],
+            })}`,
+          },
+        },
+      );
+      assert.equal(crossOrgResponse.status, 404);
+      assert.deepEqual(await listRevokedTokenIds(app), []);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { sessionId: refreshClaims.sid },
+        headers: authHeaders,
+      });
+
+      assert.equal(response.status, 204);
+      assert.deepEqual(
+        await listRevokedTokenIds(app),
+        [accessClaims.jti, refreshClaims.jti].sort(),
+      );
+    },
+  );
+
+  await t.test(
     "returns 403 when the caller lacks relayauth:token:manage scope",
     async () => {
       const { app, authHeaders } = await createHarness({
