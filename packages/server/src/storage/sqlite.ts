@@ -486,22 +486,31 @@ const LIST_ACTIVE_TOKENS_SQL = `
 `;
 
 const SELECT_TOKEN_BY_ID_SQL = `
-  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
-  FROM tokens
-  WHERE id = ? OR token_id = ? OR jti = ?
+  SELECT
+    t.id, t.token_id, t.jti, t.identity_id, t.status, t.session_id,
+    t.expires_at, tl.org_id, tl.workspace_id
+  FROM tokens t
+  LEFT JOIN token_lineages tl ON tl.token_id = t.id
+  WHERE t.id = ? OR t.token_id = ? OR t.jti = ?
   LIMIT 1
 `;
 
 const SELECT_TOKENS_BY_IDENTITY_SQL = `
-  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
-  FROM tokens
-  WHERE identity_id = ? AND status = 'active'
+  SELECT
+    t.id, t.token_id, t.jti, t.identity_id, t.status, t.session_id,
+    t.expires_at, tl.org_id, tl.workspace_id
+  FROM tokens t
+  LEFT JOIN token_lineages tl ON tl.token_id = t.id
+  WHERE t.identity_id = ? AND t.status = 'active'
 `;
 
 const SELECT_TOKENS_BY_SESSION_SQL = `
-  SELECT id, token_id, jti, identity_id, status, session_id, expires_at
-  FROM tokens
-  WHERE session_id = ? AND status = 'active'
+  SELECT
+    t.id, t.token_id, t.jti, t.identity_id, t.status, t.session_id,
+    t.expires_at, tl.org_id, tl.workspace_id
+  FROM tokens t
+  LEFT JOIN token_lineages tl ON tl.token_id = t.id
+  WHERE t.session_id = ? AND t.status = 'active'
 `;
 
 const INSERT_TOKEN_SQL = `
@@ -778,6 +787,8 @@ type TokenRow = {
   token_id?: string | null;
   jti?: string | null;
   identity_id?: string | null;
+  org_id?: string | null;
+  workspace_id?: string | null;
   status?: string | null;
   session_id?: string | null;
   expires_at?: number | string | null;
@@ -2131,6 +2142,8 @@ function toStoredTokenRecord(
       tokenId: token.tokenId,
       jti: token.jti,
       identityId: token.identityId,
+      orgId: token.lineage?.orgId ?? null,
+      workspaceId: token.lineage?.workspaceId ?? null,
       status: token.status,
       sessionId: token.sessionId ?? null,
       expiresAt: token.expiresAt,
@@ -2142,6 +2155,8 @@ function toStoredTokenRecord(
     tokenId: token.token_id,
     jti: token.jti,
     identityId: token.identity_id,
+    orgId: token.org_id,
+    workspaceId: token.workspace_id,
     status: token.status,
     sessionId: token.session_id,
     expiresAt: token.expires_at,

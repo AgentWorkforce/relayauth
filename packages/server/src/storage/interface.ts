@@ -303,6 +303,9 @@ export type StoredTokenRecord = {
   tokenId?: string | null;
   jti?: string | null;
   identityId?: string | null;
+  /** Immutable authorization ownership captured when the token was issued. */
+  orgId?: string | null;
+  workspaceId?: string | null;
   status?: string | null;
   sessionId?: string | null;
   expiresAt?: number | string | null;
