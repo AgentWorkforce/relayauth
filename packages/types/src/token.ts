@@ -100,6 +100,8 @@ export interface PathTokenIssueRequest {
   expiresIn?: number;
   ttlSeconds?: number;
   delegationNotAfter?: string;
+  /** TTL in seconds for the rotating refresh token. Defaults to 24h; max 90 days. */
+  refreshTokenTtlSeconds?: number;
 }
 
 export interface PathTokenPair extends TokenPair {
