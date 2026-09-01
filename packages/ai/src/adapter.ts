@@ -484,7 +484,13 @@ export class RelayAuthAdapter {
       ...this.#resolvedConfig,
       issuer: this.#resolvedConfig.issuer ?? discovery.issuer,
       jwksUrl: this.#resolvedConfig.jwksUrl ?? discovery.jwks_uri,
-      revocationUrl: this.#resolvedConfig.revocationUrl ?? discovery.revocation_endpoint,
+      // Verifiers must poll the GET revocation-check endpoint, not the
+      // authenticated POST revoke endpoint. Prefer the dedicated field; fall
+      // back to `revocation_endpoint` only for older servers that predate it.
+      revocationUrl:
+        this.#resolvedConfig.revocationUrl ??
+        discovery.revocation_check_endpoint ??
+        discovery.revocation_endpoint,
     };
 
     if (!areVerifyOptionsEqual(this.#resolvedConfig, nextConfig)) {

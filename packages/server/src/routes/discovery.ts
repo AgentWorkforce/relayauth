@@ -189,6 +189,7 @@ function buildAgentConfiguration(origin: string): AgentConfiguration {
     identity_endpoint: absoluteUrl(origin, "/v1/identities"),
     scopes_endpoint: absoluteUrl(origin, "/v1/scopes"),
     revocation_endpoint: absoluteUrl(origin, "/v1/tokens/revoke"),
+    revocation_check_endpoint: absoluteUrl(origin, "/v1/tokens/revocation"),
     introspection_endpoint: absoluteUrl(origin, "/v1/tokens/introspect"),
     scope_templates_endpoint: absoluteUrl(origin, "/v1/scopes/templates"),
     capabilities: [

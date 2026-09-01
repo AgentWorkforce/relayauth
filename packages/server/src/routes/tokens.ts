@@ -84,8 +84,21 @@ type RelayhistoryAssertionRequest = {
 
 type RevokeTokenRequest = {
   tokenId?: string;
+  /**
+   * Alias for `tokenId`. A minted relayfile token's `jti` claim *is* its stored
+   * token id, so callers holding a durable `relay_ag_`/`relay_pa_` token can
+   * revoke it by the `jti` they read off the token.
+   */
+  jti?: string;
   identityId?: string;
   sessionId?: string;
+  /**
+   * Revoke every active token belonging to a single agent, addressed by its
+   * workspace + agent name rather than an internal identity id. Both fields are
+   * required together.
+   */
+  workspaceId?: string;
+  agentName?: string;
 };
 
 type WorkspaceTokenResponse = {
@@ -799,12 +812,22 @@ tokens.post("/revoke", async (c) => {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
-  const tokenId = normalizeOptionalString(body.tokenId);
+  // `jti` is accepted as an alias for `tokenId`: a minted relayfile token's
+  // `jti` claim is persisted as its stored token id, so a caller holding the
+  // durable token can revoke it by the identifier printed on the token.
+  const tokenId =
+    normalizeOptionalString(body.tokenId) ?? normalizeOptionalString(body.jti);
   const identityId = normalizeOptionalString(body.identityId);
   const sessionId = normalizeOptionalString(body.sessionId);
-  if (!tokenId && !identityId && !sessionId) {
+  const workspaceId = normalizeOptionalString(body.workspaceId);
+  const agentName = normalizeOptionalString(body.agentName);
+  const hasWorkspaceAgent = Boolean(workspaceId && agentName);
+  if (!tokenId && !identityId && !sessionId && !hasWorkspaceAgent) {
     return c.json(
-      { error: "tokenId, identityId, or sessionId is required" },
+      {
+        error:
+          "tokenId (or jti), identityId, sessionId, or workspaceId+agentName is required",
+      },
       400,
     );
   }
@@ -814,7 +837,14 @@ tokens.post("/revoke", async (c) => {
     ? await findTargetTokensByTokenId(storage, tokenId)
     : identityId
       ? await findTargetTokensByIdentityId(storage, identityId)
-      : await findTargetTokensBySessionId(storage, sessionId!);
+      : hasWorkspaceAgent
+        ? await findTargetTokensByWorkspaceAgent(
+            storage,
+            auth.claims.org,
+            workspaceId!,
+            agentName!,
+          )
+        : await findTargetTokensBySessionId(storage, sessionId!);
 
   if (targetTokens.length === 0) {
     return c.json({ error: "token_not_found" }, 404);
@@ -848,6 +878,29 @@ tokens.post("/revoke", async (c) => {
   await populateRevocationCache(storage, identity.id, revocableIds, revokedAt);
 
   return c.body(null, 204);
+});
+
+// Public revocation-check endpoint (advertised in discovery as
+// `token_revocation_list` / `revocation_check_endpoint`). Token verifiers —
+// including the SDK `TokenVerifier` that authorizes the proactive-runtime
+// WebSocket handshake and every server-side access-token check — call this with
+// `?jti=` after signature/exp/scope validation and reject the token when it
+// answers `{ revoked: true }`. It exposes only a boolean for a caller-supplied
+// jti, so it is intentionally unauthenticated (see PUBLIC_PATHS in server.ts).
+//
+// Fail-closed posture: a store outage propagates as a 5xx here, which the SDK
+// verifier treats as `revocation_check_failed` and rejects the token — matching
+// how RelayAuth already fails closed on the revocation check elsewhere.
+tokens.get("/revocation", async (c) => {
+  const jti = normalizeOptionalString(c.req.query("jti"));
+  if (!jti) {
+    return c.json({ error: "jti query parameter is required" }, 400);
+  }
+
+  const storage = c.get("storage");
+  const revoked = await isTokenRevoked(storage, jti);
+
+  return c.json({ jti, revoked }, 200);
 });
 
 tokens.get("/introspect", async (c) => {
@@ -1190,6 +1243,38 @@ async function findTargetTokensBySessionId(
   }
 
   return storage.tokens.listActiveBySessionId(normalizedSessionId);
+}
+
+async function findTargetTokensByWorkspaceAgent(
+  storage: AuthStorage,
+  orgId: string,
+  workspaceId: string,
+  agentName: string,
+): Promise<StoredTokenRecord[]> {
+  const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
+  const normalizedAgentName = normalizeOptionalString(agentName);
+  if (!normalizedWorkspaceId || !normalizedAgentName) {
+    return [];
+  }
+
+  const duplicate = await storage.identities.findDuplicate(
+    orgId,
+    normalizedAgentName,
+  );
+  if (!duplicate) {
+    return [];
+  }
+
+  const identity = await storage.identities.get(duplicate.id);
+  if (
+    !identity ||
+    identity.orgId !== orgId ||
+    identity.workspaceId !== normalizedWorkspaceId
+  ) {
+    return [];
+  }
+
+  return findTargetTokensByIdentityId(storage, identity.id);
 }
 
 async function findStoredTokenById(
