@@ -871,6 +871,12 @@ test("POST /v1/tokens/agent", async (t) => {
         body.refreshToken,
         1,
       );
+      // Every minted relayfile token carries a unique jti so it can be placed
+      // on the revocation denylist individually.
+      assert.equal(typeof accessClaims.jti, "string");
+      assert.ok(accessClaims.jti.length > 0);
+      assert.equal(typeof refreshClaims.jti, "string");
+      assert.notEqual(accessClaims.jti, refreshClaims.jti);
       assert.equal(accessClaims.meta?.tokenClass, "agent");
       assert.equal(
         accessClaims.meta?.workspaceTokenId,
@@ -2639,6 +2645,126 @@ test("POST /v1/tokens/revoke", async (t) => {
 
     await assertJsonResponse<ErrorBody>(response, 404, (body) => {
       assert.match(JSON.stringify(body), /not[_ -]?found|missing/i);
+    });
+  });
+});
+
+test("POST /v1/tokens/revoke (agent addressing)", async (t) => {
+  await t.test("revokes a token by its jti alias", async () => {
+    const { app, identity, authHeaders } = await createHarness();
+    const { accessClaims } = createRs256TokenPair(identity);
+    await seedActiveTokens(app, identity.id, [accessClaims.jti]);
+
+    const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+      body: {
+        jti: accessClaims.jti,
+      },
+      headers: authHeaders,
+    });
+
+    assert.equal(response.status, 204);
+    assert.deepEqual(await listRevokedTokenIds(app), [accessClaims.jti]);
+  });
+
+  await t.test(
+    "revokes every active token for a workspace + agent name",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
+      const { accessClaims } = createRs256TokenPair(identity);
+      const { accessClaims: secondClaims } = createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [
+        accessClaims.jti,
+        secondClaims.jti,
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: {
+          workspaceId: identity.workspaceId,
+          agentName: identity.name,
+        },
+        headers: authHeaders,
+      });
+
+      assert.equal(response.status, 204);
+      assert.deepEqual(
+        await listRevokedTokenIds(app),
+        [accessClaims.jti, secondClaims.jti].sort(),
+      );
+    },
+  );
+
+  await t.test(
+    "returns 404 when the workspace + agent name has no active tokens",
+    async () => {
+      const { app, authHeaders } = await createHarness();
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: {
+          workspaceId: "ws_tokens_route",
+          agentName: "no-such-agent",
+        },
+        headers: authHeaders,
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 404, (body) => {
+        assert.match(JSON.stringify(body), /not[_ -]?found|missing/i);
+      });
+    },
+  );
+});
+
+test("GET /v1/tokens/revocation", async (t) => {
+  await t.test("reports a non-revoked jti as not revoked", async () => {
+    const { app, identity } = await createHarness();
+    const { accessClaims } = createRs256TokenPair(identity);
+    await seedActiveTokens(app, identity.id, [accessClaims.jti]);
+
+    // Public endpoint: intentionally no Authorization header.
+    const response = await requestRoute(
+      app,
+      "GET",
+      `/v1/tokens/revocation?jti=${encodeURIComponent(accessClaims.jti)}`,
+    );
+
+    const body = await assertJsonResponse<{ jti: string; revoked: boolean }>(
+      response,
+      200,
+    );
+    assert.equal(body.jti, accessClaims.jti);
+    assert.equal(body.revoked, false);
+  });
+
+  await t.test("reports a revoked jti as revoked", async () => {
+    const { app, identity, authHeaders } = await createHarness();
+    const { accessClaims } = createRs256TokenPair(identity);
+    await seedActiveTokens(app, identity.id, [accessClaims.jti]);
+
+    const revokeResponse = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+      body: { jti: accessClaims.jti },
+      headers: authHeaders,
+    });
+    assert.equal(revokeResponse.status, 204);
+
+    const response = await requestRoute(
+      app,
+      "GET",
+      `/v1/tokens/revocation?jti=${encodeURIComponent(accessClaims.jti)}`,
+    );
+
+    const body = await assertJsonResponse<{ jti: string; revoked: boolean }>(
+      response,
+      200,
+    );
+    assert.equal(body.revoked, true);
+  });
+
+  await t.test("returns 400 when jti is missing", async () => {
+    const { app } = await createHarness();
+
+    const response = await requestRoute(app, "GET", "/v1/tokens/revocation");
+
+    await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+      assert.match(JSON.stringify(body), /jti/i);
     });
   });
 });

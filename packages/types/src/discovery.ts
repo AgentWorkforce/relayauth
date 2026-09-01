@@ -103,6 +103,12 @@ export interface AgentConfiguration {
   identity_endpoint: string;
   scopes_endpoint?: string;
   revocation_endpoint?: string;
+  /**
+   * GET endpoint verifiers poll with `?jti=` to learn a token's revocation
+   * state (`{ revoked: boolean }`). Distinct from `revocation_endpoint`, which
+   * is the authenticated POST that *performs* a revocation (RFC 7009 style).
+   */
+  revocation_check_endpoint?: string;
   introspection_endpoint?: string;
   scope_templates_endpoint?: string;
   capabilities?: string[];

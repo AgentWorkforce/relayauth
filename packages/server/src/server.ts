@@ -44,6 +44,10 @@ const PUBLIC_PATHS = new Set([
   "/.well-known/agent-configuration",
   "/v1/discovery/agent-card",
   "/v1/tokens/refresh",
+  // Verifiers (incl. the proactive-runtime WS handshake) poll this to learn a
+  // jti's revocation state; it reveals only a boolean and carries no secret, so
+  // it is unauthenticated like the JWKS and discovery documents.
+  "/v1/tokens/revocation",
 ]);
 const BRIDGE_RATE_LIMIT = 30;
 const BRIDGE_RATE_WINDOW_MS = 60_000;
