@@ -43,6 +43,12 @@ export const SCOPE_TEMPLATES = {
     description: "Full access to relayfile resources",
     scopes: ["relayfile:*:*:*"],
   },
+  "relayfile:agent-runtime": {
+    name: "Relayfile Agent Runtime",
+    description:
+      "Grants the relayfile agent-runtime capability used by the cloud durable relayfile-key mint. Distinct from relayfile:fs:read/write — the fs resource does not cover the agent-runtime resource under matchScope, so a caller holding only relayfile:fs:* scopes is denied (403 insufficient_scope) when it requests this scope in a workspace-token mint.",
+    scopes: ["relayfile:agent-runtime:*"],
+  },
   "cloud:full": {
     name: "Cloud Full Access",
     description: "Full access to cloud resources",

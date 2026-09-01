@@ -7,3 +7,9 @@ test("scope types are exported correctly", () => {
   assert.equal(typeof SCOPE_TEMPLATES["relaycast:full"], "object");
   assert.deepEqual(SCOPE_TEMPLATES["relayfile:read-only"].scopes, ["relayfile:fs:read:*"]);
 });
+
+test("relayfile:agent-runtime template carries the canonical agent-runtime scope", () => {
+  assert.deepEqual(SCOPE_TEMPLATES["relayfile:agent-runtime"].scopes, [
+    "relayfile:agent-runtime:*",
+  ]);
+});

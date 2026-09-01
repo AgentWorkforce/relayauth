@@ -814,6 +814,65 @@ test("POST /v1/tokens/workspace", async (t) => {
       assert.equal(body.error, "insufficient_scope");
     });
   });
+
+  await t.test(
+    "mints when the caller is granted relayfile:agent-runtime (durable relayfile-key path)",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+            "relayfile:agent-runtime:*",
+          ],
+        },
+      });
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/workspace", {
+        body: {
+          workspaceId: "ws_tokens_route",
+          name: "durable-relayfile-key",
+          scopes: ["relayfile:agent-runtime:*"],
+        },
+        headers: authHeaders,
+      });
+
+      const body = await assertJsonResponse<WorkspaceTokenIssueResponse>(
+        response,
+        201,
+      );
+      assert.deepEqual(body.workspaceToken.scopes, ["relayfile:agent-runtime:*"]);
+    },
+  );
+
+  await t.test(
+    "403s requesting relayfile:agent-runtime when the caller holds only relayfile:fs scopes",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/workspace", {
+        body: {
+          workspaceId: "ws_tokens_route",
+          name: "durable-relayfile-key",
+          scopes: ["relayfile:agent-runtime:*"],
+        },
+        headers: authHeaders,
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+        assert.equal(body.error, "insufficient_scope");
+      });
+    },
+  );
 });
 
 test("POST /v1/tokens/agent", async (t) => {
