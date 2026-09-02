@@ -556,7 +556,7 @@ const SELECT_IDENTITY_LINEAGE_MEMBERS_SQL = `
 `;
 
 const SELECT_TOKEN_LINEAGES_SQL = `
-  SELECT token_id, issued_token_id, identity_id, org_id, workspace_id, sponsor_id, token_type, created_at
+  SELECT token_id, issued_token_id, identity_id, org_id, workspace_id, sponsor_id, token_type, created_at, agent_name
   FROM token_lineages
   WHERE identity_id = ?
   ORDER BY created_at ASC, token_id ASC
@@ -816,6 +816,7 @@ type TokenLineageRow = IdentityLineageRow & {
   token_id?: string | null;
   issued_token_id?: string | null;
   token_type?: "access" | "refresh" | null;
+  agent_name?: string | null;
 };
 type LineageMemberRow = { principal_id?: string | null };
 type TokenLineageMemberRow = LineageMemberRow & { token_id?: string | null };
@@ -1666,6 +1667,9 @@ class SqliteIdentityStorage implements IdentityStorage {
           sponsorChain: [...token.lineage!.sponsorChain],
           tokenType: token.lineage!.tokenType,
           createdAt: token.createdAt,
+          ...(token.lineage!.agentName
+            ? { agentName: token.lineage!.agentName }
+            : {}),
         }));
 
       return {
@@ -2267,6 +2271,7 @@ function hydrateTokenLineage(row: TokenLineageRow): Omit<TokenLineageRecord, "sp
   const sponsorId = normalizeOptionalString(row.sponsor_id);
   const createdAt = normalizeOptionalString(row.created_at);
   const tokenType = row.token_type;
+  const agentName = normalizeOptionalString(row.agent_name);
   if (
     !tokenId ||
     !identityId ||
@@ -2292,6 +2297,7 @@ function hydrateTokenLineage(row: TokenLineageRow): Omit<TokenLineageRecord, "sp
     sponsorId,
     tokenType,
     createdAt,
+    ...(agentName ? { agentName } : {}),
   };
 }
 

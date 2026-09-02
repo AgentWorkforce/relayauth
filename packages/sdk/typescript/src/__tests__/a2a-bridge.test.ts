@@ -211,3 +211,39 @@ test("assertValidA2aAgentCard rejects cards without required fields", () => {
     /url/i,
   );
 });
+
+test("assertValidA2aAgentCard rejects a malformed revocationCheckEndpoint", () => {
+  assert.throws(
+    () =>
+      assertValidA2aAgentCard({
+        name: "planner",
+        url: "https://agent.example.com/rpc",
+        revocationCheckEndpoint: "not-a-url",
+      }),
+    /revocationCheckEndpoint/i,
+  );
+});
+
+test("agentCardToConfiguration rejects a malformed revocationCheckEndpoint before emitting", () => {
+  assert.throws(
+    () =>
+      agentCardToConfiguration({
+        name: "planner",
+        url: "https://agent.example.com/rpc",
+        revocationCheckEndpoint: "not-a-url",
+      }),
+    /revocationCheckEndpoint/i,
+  );
+});
+
+test("agentCardToConfiguration accepts a valid revocationCheckEndpoint", () => {
+  const configuration = agentCardToConfiguration({
+    name: "planner",
+    url: "https://agent.example.com/rpc",
+    revocationCheckEndpoint: "https://agent.example.com/v1/tokens/revocation",
+  });
+  assert.equal(
+    configuration.revocation_check_endpoint,
+    "https://agent.example.com/v1/tokens/revocation",
+  );
+});

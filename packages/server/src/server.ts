@@ -58,12 +58,11 @@ const BRIDGE_RATE_WINDOW_MS = 60_000;
 export const REVOCATION_CHECK_RATE_LIMIT = 600;
 const REVOCATION_CHECK_RATE_WINDOW_MS = 60_000;
 // The per-IP key is derived from caller-supplied forwarding headers, which an
-// attacker can rotate. FixedWindowRateLimiter caps its bucket map at
-// maxEntries and evicts expired buckets on every consume, so header rotation
-// can neither grow memory without bound nor reset an active bucket's counter
-// (it fails closed with a 429 once the cap is reached) — closing both the OOM
-// and the limit-bypass vectors.
-const REVOCATION_CHECK_RATE_MAX_ENTRIES = 20_000;
+// attacker can rotate across unbounded unique values. A per-key bucket map
+// would either grow without bound (OOM) or, once capped, reject unrelated
+// legitimate verifiers for the rest of the window (DoS). A count-min sketch is
+// fixed-memory and per-key independent: a unique-IP flood adds only small
+// collision noise and can neither exhaust memory nor starve legitimate keys.
 const IDENTITY_CREATE_RATE_LIMIT = 60;
 const IDENTITY_CREATE_RATE_WINDOW_MS = 60_000;
 
@@ -78,10 +77,9 @@ const sharedIdentityCreatePreAuthRateLimiter = new FixedWindowSketchRateLimiter(
   IDENTITY_CREATE_RATE_LIMIT,
   IDENTITY_CREATE_RATE_WINDOW_MS,
 );
-const sharedRevocationCheckRateLimiter = new FixedWindowRateLimiter(
+const sharedRevocationCheckRateLimiter = new FixedWindowSketchRateLimiter(
   REVOCATION_CHECK_RATE_LIMIT,
   REVOCATION_CHECK_RATE_WINDOW_MS,
-  REVOCATION_CHECK_RATE_MAX_ENTRIES,
 );
 const sharedSponsorOidcService = new SponsorOidcService();
 

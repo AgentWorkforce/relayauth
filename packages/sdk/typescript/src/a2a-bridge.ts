@@ -172,6 +172,27 @@ export function assertValidA2aAgentCard(value: unknown): asserts value is A2aAge
     throw new Error("A2A agent card url must be a valid absolute URL");
   }
 
+  if (value.revocationCheckEndpoint !== undefined) {
+    if (
+      typeof value.revocationCheckEndpoint !== "string" ||
+      value.revocationCheckEndpoint.trim() === ""
+    ) {
+      throw new Error(
+        "A2A agent card revocationCheckEndpoint must be a non-empty string when provided",
+      );
+    }
+    try {
+      // The bridged config copies this into AgentConfiguration.
+      // revocation_check_endpoint, which is contractually `format: uri`, so a
+      // malformed value must be rejected before it is emitted.
+      new URL(value.revocationCheckEndpoint);
+    } catch {
+      throw new Error(
+        "A2A agent card revocationCheckEndpoint must be a valid absolute URL",
+      );
+    }
+  }
+
   if (value.skills !== undefined) {
     if (!Array.isArray(value.skills)) {
       throw new Error("A2A agent card skills must be an array when provided");

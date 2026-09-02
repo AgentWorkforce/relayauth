@@ -15,7 +15,10 @@ import {
   pruneExpiredTokensWindow,
   scanExpiredTokensWindow,
 } from "../engine/retention-gc.js";
-import { FixedWindowRateLimiter } from "../lib/rate-limit.js";
+import {
+  FixedWindowRateLimiter,
+  FixedWindowSketchRateLimiter,
+} from "../lib/rate-limit.js";
 import type { DeferredTask } from "../lib/deferred.js";
 import {
   isStorageCapacityExhausted,
@@ -2770,20 +2773,31 @@ test("GET /v1/tokens/revocation", async (t) => {
   });
 
   await t.test(
-    "rate-limits the unauthenticated endpoint once the per-window ceiling is exceeded",
+    "rate-limits a single abusive client once the per-window ceiling is exceeded",
     async () => {
       const app = createTestApp(
         {},
-        { revocationCheckRateLimiter: new FixedWindowRateLimiter(3, 60_000, 8) },
+        {
+          // Fixed-memory count-min sketch: an exact count for a lone key.
+          revocationCheckRateLimiter: new FixedWindowSketchRateLimiter(
+            3,
+            60_000,
+            256,
+            4,
+            1,
+          ),
+        },
       );
-      const path = "/v1/tokens/revocation?jti=rate-limit-probe";
+      const hit = () =>
+        requestRoute(app, "GET", "/v1/tokens/revocation?jti=x", {
+          headers: { "x-forwarded-for": "198.51.100.9" },
+        });
 
       for (let i = 0; i < 3; i++) {
-        const ok = await requestRoute(app, "GET", path);
-        assert.equal(ok.status, 200);
+        assert.equal((await hit()).status, 200);
       }
 
-      const limited = await requestRoute(app, "GET", path);
+      const limited = await hit();
       assert.equal(limited.status, 429);
       const body = (await limited.json()) as { code?: string };
       assert.equal(body.code, "rate_limited");
@@ -2793,25 +2807,37 @@ test("GET /v1/tokens/revocation", async (t) => {
   );
 
   await t.test(
-    "revocation limiter is bounded: rotated x-forwarded-for cannot grow it unboundedly",
+    "a unique-IP flood does not reject legitimate verifiers (no DoS)",
     async () => {
-      // maxEntries=3: a bounded map that fails closed rather than growing or
-      // resetting counters when flooded with distinct (spoofable) client IPs.
+      // A high-cardinality sketch cannot be exhausted by rotating
+      // x-forwarded-for across unique IPs, so an attacker cannot make the
+      // limiter reject unrelated legitimate clients for the rest of the window.
       const app = createTestApp(
         {},
-        { revocationCheckRateLimiter: new FixedWindowRateLimiter(1, 60_000, 3) },
+        {
+          revocationCheckRateLimiter: new FixedWindowSketchRateLimiter(
+            50,
+            60_000,
+            4096,
+            4,
+            1,
+          ),
+        },
       );
       const hit = (ip: string) =>
         requestRoute(app, "GET", "/v1/tokens/revocation?jti=x", {
           headers: { "x-forwarded-for": ip },
         });
 
-      assert.equal((await hit("1.1.1.1")).status, 200);
-      assert.equal((await hit("2.2.2.2")).status, 200);
-      assert.equal((await hit("3.3.3.3")).status, 200);
-      // The bounded map is full; a fourth distinct spoofed IP is rejected
-      // (fail-closed) instead of allocating an unbounded new bucket.
-      assert.equal((await hit("4.4.4.4")).status, 429);
+      // Flood with many distinct spoofed IPs, each seen once.
+      for (let i = 0; i < 400; i++) {
+        const status = (await hit(`10.0.${(i >> 8) & 0xff}.${i & 0xff}`)).status;
+        assert.equal(status, 200);
+      }
+
+      // A legitimate verifier on a fresh IP is still served — the flood neither
+      // exhausted memory nor consumed its budget.
+      assert.equal((await hit("203.0.113.7")).status, 200);
     },
   );
 
@@ -3043,6 +3069,181 @@ test("POST /v1/tokens/revoke by workspaceId+agentName covers path tokens", async
   );
 
   await t.test(
+    "merges durable-identity tokens with matching path-lineage tokens for one agent name",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      // A durable identity in the workspace carrying the shared agent name, plus
+      // an active token. findDuplicate resolves this via the registered path.
+      const durable = createStoredIdentity({
+        id: "agent_durable_shared",
+        name: "shared-bot",
+        orgId: "org_tokens_route",
+        workspaceId: "ws_tokens_route",
+      });
+      await seedStoredIdentity(app, durable);
+      await seedActiveTokens(app, durable.id, ["durable_jti_1"]);
+
+      // A path token minted under the SAME agent name but a divergent agentId,
+      // i.e. a distinct transient identity the registered lookup cannot see.
+      const mintResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "shared-bot",
+            agentId: "path_variant",
+            paths: ["/linear/issues/**"],
+            scopes: ["relayfile:fs:write:/linear/issues/**"],
+            ttlSeconds: 300,
+          },
+          headers: { "x-api-key": orgApiKey.key },
+        },
+      );
+      const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+        mintResponse,
+        201,
+      );
+      assert.equal(minted.agentId, "agent_path_variant");
+      const pathAccessJti = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.accessToken,
+        1,
+      ).jti;
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const revoke = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "shared-bot" },
+        headers: manageHeaders,
+      });
+      assert.equal(revoke.status, 204);
+
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        revoked.includes("durable_jti_1"),
+        `durable identity token must be revoked, got ${JSON.stringify(revoked)}`,
+      );
+      assert.ok(
+        revoked.includes(pathAccessJti),
+        `divergent path token must be revoked, got ${JSON.stringify(revoked)}`,
+      );
+    },
+  );
+
+  await t.test(
+    "revokes every transient path identity that shares an agent name",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const mintVariant = async (agentId: string): Promise<string> => {
+        const response = await requestRoute(
+          app,
+          "POST",
+          "/v1/tokens/workspace-path",
+          {
+            body: {
+              workspaceId: "ws_tokens_route",
+              agentName: "dup-bot",
+              agentId,
+              paths: ["/linear/issues/**"],
+              scopes: ["relayfile:fs:write:/linear/issues/**"],
+              ttlSeconds: 300,
+            },
+            headers: { "x-api-key": orgApiKey.key },
+          },
+        );
+        const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+          response,
+          201,
+        );
+        return decodeJwtJsonSegment<RelayAuthTokenClaims>(minted.accessToken, 1)
+          .jti;
+      };
+
+      const jtiA = await mintVariant("variant_a");
+      const jtiB = await mintVariant("variant_b");
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const revoke = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "dup-bot" },
+        headers: manageHeaders,
+      });
+      assert.equal(revoke.status, 204);
+
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        revoked.includes(jtiA) && revoked.includes(jtiB),
+        `both transient identities' tokens must be revoked, got ${JSON.stringify(revoked)}`,
+      );
+
+      // Every matched identity's rows flipped to 'revoked' (not just the first),
+      // so a re-revoke finds nothing active.
+      const reRevoke = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "dup-bot" },
+        headers: manageHeaders,
+      });
+      assert.equal(reRevoke.status, 404);
+    },
+  );
+
+  await t.test(
+    "fails closed (501) when the adapter cannot resolve path tokens by workspace+agent",
+    async () => {
+      const { app } = await createHarness();
+      // Simulate an adapter lacking the token-lineage capability.
+      app.storage.tokens.listActiveByWorkspaceAgent = undefined;
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "anything" },
+        headers: manageHeaders,
+      });
+      // Must NOT 404 (fail-open, reads as "nothing to revoke").
+      assert.equal(response.status, 501);
+      assert.match(JSON.stringify(await response.json()), /unsupported/i);
+    },
+  );
+
+  await t.test(
     "does not cross workspace boundaries when revoking a path token",
     async () => {
       const { app, authHeaders } = await createHarness({
@@ -3060,16 +3261,24 @@ test("POST /v1/tokens/revoke by workspaceId+agentName covers path tokens", async
         "relayfile:fs:write:*",
       ]);
 
-      await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
-        body: {
-          workspaceId: "ws_tokens_route",
-          agentName: "path-boundary-agent",
-          paths: ["/linear/issues/**"],
-          scopes: ["relayfile:fs:write:/linear/issues/**"],
-          ttlSeconds: 300,
+      const mintResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "path-boundary-agent",
+            paths: ["/linear/issues/**"],
+            scopes: ["relayfile:fs:write:/linear/issues/**"],
+            ttlSeconds: 300,
+          },
+          headers: { "x-api-key": orgApiKey.key },
         },
-        headers: { "x-api-key": orgApiKey.key },
-      });
+      );
+      // Assert the prerequisite mint succeeded, else the isolation assertions
+      // below would pass vacuously even if minting had failed.
+      await assertJsonResponse<WorkspacePathTokenPair>(mintResponse, 201);
 
       const manageHeaders: HeadersInit = {
         Authorization: `Bearer ${createAuthToken({
