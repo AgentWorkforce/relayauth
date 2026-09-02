@@ -36,6 +36,7 @@ type TestAppOptions = {
   deferTask?: DeferredTaskScheduler;
   identityCreatePreAuthRateLimiter?: RequestRateLimiter;
   identityCreateRateLimiter?: RequestRateLimiter;
+  revocationCheckRateLimiter?: RequestRateLimiter;
 };
 
 type TestApp = Hono<AppEnv> & {
@@ -242,6 +243,10 @@ export function createTestApp(
       options.identityCreatePreAuthRateLimiter ?? new FixedWindowSketchRateLimiter(60, 60_000),
     identityCreateRateLimiter:
       options.identityCreateRateLimiter ?? new FixedWindowRateLimiter(60, 60_000),
+    // Fresh per-app limiter so revocation-check calls in one test never spill
+    // into another; generous default keeps unrelated suites unthrottled.
+    revocationCheckRateLimiter:
+      options.revocationCheckRateLimiter ?? new FixedWindowRateLimiter(100_000, 60_000),
   });
 
   const testApp = app as TestApp;

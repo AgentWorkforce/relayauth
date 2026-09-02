@@ -59,6 +59,7 @@ import type {
   PolicyStorage,
   PolicyUpdate,
   RevokedTokenAudit,
+  RevokedTokenGroupsAudit,
   RevocationStorage,
   RedeemAttestationGrantInput,
   RoleStorage,
@@ -504,6 +505,28 @@ const SELECT_TOKENS_BY_SESSION_SQL = `
   WHERE session_id = ? AND status = 'active'
 `;
 
+// Path tokens have no persisted identity row, so workspace-agent revocation
+// resolves them through the durable token lineage instead. Join each active
+// token to its lineage row (token_lineages.token_id = tokens.id) and scope to
+// org+workspace so a caller can never revoke across a boundary. Resolve by the
+// stored agent_name (the minting identity's name) so the original identity is
+// found even when a path token was minted with agentId != agentName; the
+// identity_id fallback covers legacy rows written before agent_name existed
+// (whose agentId was derived from the agent name).
+const SELECT_ACTIVE_TOKENS_BY_WORKSPACE_AGENT_SQL = `
+  SELECT tokens.id, tokens.token_id, tokens.jti, tokens.identity_id,
+         tokens.status, tokens.session_id, tokens.expires_at
+  FROM tokens
+  INNER JOIN token_lineages ON token_lineages.token_id = tokens.id
+  WHERE tokens.status = 'active'
+    AND token_lineages.org_id = ?
+    AND token_lineages.workspace_id = ?
+    AND (
+      token_lineages.agent_name = ?
+      OR (token_lineages.agent_name IS NULL AND tokens.identity_id = ?)
+    )
+`;
+
 const INSERT_TOKEN_SQL = `
   INSERT INTO tokens (
     id,
@@ -534,7 +557,7 @@ const SELECT_IDENTITY_LINEAGE_MEMBERS_SQL = `
 `;
 
 const SELECT_TOKEN_LINEAGES_SQL = `
-  SELECT token_id, issued_token_id, identity_id, org_id, workspace_id, sponsor_id, token_type, created_at
+  SELECT token_id, issued_token_id, identity_id, org_id, workspace_id, sponsor_id, token_type, created_at, agent_name
   FROM token_lineages
   WHERE identity_id = ?
   ORDER BY created_at ASC, token_id ASC
@@ -567,9 +590,10 @@ const INSERT_TOKEN_LINEAGE_SQL = `
     workspace_id,
     sponsor_id,
     token_type,
-    created_at
+    created_at,
+    agent_name
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const INSERT_TOKEN_LINEAGE_MEMBER_SQL = `
@@ -793,6 +817,7 @@ type TokenLineageRow = IdentityLineageRow & {
   token_id?: string | null;
   issued_token_id?: string | null;
   token_type?: "access" | "refresh" | null;
+  agent_name?: string | null;
 };
 type LineageMemberRow = { principal_id?: string | null };
 type TokenLineageMemberRow = LineageMemberRow & { token_id?: string | null };
@@ -1643,6 +1668,9 @@ class SqliteIdentityStorage implements IdentityStorage {
           sponsorChain: [...token.lineage!.sponsorChain],
           tokenType: token.lineage!.tokenType,
           createdAt: token.createdAt,
+          ...(token.lineage!.agentName
+            ? { agentName: token.lineage!.agentName }
+            : {}),
         }));
 
       return {
@@ -2091,6 +2119,53 @@ class SqliteTokenStorage implements TokenStorage {
       .map(toStoredTokenRecord);
   }
 
+  async listActiveByWorkspaceAgent(
+    orgId: string,
+    workspaceId: string,
+    agentName: string,
+    fallbackIdentityId: string,
+  ): Promise<StoredTokenRecord[]> {
+    const normalizedOrgId = normalizeOptionalString(orgId);
+    const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
+    const normalizedAgentName = normalizeOptionalString(agentName);
+    const normalizedFallbackIdentityId =
+      normalizeOptionalString(fallbackIdentityId);
+    if (
+      !normalizedOrgId ||
+      !normalizedWorkspaceId ||
+      (!normalizedAgentName && !normalizedFallbackIdentityId)
+    ) {
+      return [];
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      return [...backend.state.tokens.values()]
+        .filter(
+          (token) =>
+            token.status === "active" &&
+            token.lineage?.orgId === normalizedOrgId &&
+            token.lineage?.workspaceId === normalizedWorkspaceId &&
+            (normalizedAgentName
+              ? token.lineage?.agentName === normalizedAgentName ||
+                (token.lineage?.agentName === undefined &&
+                  token.identityId === normalizedFallbackIdentityId)
+              : token.identityId === normalizedFallbackIdentityId),
+        )
+        .map(toStoredTokenRecord);
+    }
+
+    return backend.db
+      .prepare<TokenRow>(SELECT_ACTIVE_TOKENS_BY_WORKSPACE_AGENT_SQL)
+      .all(
+        normalizedOrgId,
+        normalizedWorkspaceId,
+        normalizedAgentName ?? null,
+        normalizedFallbackIdentityId ?? null,
+      )
+      .map(toStoredTokenRecord);
+  }
+
   async listActiveIds(identityId: string): Promise<string[]> {
     const normalizedIdentityId = requireString(
       identityId,
@@ -2163,6 +2238,7 @@ function insertTokenLineage(db: SqliteDatabase, token: IssuedTokenRecord): void 
     lineage.sponsorId,
     lineage.tokenType,
     token.createdAt,
+    lineage.agentName ?? null,
   );
   const insertMember = db.prepare(INSERT_TOKEN_LINEAGE_MEMBER_SQL);
   lineage.sponsorChain.forEach((principalId, chainPosition) => {
@@ -2196,6 +2272,7 @@ function hydrateTokenLineage(row: TokenLineageRow): Omit<TokenLineageRecord, "sp
   const sponsorId = normalizeOptionalString(row.sponsor_id);
   const createdAt = normalizeOptionalString(row.created_at);
   const tokenType = row.token_type;
+  const agentName = normalizeOptionalString(row.agent_name);
   if (
     !tokenId ||
     !identityId ||
@@ -2221,6 +2298,7 @@ function hydrateTokenLineage(row: TokenLineageRow): Omit<TokenLineageRecord, "sp
     sponsorId,
     tokenType,
     createdAt,
+    ...(agentName ? { agentName } : {}),
   };
 }
 
@@ -2338,6 +2416,90 @@ class SqliteRevocationStorage implements RevocationStorage {
       commitSqliteTransaction(backend.db);
     } catch (error) {
       // Preserve the originating audit or storage failure.
+      rollbackSqliteTransaction(backend.db);
+      throw error;
+    }
+  }
+
+  async revokeIdentityTokenGroupsWithAudit(
+    input: RevokedTokenGroupsAudit,
+  ): Promise<void> {
+    const timestamp = normalizeTimestamp(input.revokedAt);
+    // Normalize and drop empty groups up front so an all-or-nothing failure
+    // never depends on partially-formed input.
+    const groups = (input.groups ?? [])
+      .map((group) => ({
+        identityId: requireString(group.identityId, "identityId is required"),
+        tokenIds: normalizeStringArray(group.tokenIds),
+        auditEntry: normalizeAuditWriteEntry(group.auditEntry),
+      }))
+      .filter((group) => group.tokenIds.length > 0);
+    if (groups.length === 0) {
+      return;
+    }
+
+    const backend = await this.provider.getBackend();
+    pruneExpiredRevocations(backend);
+
+    if (backend.kind === "memory") {
+      // Validate every failure condition before mutating any state, matching the
+      // all-or-nothing contract of the SQLite transaction below.
+      const seenAuditIds = new Set<string>();
+      for (const group of groups) {
+        if (
+          seenAuditIds.has(group.auditEntry.id) ||
+          backend.state.auditLogs.some(
+            (entry) => entry.id === group.auditEntry.id,
+          )
+        ) {
+          throw new StorageError(
+            "audit_entry_already_exists",
+            409,
+            "audit_entry_already_exists",
+          );
+        }
+        seenAuditIds.add(group.auditEntry.id);
+      }
+
+      for (const group of groups) {
+        for (const tokenId of group.tokenIds) {
+          backend.state.revokedTokens.set(tokenId, {
+            expiresAt: MAX_REVOCATION_EXPIRY,
+            identityId: group.identityId,
+            revokedAt: timestamp,
+          });
+          for (const token of backend.state.tokens.values()) {
+            if (
+              token.identityId === group.identityId &&
+              (token.id === tokenId ||
+                token.jti === tokenId ||
+                token.tokenId === tokenId)
+            ) {
+              token.status = "revoked";
+            }
+          }
+        }
+        backend.state.auditLogs.push(cloneAuditEntryRecord(group.auditEntry));
+      }
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return;
+    }
+
+    beginSqliteTransaction(backend.db);
+    try {
+      const upsertRevokedToken = backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL);
+      const updateTokenStatus = backend.db.prepare(UPDATE_TOKEN_STATUS_SQL);
+      const insertAudit = backend.db.prepare(INSERT_AUDIT_LOG_SQL);
+      for (const group of groups) {
+        for (const tokenId of group.tokenIds) {
+          upsertRevokedToken.run(tokenId, MAX_REVOCATION_EXPIRY);
+          updateTokenStatus.run(group.identityId, tokenId, tokenId, tokenId);
+        }
+        insertAudit.run(...toAuditParams(group.auditEntry));
+      }
+      commitSqliteTransaction(backend.db);
+    } catch (error) {
+      // Any group's failure rolls back the whole request — no partial apply.
       rollbackSqliteTransaction(backend.db);
       throw error;
     }

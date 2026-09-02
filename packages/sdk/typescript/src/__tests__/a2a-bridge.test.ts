@@ -146,6 +146,48 @@ test("round-trip preserves essential identity and endpoint metadata", () => {
   assert.equal(roundTrippedCard.skills?.[0]?.name, "Search");
 });
 
+test("both bridge conversions propagate revocation_check_endpoint", () => {
+  const configuration = buildConfiguration({
+    revocation_check_endpoint: "https://relayauth.example.com/v1/tokens/revocation",
+  });
+
+  // config -> card carries the public GET check URL as an extension field.
+  const card = configurationToAgentCard(configuration);
+  assert.equal(
+    card.revocationCheckEndpoint,
+    "https://relayauth.example.com/v1/tokens/revocation",
+  );
+
+  // card -> config restores it, so a bridged config keeps the check URL.
+  const bridged = agentCardToConfiguration({
+    name: "relayauth",
+    url: "https://relayauth.example.com/v1/tokens",
+    revocationCheckEndpoint: "https://relayauth.example.com/v1/tokens/revocation",
+  });
+  assert.equal(
+    bridged.revocation_check_endpoint,
+    "https://relayauth.example.com/v1/tokens/revocation",
+  );
+
+  // Full round-trip is lossless for the field.
+  assert.equal(
+    agentCardToConfiguration(configurationToAgentCard(configuration))
+      .revocation_check_endpoint,
+    "https://relayauth.example.com/v1/tokens/revocation",
+  );
+});
+
+test("bridge conversions omit revocation_check_endpoint when absent", () => {
+  const card = configurationToAgentCard(buildConfiguration());
+  assert.equal("revocationCheckEndpoint" in card, false);
+
+  const config = agentCardToConfiguration({
+    name: "minimal",
+    url: "https://minimal.example.com/rpc",
+  });
+  assert.equal("revocation_check_endpoint" in config, false);
+});
+
 test("agentCardToConfiguration handles missing optional fields", () => {
   const configuration = agentCardToConfiguration({
     name: "minimal",
@@ -167,5 +209,75 @@ test("assertValidA2aAgentCard rejects cards without required fields", () => {
   assert.throws(
     () => assertValidA2aAgentCard({ name: "broken" }),
     /url/i,
+  );
+});
+
+test("assertValidA2aAgentCard rejects a malformed revocationCheckEndpoint", () => {
+  assert.throws(
+    () =>
+      assertValidA2aAgentCard({
+        name: "planner",
+        url: "https://agent.example.com/rpc",
+        revocationCheckEndpoint: "not-a-url",
+      }),
+    /revocationCheckEndpoint/i,
+  );
+});
+
+test("agentCardToConfiguration rejects a malformed revocationCheckEndpoint before emitting", () => {
+  assert.throws(
+    () =>
+      agentCardToConfiguration({
+        name: "planner",
+        url: "https://agent.example.com/rpc",
+        revocationCheckEndpoint: "not-a-url",
+      }),
+    /revocationCheckEndpoint/i,
+  );
+});
+
+test("agentCardToConfiguration accepts a valid revocationCheckEndpoint", () => {
+  const configuration = agentCardToConfiguration({
+    name: "planner",
+    url: "https://agent.example.com/rpc",
+    revocationCheckEndpoint: "https://agent.example.com/v1/tokens/revocation",
+  });
+  assert.equal(
+    configuration.revocation_check_endpoint,
+    "https://agent.example.com/v1/tokens/revocation",
+  );
+});
+
+test("assertValidA2aAgentCard rejects dangerous URL schemes", () => {
+  for (const scheme of [
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+    "data:text/html,<script>alert(1)</script>",
+  ]) {
+    assert.throws(
+      () => assertValidA2aAgentCard({ name: "evil", url: scheme }),
+      /http/i,
+      `url ${scheme} must be rejected`,
+    );
+    assert.throws(
+      () =>
+        assertValidA2aAgentCard({
+          name: "evil",
+          url: "https://agent.example.com/rpc",
+          revocationCheckEndpoint: scheme,
+        }),
+      /revocationCheckEndpoint/i,
+      `revocationCheckEndpoint ${scheme} must be rejected`,
+    );
+  }
+});
+
+test("assertValidA2aAgentCard accepts http and https schemes", () => {
+  assert.doesNotThrow(() =>
+    assertValidA2aAgentCard({
+      name: "planner",
+      url: "http://agent.example.com/rpc",
+      revocationCheckEndpoint: "https://agent.example.com/v1/tokens/revocation",
+    }),
   );
 });

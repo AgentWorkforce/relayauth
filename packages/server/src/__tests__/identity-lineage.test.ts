@@ -230,3 +230,48 @@ test("lineage endpoint never exposes an identity from another organization", asy
 
   assert.equal(response.status, 404);
 });
+
+test("getLineage preserves the persisted agent_name on token lineage records", async () => {
+  const storage = createSqliteStorage(":memory:");
+  const base = generateTestIdentity({
+    id: "agent_lineage_named",
+    orgId: "org_named",
+  });
+  const identity: StoredIdentity = {
+    ...base,
+    name: "named-agent",
+    workspaceId: "ws_named",
+    sponsorId: "user_named_owner",
+    sponsorChain: ["user_named_owner", "agent_lineage_named"],
+  };
+  await seedStoredIdentity(storage, identity);
+
+  await storage.tokens.persistIssued({
+    id: "named-token-id",
+    tokenId: "named-token-id",
+    jti: "named-token-jti",
+    identityId: identity.id,
+    issuedAt: 1_700_000_000,
+    expiresAt: 1_700_003_600,
+    createdAt: "2026-08-08T00:00:00.000Z",
+    lineage: {
+      orgId: identity.orgId,
+      workspaceId: identity.workspaceId,
+      sponsorId: identity.sponsorId,
+      sponsorChain: [...identity.sponsorChain],
+      tokenType: "access",
+      agentName: "named-agent",
+    },
+  });
+
+  const lineage = await storage.identities.getLineage?.(identity.id);
+  assert.ok(lineage, "expected a lineage record");
+  assert.equal(lineage.tokens.length, 1);
+  assert.equal(
+    lineage.tokens[0]?.agentName,
+    "named-agent",
+    "getLineage must surface the persisted agent_name",
+  );
+
+  await storage.close();
+});

@@ -833,49 +833,136 @@ tokens.post("/revoke", async (c) => {
   }
 
   const storage = c.get("storage");
-  const targetTokens = tokenId
-    ? await findTargetTokensByTokenId(storage, tokenId)
-    : identityId
-      ? await findTargetTokensByIdentityId(storage, identityId)
-      : hasWorkspaceAgent
-        ? await findTargetTokensByWorkspaceAgent(
-            storage,
-            auth.claims.org,
-            workspaceId!,
-            agentName!,
-          )
-        : await findTargetTokensBySessionId(storage, sessionId!);
+  // For workspace+agent the resolver may hand back synthesized identities: path
+  // tokens are minted without a persisted identity row, so there is no identity
+  // to load from the store even though their JTIs are revocable.
+  let targetTokens: StoredTokenRecord[];
+  let resolvedIdentities: Map<string, StoredIdentity> | null = null;
+  if (tokenId) {
+    targetTokens = await findTargetTokensByTokenId(storage, tokenId);
+  } else if (identityId) {
+    targetTokens = await findTargetTokensByIdentityId(storage, identityId);
+  } else if (hasWorkspaceAgent) {
+    // Fail CLOSED: an adapter without the token-lineage capability cannot
+    // resolve path-token JTIs by workspace+agent, so it must not answer a
+    // revoke request in this mode with a misleading 404 (which reads as
+    // "nothing to revoke") while a path token stays active. Signal the
+    // unsupported capability explicitly instead, matching the 501 posture used
+    // for other optional-capability gaps.
+    if (typeof storage.tokens.listActiveByWorkspaceAgent !== "function") {
+      return c.json(
+        {
+          error: "workspace_agent_revocation_unsupported",
+          code: "unsupported_capability",
+        },
+        501,
+      );
+    }
+    const resolution = await findTargetTokensByWorkspaceAgent(
+      storage,
+      auth.claims.org,
+      workspaceId!,
+      agentName!,
+    );
+    targetTokens = resolution.tokens;
+    resolvedIdentities = resolution.identities;
+  } else {
+    targetTokens = await findTargetTokensBySessionId(storage, sessionId!);
+  }
 
   if (targetTokens.length === 0) {
     return c.json({ error: "token_not_found" }, 404);
   }
 
-  const firstIdentityId = normalizeOptionalString(targetTokens[0]?.identityId);
-  const identity = firstIdentityId
-    ? await storage.identities.get(firstIdentityId)
-    : null;
-  if (!identity || identity.orgId !== auth.claims.org) {
+  // Group revocable token ids by their owning identity. A single addressing
+  // request can span multiple identities (several transient path identities
+  // sharing an agent name, or a durable identity plus divergent path tokens);
+  // token-status updates are scoped by identity_id, so every group must be
+  // revoked under its own identity or those tokens stay active.
+  const tokenIdsByIdentity = new Map<string, string[]>();
+  for (const row of targetTokens) {
+    const rowIdentityId = normalizeOptionalString(row.identityId);
+    const identifier = getTokenIdentifier(row);
+    if (!rowIdentityId || !identifier) {
+      continue;
+    }
+    const existing = tokenIdsByIdentity.get(rowIdentityId);
+    if (existing) {
+      existing.push(identifier);
+    } else {
+      tokenIdsByIdentity.set(rowIdentityId, [identifier]);
+    }
+  }
+  if (tokenIdsByIdentity.size === 0) {
     return c.json({ error: "token_not_found" }, 404);
   }
 
+  // Resolve and org-verify every owning identity BEFORE mutating anything, so a
+  // single unauthorized group rejects the whole request without partial writes.
+  const groups: Array<{ identity: StoredIdentity; tokenIds: string[] }> = [];
+  for (const [rowIdentityId, tokenIds] of tokenIdsByIdentity) {
+    const identity =
+      resolvedIdentities?.get(rowIdentityId) ??
+      (await storage.identities.get(rowIdentityId));
+    if (!identity || identity.orgId !== auth.claims.org) {
+      return c.json({ error: "token_not_found" }, 404);
+    }
+    groups.push({ identity, tokenIds });
+  }
+
   const revokedAt = new Date().toISOString();
-  const revocableIds = targetTokens
-    .map((row) => getTokenIdentifier(row))
-    .filter((value): value is string => Boolean(value));
-  const auditEntry = createTokenAuditEntry({
-    action: "token.revoked",
+  const revocationGroups = groups.map(({ identity, tokenIds }) => ({
     identity,
-    tokenId:
-      revocableIds[0] ?? tokenId ?? sessionId ?? identityId ?? identity.id,
-    actorId: auth.claims.sub,
-  });
-  await storage.revocations.revokeIdentityTokensWithAudit({
-    identityId: identity.id,
-    tokenIds: revocableIds,
-    revokedAt,
-    auditEntry,
-  });
-  await populateRevocationCache(storage, identity.id, revocableIds, revokedAt);
+    tokenIds,
+    auditEntry: createTokenAuditEntry({
+      action: "token.revoked" as const,
+      identity,
+      tokenId: tokenIds[0] ?? tokenId ?? sessionId ?? identityId ?? identity.id,
+      actorId: auth.claims.sub,
+    }),
+  }));
+
+  // A request spanning multiple identities must be all-or-nothing, which only
+  // the atomic bulk primitive can guarantee. When it is available, use it for
+  // every case. When it is NOT:
+  //   - a single group has no cross-group atomicity concern, so the per-identity
+  //     audited path (itself atomic) is safe;
+  //   - a multi-group request would risk a partial apply across groups if
+  //     looped sequentially, so fail CLOSED with 501 rather than loop — matching
+  //     the other unsupported-capability gates.
+  const bulkRevoke = storage.revocations.revokeIdentityTokenGroupsWithAudit;
+  if (typeof bulkRevoke === "function") {
+    await bulkRevoke.call(storage.revocations, {
+      groups: revocationGroups.map(({ identity, tokenIds, auditEntry }) => ({
+        identityId: identity.id,
+        tokenIds,
+        auditEntry,
+      })),
+      revokedAt,
+    });
+  } else if (revocationGroups.length > 1) {
+    return c.json(
+      {
+        error: "atomic_multi_identity_revocation_unsupported",
+        code: "unsupported_capability",
+      },
+      501,
+    );
+  } else {
+    const { identity, tokenIds, auditEntry } = revocationGroups[0]!;
+    await storage.revocations.revokeIdentityTokensWithAudit({
+      identityId: identity.id,
+      tokenIds,
+      revokedAt,
+      auditEntry,
+    });
+  }
+
+  // Cache population is a non-durable, best-effort side effect (it already
+  // swallows its own failures); run it after the durable revoke commits.
+  for (const { identity, tokenIds } of revocationGroups) {
+    await populateRevocationCache(storage, identity.id, tokenIds, revokedAt);
+  }
 
   return c.body(null, 204);
 });
@@ -898,6 +985,16 @@ tokens.get("/revocation", async (c) => {
   }
 
   const storage = c.get("storage");
+  // Fail CLOSED when the adapter cannot read revocation state. Returning
+  // `{ revoked: false }` here would report an already-revoked token as active
+  // and let verifiers accept it — a security fail-open. Signal the missing
+  // capability with a 501 (matching `identities.getLineage` /
+  // `lineage_unavailable`); the SDK `TokenVerifier.#checkRevocation` treats any
+  // non-2xx as `revocation_check_failed` and rejects the token.
+  if (typeof storage.revocations.isRevoked !== "function") {
+    return c.json({ error: "revocation_check_unavailable" }, 501);
+  }
+
   const revoked = await isTokenRevoked(storage, jti);
 
   return c.json({ jti, revoked }, 200);
@@ -1043,8 +1140,16 @@ async function issueTokenPair(
       )
     : signedRefreshToken;
 
-  const accessTokenRecord = toIssuedTokenRecord(identity.id, accessClaims);
-  const refreshTokenRecord = toIssuedTokenRecord(identity.id, refreshClaims);
+  const accessTokenRecord = toIssuedTokenRecord(
+    identity.id,
+    accessClaims,
+    identity.name,
+  );
+  const refreshTokenRecord = toIssuedTokenRecord(
+    identity.id,
+    refreshClaims,
+    identity.name,
+  );
   const issueAuditEntry = createTokenAuditEntry({
     action: options.action,
     identity,
@@ -1142,7 +1247,15 @@ async function issueRelayhistoryAssertion(
 function toIssuedTokenRecord(
   identityId: string,
   claims: RelayAuthTokenClaims,
+  agentName?: string,
 ): IssuedTokenRecord {
+  // Persist the minting agent name on the lineage so workspace+agentName
+  // revocation can resolve the original identity even when agentId != agentName.
+  // Fall back to the token's own meta.agentName when the caller does not supply
+  // one (e.g. refreshes reconstructed purely from claims).
+  const resolvedAgentName =
+    normalizeOptionalString(agentName) ??
+    normalizeOptionalString(claims.meta?.agentName);
   return {
     id: claims.jti,
     tokenId: claims.jti,
@@ -1158,6 +1271,7 @@ function toIssuedTokenRecord(
       sponsorId: claims.sponsorId,
       sponsorChain: [...claims.sponsorChain],
       tokenType: claims.token_type,
+      ...(resolvedAgentName ? { agentName: resolvedAgentName } : {}),
     },
   };
 }
@@ -1245,36 +1359,110 @@ async function findTargetTokensBySessionId(
   return storage.tokens.listActiveBySessionId(normalizedSessionId);
 }
 
+type WorkspaceAgentRevocationTarget = {
+  tokens: StoredTokenRecord[];
+  // Every distinct identity that owns a resolved token, keyed by identity id.
+  // A single agent name can span a durable identity AND one or more transient
+  // path identities (path tokens minted with divergent agentIds), so revocation
+  // must cover them all rather than narrowing to one.
+  identities: Map<string, StoredIdentity>;
+};
+
 async function findTargetTokensByWorkspaceAgent(
   storage: AuthStorage,
   orgId: string,
   workspaceId: string,
   agentName: string,
-): Promise<StoredTokenRecord[]> {
+): Promise<WorkspaceAgentRevocationTarget> {
+  const empty: WorkspaceAgentRevocationTarget = {
+    tokens: [],
+    identities: new Map(),
+  };
   const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
   const normalizedAgentName = normalizeOptionalString(agentName);
   if (!normalizedWorkspaceId || !normalizedAgentName) {
-    return [];
+    return empty;
   }
 
+  const tokensByIdentifier = new Map<string, StoredTokenRecord>();
+  const identities = new Map<string, StoredIdentity>();
+  const addToken = (row: StoredTokenRecord): void => {
+    const identifier = getTokenIdentifier(row);
+    if (identifier && !tokensByIdentifier.has(identifier)) {
+      tokensByIdentifier.set(identifier, row);
+    }
+  };
+
+  // Registered identity: resolve the durable identity row and list its active
+  // tokens. This does NOT short-circuit — path tokens minted with a divergent
+  // agentId share the agent name but a different identity, so the path lineage
+  // below must be merged in rather than skipped.
   const duplicate = await storage.identities.findDuplicate(
     orgId,
     normalizedAgentName,
   );
-  if (!duplicate) {
-    return [];
+  if (duplicate) {
+    const identity = await storage.identities.get(duplicate.id);
+    if (
+      identity &&
+      identity.orgId === orgId &&
+      identity.workspaceId === normalizedWorkspaceId
+    ) {
+      const tokens = await findTargetTokensByIdentityId(storage, identity.id);
+      if (tokens.length > 0) {
+        identities.set(identity.id, identity);
+        for (const row of tokens) {
+          addToken(row);
+        }
+      }
+    }
   }
 
-  const identity = await storage.identities.get(duplicate.id);
-  if (
-    !identity ||
-    identity.orgId !== orgId ||
-    identity.workspaceId !== normalizedWorkspaceId
-  ) {
-    return [];
+  // Path tokens are minted against a transient identity that is never persisted
+  // to the identities table (see createPathTokenIdentity), so findDuplicate
+  // above misses them. Their JTIs are still durable and carry token lineage, so
+  // resolve them directly from the token store — scoped to org+workspace via
+  // lineage — matching on the stored agent name so the ORIGINAL minting
+  // identity is found even when the path token was minted with an agentId that
+  // diverges from its agentName. A reconstructed identity id is supplied only
+  // as a legacy fallback for lineage rows written before the agent name was
+  // persisted. The caller guarantees the capability is present before invoking
+  // this resolver (see the /revoke handler); the guard here is defensive.
+  if (typeof storage.tokens.listActiveByWorkspaceAgent === "function") {
+    const legacyPathIdentityId = normalizeAgentIdentifier(normalizedAgentName);
+    const pathTokens = await storage.tokens.listActiveByWorkspaceAgent(
+      orgId,
+      normalizedWorkspaceId,
+      normalizedAgentName,
+      legacyPathIdentityId,
+    );
+    for (const row of pathTokens) {
+      addToken(row);
+      // Synthesize an identity for every distinct owning identity id carried on
+      // the resolved rows (the real minted agentId). Revocation flips token row
+      // status scoped by identity_id, so each group must revoke under its own
+      // id. A durable identity already registered above is not overwritten.
+      const rowIdentityId = normalizeOptionalString(row.identityId);
+      if (rowIdentityId && !identities.has(rowIdentityId)) {
+        identities.set(
+          rowIdentityId,
+          createPathTokenIdentity({
+            agentId: rowIdentityId,
+            agentName: normalizedAgentName,
+            orgId,
+            workspaceId: normalizedWorkspaceId,
+            // sponsor context is unused by the revoke + audit path (which reads
+            // only id/orgId/workspaceId); the durable rows carry real lineage.
+            sponsorId: orgId,
+            sponsorChain: [],
+            scopes: [],
+          }),
+        );
+      }
+    }
   }
 
-  return findTargetTokensByIdentityId(storage, identity.id);
+  return { tokens: [...tokensByIdentifier.values()], identities };
 }
 
 async function findStoredTokenById(

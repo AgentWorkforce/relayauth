@@ -51,6 +51,18 @@ const PUBLIC_PATHS = new Set([
 ]);
 const BRIDGE_RATE_LIMIT = 30;
 const BRIDGE_RATE_WINDOW_MS = 60_000;
+// The public revocation-check endpoint is auth-exempt and every call hits the
+// (SQLite) revocation store (prune + lookup), so bound it per-IP to blunt
+// abuse. The ceiling is generous — verifiers legitimately poll it on every
+// token check — while still capping an unauthenticated flood.
+export const REVOCATION_CHECK_RATE_LIMIT = 600;
+const REVOCATION_CHECK_RATE_WINDOW_MS = 60_000;
+// The per-IP key is derived from caller-supplied forwarding headers, which an
+// attacker can rotate across unbounded unique values. A per-key bucket map
+// would either grow without bound (OOM) or, once capped, reject unrelated
+// legitimate verifiers for the rest of the window (DoS). A count-min sketch is
+// fixed-memory and per-key independent: a unique-IP flood adds only small
+// collision noise and can neither exhaust memory nor starve legitimate keys.
 const IDENTITY_CREATE_RATE_LIMIT = 60;
 const IDENTITY_CREATE_RATE_WINDOW_MS = 60_000;
 
@@ -65,6 +77,10 @@ const sharedIdentityCreatePreAuthRateLimiter = new FixedWindowSketchRateLimiter(
   IDENTITY_CREATE_RATE_LIMIT,
   IDENTITY_CREATE_RATE_WINDOW_MS,
 );
+const sharedRevocationCheckRateLimiter = new FixedWindowSketchRateLimiter(
+  REVOCATION_CHECK_RATE_LIMIT,
+  REVOCATION_CHECK_RATE_WINDOW_MS,
+);
 const sharedSponsorOidcService = new SponsorOidcService();
 
 export type CreateAppOptions = {
@@ -77,6 +93,7 @@ export type CreateAppOptions = {
   deferTask?: DeferredTaskScheduler;
   identityCreatePreAuthRateLimiter?: RequestRateLimiter;
   identityCreateRateLimiter?: RequestRateLimiter;
+  revocationCheckRateLimiter?: RequestRateLimiter;
   sponsorOidcService?: SponsorOidcService;
 };
 
@@ -109,6 +126,8 @@ function getClientIp(forwardedFor: string | undefined, realIp: string | undefine
 export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const bridgeRateMap = new Map<string, { count: number; resetAt: number }>();
+  const revocationCheckRateLimiter =
+    options.revocationCheckRateLimiter ?? sharedRevocationCheckRateLimiter;
   const identityCreatePreAuthRateLimiter =
     options.identityCreatePreAuthRateLimiter ?? sharedIdentityCreatePreAuthRateLimiter;
   const identityCreateRateLimiter =
@@ -255,6 +274,22 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
 
     entry.count++;
     if (entry.count > BRIDGE_RATE_LIMIT) {
+      return c.json({ error: "Rate limit exceeded", code: "rate_limited" }, 429);
+    }
+
+    await next();
+  });
+
+  app.use("/v1/tokens/revocation", async (c, next) => {
+    const ip = getClientIp(c.req.header("x-forwarded-for"), c.req.header("x-real-ip"));
+    const decision = revocationCheckRateLimiter.consume([
+      `revocation-check-ip:${ip}`,
+    ]);
+    c.header("RateLimit-Limit", String(decision.limit));
+    c.header("RateLimit-Remaining", String(decision.remaining));
+    c.header("RateLimit-Reset", String(decision.retryAfterSeconds));
+    if (!decision.allowed) {
+      c.header("Retry-After", String(decision.retryAfterSeconds));
       return c.json({ error: "Rate limit exceeded", code: "rate_limited" }, 429);
     }
 

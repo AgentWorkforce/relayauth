@@ -83,6 +83,7 @@ scope-system descriptions, and relayauth extensions.
 | `documentation_url` | `string` | Human-readable docs URL. |
 | `scopes_endpoint` | `string` | Endpoint for scope validation or template lookup. |
 | `revocation_endpoint` | `string` | Token revocation endpoint. |
+| `revocation_check_endpoint` | `string` | Public, unauthenticated endpoint a verifier polls with `?jti=` to read a single token's revocation state (`{ revoked: boolean }`). Distinct from `revocation_endpoint`. |
 | `introspection_endpoint` | `string` | Server-side token validation or introspection endpoint. |
 | `scope_templates_endpoint` | `string` | Endpoint exposing built-in scope bundles. |
 | `capabilities` | `string[]` | Feature flags or named capabilities supported by this deployment. |
@@ -153,6 +154,10 @@ scope-system descriptions, and relayauth extensions.
       "format": "uri"
     },
     "revocation_endpoint": {
+      "type": "string",
+      "format": "uri"
+    },
+    "revocation_check_endpoint": {
       "type": "string",
       "format": "uri"
     },
@@ -515,6 +520,7 @@ scope-system descriptions, and relayauth extensions.
 | `token_endpoint` | The primary endpoint for token issuance and refresh-compatible flows. |
 | `identity_endpoint` | Base collection endpoint for agent identities. |
 | `revocation_endpoint` | Optional but recommended if immediate revocation is supported. |
+| `revocation_check_endpoint` | Optional, unauthenticated. A verifier appends `?jti=` to read one token's revocation state as `{ revoked: boolean }`. Present when per-token revocation checks are supported. |
 | `introspection_endpoint` | Optional. Use only when local JWT verification is insufficient. |
 | `scopes_endpoint` | Optional endpoint for scope validation or documentation lookup. |
 | `scope_templates_endpoint` | Optional endpoint exposing named bundles such as `read-all` or `relayauth:admin`. |
@@ -676,6 +682,7 @@ than `maximum`.
   "identity_endpoint": "https://api.relayauth.dev/v1/identities",
   "scopes_endpoint": "https://api.relayauth.dev/v1/scopes",
   "revocation_endpoint": "https://api.relayauth.dev/v1/tokens/revoke",
+  "revocation_check_endpoint": "https://api.relayauth.dev/v1/tokens/revocation",
   "introspection_endpoint": "https://api.relayauth.dev/v1/tokens/introspect",
   "scope_templates_endpoint": "https://api.relayauth.dev/v1/scopes/templates",
   "capabilities": [

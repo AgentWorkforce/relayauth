@@ -15,6 +15,10 @@ import {
   pruneExpiredTokensWindow,
   scanExpiredTokensWindow,
 } from "../engine/retention-gc.js";
+import {
+  FixedWindowRateLimiter,
+  FixedWindowSketchRateLimiter,
+} from "../lib/rate-limit.js";
 import type { DeferredTask } from "../lib/deferred.js";
 import {
   isStorageCapacityExhausted,
@@ -2556,17 +2560,21 @@ test("POST /v1/tokens/revoke", async (t) => {
     const { app, identity, authHeaders } = await createHarness();
     const { accessClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti]);
-    const atomicRevocations =
-      app.storage.revocations.revokeIdentityTokensWithAudit.bind(
+    const bulkRevocations =
+      app.storage.revocations.revokeIdentityTokenGroupsWithAudit!.bind(
         app.storage.revocations,
       );
     let atomicRevokeCalls = 0;
-    app.storage.revocations.revokeIdentityTokensWithAudit = async (input) => {
+    app.storage.revocations.revokeIdentityTokenGroupsWithAudit = async (
+      input,
+    ) => {
       atomicRevokeCalls += 1;
-      await atomicRevocations(input);
+      await bulkRevocations(input);
     };
     app.storage.revocations.revokeIdentityTokens = async () => {
-      throw new Error("public revoke must use revokeIdentityTokensWithAudit");
+      throw new Error(
+        "public revoke must use the atomic audited revoke path",
+      );
     };
 
     const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
@@ -2578,6 +2586,7 @@ test("POST /v1/tokens/revoke", async (t) => {
 
     assert.equal(response.status, 204);
     assert.deepEqual(await listRevokedTokenIds(app), [accessClaims.jti]);
+    // The single atomic (bulk) call carries every group, so it is invoked once.
     assert.equal(atomicRevokeCalls, 1);
   });
 
@@ -2767,6 +2776,706 @@ test("GET /v1/tokens/revocation", async (t) => {
       assert.match(JSON.stringify(body), /jti/i);
     });
   });
+
+  await t.test(
+    "rate-limits a single abusive client once the per-window ceiling is exceeded",
+    async () => {
+      const app = createTestApp(
+        {},
+        {
+          // Fixed-memory count-min sketch: an exact count for a lone key.
+          revocationCheckRateLimiter: new FixedWindowSketchRateLimiter(
+            3,
+            60_000,
+            256,
+            4,
+            1,
+          ),
+        },
+      );
+      const hit = () =>
+        requestRoute(app, "GET", "/v1/tokens/revocation?jti=x", {
+          headers: { "x-forwarded-for": "198.51.100.9" },
+        });
+
+      for (let i = 0; i < 3; i++) {
+        assert.equal((await hit()).status, 200);
+      }
+
+      const limited = await hit();
+      assert.equal(limited.status, 429);
+      const body = (await limited.json()) as { code?: string };
+      assert.equal(body.code, "rate_limited");
+      assert.ok(limited.headers.get("retry-after"));
+      assert.ok(limited.headers.get("ratelimit-limit"));
+    },
+  );
+
+  await t.test(
+    "a unique-IP flood does not reject legitimate verifiers (no DoS)",
+    async () => {
+      // A high-cardinality sketch cannot be exhausted by rotating
+      // x-forwarded-for across unique IPs, so an attacker cannot make the
+      // limiter reject unrelated legitimate clients for the rest of the window.
+      const app = createTestApp(
+        {},
+        {
+          revocationCheckRateLimiter: new FixedWindowSketchRateLimiter(
+            50,
+            60_000,
+            4096,
+            4,
+            1,
+          ),
+        },
+      );
+      const hit = (ip: string) =>
+        requestRoute(app, "GET", "/v1/tokens/revocation?jti=x", {
+          headers: { "x-forwarded-for": ip },
+        });
+
+      // Flood with many distinct spoofed IPs, each seen once.
+      for (let i = 0; i < 400; i++) {
+        const status = (await hit(`10.0.${(i >> 8) & 0xff}.${i & 0xff}`)).status;
+        assert.equal(status, 200);
+      }
+
+      // A legitimate verifier on a fresh IP is still served — the flood neither
+      // exhausted memory nor consumed its budget.
+      assert.equal((await hit("203.0.113.7")).status, 200);
+    },
+  );
+
+  await t.test(
+    "fails closed (5xx, not revoked:false) when the adapter cannot read revocation state",
+    async () => {
+      const { app, identity } = await createHarness();
+      const { accessClaims } = createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [accessClaims.jti]);
+
+      // Simulate an adapter that does not implement the optional revocation
+      // read capability. Returning revoked:false here would let a verifier
+      // accept an already-revoked token — a security fail-open.
+      app.storage.revocations.isRevoked = undefined;
+
+      const response = await requestRoute(
+        app,
+        "GET",
+        `/v1/tokens/revocation?jti=${encodeURIComponent(accessClaims.jti)}`,
+      );
+
+      assert.equal(response.status, 501);
+      const body = (await response.json()) as {
+        revoked?: boolean;
+        error?: string;
+      };
+      assert.notEqual(
+        body.revoked,
+        false,
+        "must not report a resolvable revoked:false when the capability is unavailable",
+      );
+      assert.match(JSON.stringify(body), /unavailable/i);
+    },
+  );
+});
+
+test("POST /v1/tokens/revoke by workspaceId+agentName covers path tokens", async (t) => {
+  await t.test(
+    "revokes a path-token JTI whose identity was never persisted (no premature 404)",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      // Mint a path token directly. Its identity (agent_path-revoke-target) is
+      // transient — createPathTokenIdentity is never written to the identities
+      // table — so findDuplicate cannot resolve it.
+      const mintResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "path-revoke-target",
+            paths: ["/linear/issues/**"],
+            scopes: ["relayfile:fs:write:/linear/issues/**"],
+            ttlSeconds: 300,
+          },
+          headers: { "x-api-key": orgApiKey.key },
+        },
+      );
+      const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+        mintResponse,
+        201,
+      );
+      const accessJti = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.accessToken,
+        1,
+      ).jti;
+      const refreshJti = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.refreshToken,
+        1,
+      ).jti;
+
+      // Sanity: before revocation the JTI reads active.
+      const preCheck = await requestRoute(
+        app,
+        "GET",
+        `/v1/tokens/revocation?jti=${encodeURIComponent(accessJti)}`,
+      );
+      assert.equal(
+        (await assertJsonResponse<{ revoked: boolean }>(preCheck, 200)).revoked,
+        false,
+      );
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const revokeResponse = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: {
+          workspaceId: "ws_tokens_route",
+          agentName: "path-revoke-target",
+        },
+        headers: manageHeaders,
+      });
+      assert.equal(
+        revokeResponse.status,
+        204,
+        "workspace-agent revoke must find and revoke the path token, not 404",
+      );
+
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        revoked.includes(accessJti),
+        `access JTI ${accessJti} should be revoked, got ${JSON.stringify(revoked)}`,
+      );
+      assert.ok(
+        revoked.includes(refreshJti),
+        `refresh JTI ${refreshJti} should be revoked, got ${JSON.stringify(revoked)}`,
+      );
+
+      const postCheck = await requestRoute(
+        app,
+        "GET",
+        `/v1/tokens/revocation?jti=${encodeURIComponent(accessJti)}`,
+      );
+      assert.equal(
+        (await assertJsonResponse<{ revoked: boolean }>(postCheck, 200)).revoked,
+        true,
+      );
+    },
+  );
+
+  await t.test(
+    "revokes a path token minted with agentId divergent from agentName",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      // Mint with an agentId that does NOT derive from agentName. The stored
+      // token.identityId is the agentId; resolving by name-reconstruction alone
+      // would miss it (the previously-deferred gap).
+      const mintResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "billing-bot",
+            agentId: "custom_worker_42",
+            paths: ["/linear/issues/**"],
+            scopes: ["relayfile:fs:write:/linear/issues/**"],
+            ttlSeconds: 300,
+          },
+          headers: { "x-api-key": orgApiKey.key },
+        },
+      );
+      const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+        mintResponse,
+        201,
+      );
+      // Confirm the divergence the regression depends on.
+      assert.equal(minted.agentId, "agent_custom_worker_42");
+      assert.equal(minted.agentName, "billing-bot");
+      const accessJti = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.accessToken,
+        1,
+      ).jti;
+      const refreshJti = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.refreshToken,
+        1,
+      ).jti;
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const revokeResponse = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: {
+          workspaceId: "ws_tokens_route",
+          agentName: "billing-bot",
+        },
+        headers: manageHeaders,
+      });
+      assert.equal(
+        revokeResponse.status,
+        204,
+        "revoke by {workspaceId, agentName} must resolve the minted identity even when agentId != agentName",
+      );
+
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        revoked.includes(accessJti),
+        `access JTI ${accessJti} should be revoked, got ${JSON.stringify(revoked)}`,
+      );
+      assert.ok(
+        revoked.includes(refreshJti),
+        `refresh JTI ${refreshJti} should be revoked, got ${JSON.stringify(revoked)}`,
+      );
+
+      // The token rows' status must have flipped to 'revoked' under the REAL
+      // minted identity id (not the name-reconstructed one). If it had not, the
+      // tokens would still be 'active' and a re-revoke would find them again
+      // instead of 404-ing.
+      const reRevoke = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "billing-bot" },
+        headers: manageHeaders,
+      });
+      assert.equal(reRevoke.status, 404);
+    },
+  );
+
+  await t.test(
+    "merges durable-identity tokens with matching path-lineage tokens for one agent name",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      // A durable identity in the workspace carrying the shared agent name, plus
+      // an active token. findDuplicate resolves this via the registered path.
+      const durable = createStoredIdentity({
+        id: "agent_durable_shared",
+        name: "shared-bot",
+        orgId: "org_tokens_route",
+        workspaceId: "ws_tokens_route",
+      });
+      await seedStoredIdentity(app, durable);
+      await seedActiveTokens(app, durable.id, ["durable_jti_1"]);
+
+      // A path token minted under the SAME agent name but a divergent agentId,
+      // i.e. a distinct transient identity the registered lookup cannot see.
+      const mintResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "shared-bot",
+            agentId: "path_variant",
+            paths: ["/linear/issues/**"],
+            scopes: ["relayfile:fs:write:/linear/issues/**"],
+            ttlSeconds: 300,
+          },
+          headers: { "x-api-key": orgApiKey.key },
+        },
+      );
+      const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+        mintResponse,
+        201,
+      );
+      assert.equal(minted.agentId, "agent_path_variant");
+      const pathAccessJti = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.accessToken,
+        1,
+      ).jti;
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const revoke = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "shared-bot" },
+        headers: manageHeaders,
+      });
+      assert.equal(revoke.status, 204);
+
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        revoked.includes("durable_jti_1"),
+        `durable identity token must be revoked, got ${JSON.stringify(revoked)}`,
+      );
+      assert.ok(
+        revoked.includes(pathAccessJti),
+        `divergent path token must be revoked, got ${JSON.stringify(revoked)}`,
+      );
+    },
+  );
+
+  await t.test(
+    "revokes every transient path identity that shares an agent name",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const mintVariant = async (agentId: string): Promise<string> => {
+        const response = await requestRoute(
+          app,
+          "POST",
+          "/v1/tokens/workspace-path",
+          {
+            body: {
+              workspaceId: "ws_tokens_route",
+              agentName: "dup-bot",
+              agentId,
+              paths: ["/linear/issues/**"],
+              scopes: ["relayfile:fs:write:/linear/issues/**"],
+              ttlSeconds: 300,
+            },
+            headers: { "x-api-key": orgApiKey.key },
+          },
+        );
+        const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+          response,
+          201,
+        );
+        return decodeJwtJsonSegment<RelayAuthTokenClaims>(minted.accessToken, 1)
+          .jti;
+      };
+
+      const jtiA = await mintVariant("variant_a");
+      const jtiB = await mintVariant("variant_b");
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const revoke = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "dup-bot" },
+        headers: manageHeaders,
+      });
+      assert.equal(revoke.status, 204);
+
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        revoked.includes(jtiA) && revoked.includes(jtiB),
+        `both transient identities' tokens must be revoked, got ${JSON.stringify(revoked)}`,
+      );
+
+      // Every matched identity's rows flipped to 'revoked' (not just the first),
+      // so a re-revoke finds nothing active.
+      const reRevoke = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "dup-bot" },
+        headers: manageHeaders,
+      });
+      assert.equal(reRevoke.status, 404);
+    },
+  );
+
+  await t.test(
+    "a failing multi-identity revoke leaves no token revoked (all-or-nothing)",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const mintVariant = async (agentId: string): Promise<string> => {
+        const response = await requestRoute(
+          app,
+          "POST",
+          "/v1/tokens/workspace-path",
+          {
+            body: {
+              workspaceId: "ws_tokens_route",
+              agentName: "atomic-bot",
+              agentId,
+              paths: ["/linear/issues/**"],
+              scopes: ["relayfile:fs:write:/linear/issues/**"],
+              ttlSeconds: 300,
+            },
+            headers: { "x-api-key": orgApiKey.key },
+          },
+        );
+        const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+          response,
+          201,
+        );
+        return decodeJwtJsonSegment<RelayAuthTokenClaims>(minted.accessToken, 1)
+          .jti;
+      };
+
+      const jtiA = await mintVariant("variant_a");
+      const jtiB = await mintVariant("variant_b");
+
+      // Force the bulk (atomic) revoke to fail; the handler must surface the
+      // error and leave every group's tokens active — no partial apply.
+      app.storage.revocations.revokeIdentityTokenGroupsWithAudit = async () => {
+        throw new Error("simulated revoke failure");
+      };
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const response = await withSilencedConsoleError(() =>
+        requestRoute(app, "POST", "/v1/tokens/revoke", {
+          body: { workspaceId: "ws_tokens_route", agentName: "atomic-bot" },
+          headers: manageHeaders,
+        }),
+      );
+      assert.equal(response.status, 500);
+
+      assert.deepEqual(
+        await listRevokedTokenIds(app),
+        [],
+        "no token may be revoked when the atomic revoke fails",
+      );
+      for (const jti of [jtiA, jtiB]) {
+        const check = await requestRoute(
+          app,
+          "GET",
+          `/v1/tokens/revocation?jti=${encodeURIComponent(jti)}`,
+        );
+        assert.equal(
+          (await assertJsonResponse<{ revoked: boolean }>(check, 200)).revoked,
+          false,
+        );
+      }
+    },
+  );
+
+  await t.test(
+    "fails closed (501) for a MULTI-identity revoke when the atomic bulk method is unavailable",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const mintVariant = async (agentId: string): Promise<string> => {
+        const response = await requestRoute(
+          app,
+          "POST",
+          "/v1/tokens/workspace-path",
+          {
+            body: {
+              workspaceId: "ws_tokens_route",
+              agentName: "no-bulk-bot",
+              agentId,
+              paths: ["/linear/issues/**"],
+              scopes: ["relayfile:fs:write:/linear/issues/**"],
+              ttlSeconds: 300,
+            },
+            headers: { "x-api-key": orgApiKey.key },
+          },
+        );
+        const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+          response,
+          201,
+        );
+        return decodeJwtJsonSegment<RelayAuthTokenClaims>(minted.accessToken, 1)
+          .jti;
+      };
+
+      const jtiA = await mintVariant("variant_a");
+      const jtiB = await mintVariant("variant_b");
+
+      // Adapter without the atomic bulk primitive: a multi-identity revoke must
+      // NOT fall back to a sequential loop (partial-apply risk) — fail closed.
+      app.storage.revocations.revokeIdentityTokenGroupsWithAudit = undefined;
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "no-bulk-bot" },
+        headers: manageHeaders,
+      });
+      assert.equal(response.status, 501);
+      assert.match(JSON.stringify(await response.json()), /unsupported/i);
+      // Nothing was revoked — no partial apply.
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        !revoked.includes(jtiA) && !revoked.includes(jtiB),
+        `no token may be revoked when the request fails closed, got ${JSON.stringify(revoked)}`,
+      );
+    },
+  );
+
+  await t.test(
+    "single-identity revoke still succeeds without the atomic bulk method",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
+      const { accessClaims } = createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [accessClaims.jti]);
+
+      // No cross-group atomicity concern for one identity, so the per-identity
+      // audited path remains available when the bulk method is absent.
+      app.storage.revocations.revokeIdentityTokenGroupsWithAudit = undefined;
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { tokenId: accessClaims.jti },
+        headers: authHeaders,
+      });
+      assert.equal(response.status, 204);
+      assert.deepEqual(await listRevokedTokenIds(app), [accessClaims.jti]);
+    },
+  );
+
+  await t.test(
+    "fails closed (501) when the adapter cannot resolve path tokens by workspace+agent",
+    async () => {
+      const { app } = await createHarness();
+      // Simulate an adapter lacking the token-lineage capability.
+      app.storage.tokens.listActiveByWorkspaceAgent = undefined;
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "anything" },
+        headers: manageHeaders,
+      });
+      // Must NOT 404 (fail-open, reads as "nothing to revoke").
+      assert.equal(response.status, 501);
+      assert.match(JSON.stringify(await response.json()), /unsupported/i);
+    },
+  );
+
+  await t.test(
+    "does not cross workspace boundaries when revoking a path token",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const mintResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "path-boundary-agent",
+            paths: ["/linear/issues/**"],
+            scopes: ["relayfile:fs:write:/linear/issues/**"],
+            ttlSeconds: 300,
+          },
+          headers: { "x-api-key": orgApiKey.key },
+        },
+      );
+      // Assert the prerequisite mint succeeded, else the isolation assertions
+      // below would pass vacuously even if minting had failed.
+      await assertJsonResponse<WorkspacePathTokenPair>(mintResponse, 201);
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      // Same agent, a workspace it was never minted under — must not resolve.
+      const revokeResponse = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: {
+          workspaceId: "ws_other_workspace",
+          agentName: "path-boundary-agent",
+        },
+        headers: manageHeaders,
+      });
+      assert.equal(revokeResponse.status, 404);
+      assert.deepEqual(await listRevokedTokenIds(app), []);
+    },
+  );
 });
 
 test("GET /v1/tokens/introspect", async (t) => {
