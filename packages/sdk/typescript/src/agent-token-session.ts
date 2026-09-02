@@ -26,6 +26,12 @@ export class AgentTokenSession {
       ...(options.scopes ? { scopes: [...options.scopes] } : {}),
       ...(options.audience ? { audience: [...options.audience] } : {}),
       ...(options.expiresIn !== undefined ? { expiresIn: options.expiresIn } : {}),
+      // Thread the durable opt-in through to issueAgentToken; otherwise a typed
+      // caller asking for a durable (90d, read-only) token silently gets a 1h one.
+      ...(options.durable !== undefined ? { durable: options.durable } : {}),
+      ...(options.accessTokenClass !== undefined
+        ? { accessTokenClass: options.accessTokenClass }
+        : {}),
     };
   }
 
