@@ -747,3 +747,45 @@ test("indefinite token: a stalling revocation source is rejected within the time
   // The bounded timeout (50ms) must have fired well under any hang threshold.
   assert.ok(performance.now() - start < 4000, "verification must not hang");
 });
+
+test("indefinite token: a fractional or out-of-range revocationTimeoutMs override does not spuriously reject a valid token", async (t) => {
+  const [fixture] = await signingFixturesPromise;
+  const now = { value: fixedNowSeconds * 1000 };
+  mockNow(now);
+
+  for (const timeout of [50.5, 2 ** 40, Number.MAX_SAFE_INTEGER]) {
+    const claims = createClaims({
+      jti: `jti_indefinite_to_${timeout}`,
+      exp: INDEFINITE_EXP,
+      meta: { indefinite: "true", accessTokenClass: "durable" },
+    });
+    const token = await createJwt(claims, fixture);
+    const fetchMock = mockFetch((input) => {
+      const url =
+        typeof input === "string" ? new URL(input) : new URL(input.toString());
+      if (url.toString() === jwksUrl) {
+        return jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] });
+      }
+      if (url.toString().startsWith(revocationUrl)) {
+        return jsonResponse({ revoked: false });
+      }
+      assert.fail(`unexpected fetch request: ${url.toString()}`);
+    });
+
+    const verifier = getVerifier({
+      jwksUrl,
+      issuer: claims.iss,
+      audience: ["relaycast"],
+      revocationUrl,
+      revocationTimeoutMs: timeout,
+    });
+    const verify = requireVerify(verifier);
+
+    // The sanitized (floored + clamped) timeout must still let a valid,
+    // non-revoked token through — it must NOT throw or overflow into a 1ms
+    // timer that rejects every revocation check.
+    const result = await verify(token);
+    assert.equal(result.jti, `jti_indefinite_to_${timeout}`);
+    fetchMock.restore();
+  }
+});

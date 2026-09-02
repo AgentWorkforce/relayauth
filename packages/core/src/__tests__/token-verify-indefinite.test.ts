@@ -257,3 +257,34 @@ test("core: a stalling revocation source is rejected within the bounded timeout,
   clearTimeout(keepAlive);
   assert.ok(performance.now() - start < 4000, "verification must not hang");
 });
+
+test("core: a fractional or out-of-range revocationTimeoutMs override does not break the check", async (t) => {
+  for (const timeout of [50.5, 2 ** 40, Number.MAX_SAFE_INTEGER]) {
+    const fixture = await createSigningFixture(`kid-core-to-${timeout}`);
+    const token = await createJwt(indefiniteClaims(`jti_core_to_${timeout}`), fixture);
+    const restore = withMockedFetchAndNow((url) => {
+      if (url.toString() === jwksUrl) {
+        return jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] });
+      }
+      if (url.toString().startsWith(revocationUrl)) {
+        return jsonResponse({ revoked: false });
+      }
+      throw new Error(`unexpected fetch: ${url.toString()}`);
+    });
+
+    const verifier = new TokenVerifier({
+      jwksUrl,
+      issuer: "https://relay.example.test",
+      audience: ["relayfile"],
+      revocationUrl,
+      revocationTimeoutMs: timeout,
+    });
+
+    // A sanitized (floored + clamped) timeout must still allow a valid,
+    // non-revoked token through — it must NOT throw/overflow into a 1ms timer
+    // that rejects every check.
+    const result = await verifier.verify(token);
+    assert.equal(result.jti, `jti_core_to_${timeout}`);
+    restore();
+  }
+});
