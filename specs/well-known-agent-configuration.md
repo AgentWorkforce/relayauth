@@ -461,6 +461,19 @@ scope-system descriptions, and relayauth extensions.
         },
         "permanent_tokens_allowed": {
           "type": "boolean"
+        },
+        "access_token_classes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["access_token_maximum", "refreshable"],
+            "properties": {
+              "access_token_maximum": { "type": "string" },
+              "refreshable": { "type": "boolean" },
+              "read_only": { "type": "boolean" }
+            }
+          }
         }
       }
     },
@@ -577,6 +590,15 @@ scope checks:
 shorter TTLs, but they must not assume the server will honor longer durations
 than `maximum`.
 
+`maximum` is the ceiling across **all** access-token classes, not a duration
+the server will honor for every request. Per-class caps in
+`access_token_classes` override it: a standard `agent` access token is capped at
+`access_token_classes.agent.access_token_maximum` (`PT1H`) and is refreshable,
+while only the `durable` class may reach `access_token_classes.durable.access_token_maximum`
+(`P90D`) — and durable tokens are read-only and non-refreshable (issued without a
+refresh token). Clients should consult the relevant class cap, not the top-level
+`maximum`, before requesting a long-lived token.
+
 ## Example Response: Minimal
 
 ```json
@@ -639,8 +661,12 @@ than `maximum`.
   "token_lifetimes": {
     "access_token_default": "PT1H",
     "refresh_token_default": "PT24H",
-    "maximum": "P30D",
-    "permanent_tokens_allowed": false
+    "maximum": "P90D",
+    "permanent_tokens_allowed": false,
+    "access_token_classes": {
+      "agent": { "access_token_maximum": "PT1H", "refreshable": true },
+      "durable": { "access_token_maximum": "P90D", "refreshable": false, "read_only": true }
+    }
   },
   "endpoints": {
     "jwks": {
@@ -812,8 +838,12 @@ than `maximum`.
   "token_lifetimes": {
     "access_token_default": "PT1H",
     "refresh_token_default": "PT24H",
-    "maximum": "P30D",
-    "permanent_tokens_allowed": false
+    "maximum": "P90D",
+    "permanent_tokens_allowed": false,
+    "access_token_classes": {
+      "agent": { "access_token_maximum": "PT1H", "refreshable": true },
+      "durable": { "access_token_maximum": "P90D", "refreshable": false, "read_only": true }
+    }
   },
   "endpoints": {
     "jwks": {

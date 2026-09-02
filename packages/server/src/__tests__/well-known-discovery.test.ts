@@ -248,6 +248,26 @@ function assertAgentConfiguration(value: unknown): asserts value is AgentConfigu
     value.token_lifetimes.permanent_tokens_allowed,
     "token_lifetimes.permanent_tokens_allowed",
   );
+  // The advertised maximum must cover the 90-day durable ceiling, with a
+  // class-specific breakdown so clients do not clamp a valid durable request.
+  assert.equal(
+    value.token_lifetimes.maximum,
+    "P90D",
+    "token_lifetimes.maximum should advertise the 90d durable ceiling",
+  );
+  assert.ok(
+    isRecord(value.token_lifetimes.access_token_classes),
+    "token_lifetimes.access_token_classes should be an object",
+  );
+  const durableClass = value.token_lifetimes.access_token_classes.durable;
+  assert.ok(isRecord(durableClass), "access_token_classes.durable should be an object");
+  assert.equal(durableClass.access_token_maximum, "P90D");
+  assert.equal(durableClass.refreshable, false);
+  assert.equal(durableClass.read_only, true);
+  const agentClass = value.token_lifetimes.access_token_classes.agent;
+  assert.ok(isRecord(agentClass), "access_token_classes.agent should be an object");
+  assert.equal(agentClass.access_token_maximum, "PT1H");
+  assert.equal(agentClass.refreshable, true);
 
   assert.ok(isRecord(value.endpoints), "endpoints should be an object");
   assert.ok(Object.keys(value.endpoints).length > 0, "endpoints should not be empty");

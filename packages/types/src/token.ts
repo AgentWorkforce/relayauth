@@ -81,13 +81,35 @@ export interface AgentTokenIssueRequest {
   scopes?: string[];
   audience?: string[];
   expiresIn?: number;
+  /**
+   * Opt into the durable, read-only, long-lived access-token mode. Defaults to
+   * false. A durable token may live up to 90 days but must be workspace-scoped,
+   * carry only `relayfile:fs:read:*` scopes, and be minted by a caller granted
+   * the `relayauth:token-durable:create:*` capability. Durable mints return an
+   * access token only (no refresh token). Back-compat: omit to keep the 1h cap.
+   */
+  durable?: boolean;
+  /**
+   * Equivalent opt-in to `durable: true`. Set to `"durable"` to request the
+   * durable access-token class.
+   */
+  accessTokenClass?: "durable";
 }
 
-export interface AgentTokenPair extends TokenPair {
+export interface AgentTokenPair extends Omit<
+  TokenPair,
+  "refreshToken" | "refreshTokenExpiresAt"
+> {
   agentId: string;
   workspaceId: string;
   tokenClass: "relay_ag";
   issuedViaWorkspaceTokenId: string;
+  /**
+   * Present for standard (refreshable) agent tokens. Durable access tokens are
+   * standalone and omit the refresh token — they cannot be rotated.
+   */
+  refreshToken?: string;
+  refreshTokenExpiresAt?: string;
 }
 
 export interface PathTokenIssueRequest {

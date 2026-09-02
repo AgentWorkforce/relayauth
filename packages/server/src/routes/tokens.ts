@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
 import {
   matchScope,
+  parseScope,
   TokenExpiredError,
   type VerifyOptions,
 } from "@relayauth/sdk";
@@ -59,6 +60,13 @@ type AgentTokenRequest = {
   audience?: unknown;
   expiresIn?: unknown;
   refreshTokenTtlSeconds?: unknown;
+  /**
+   * Opt-in to the durable, read-only, long-lived access token mode. Defaults to
+   * false — omitting it (or sending false) preserves the existing 1h agent cap.
+   * `accessTokenClass: "durable"` is accepted as an equivalent opt-in.
+   */
+  durable?: unknown;
+  accessTokenClass?: unknown;
 };
 
 type PathTokenRequest = {
@@ -115,11 +123,17 @@ type WorkspaceTokenResponse = {
   key: string;
 };
 
-type AgentTokenResponse = TokenPair & {
+type AgentTokenResponse = Omit<
+  TokenPair,
+  "refreshToken" | "refreshTokenExpiresAt"
+> & {
   agentId: string;
   workspaceId: string;
   tokenClass: "relay_ag";
   issuedViaWorkspaceTokenId: string;
+  // Durable agent tokens are standalone and omit the refresh token.
+  refreshToken?: string;
+  refreshTokenExpiresAt?: string;
 };
 
 type PathTokenResponse = TokenPair & {
@@ -158,6 +172,17 @@ const MAX_SPONSOR_CHAIN_DEPTH = 10;
 const EXPECTED_ISSUER = "https://relayauth.dev";
 const REFRESH_AUDIENCE = "relayauth";
 const MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS = 3600;
+// A durable, read-only, workspace-scoped access token may live far longer than
+// the 1h agent cap because the client never refreshes it — it pastes one static
+// key. This ceiling applies ONLY on the tightly-gated durable path below (an
+// explicit opt-in, read-only filesystem scopes, and a distinct mint capability);
+// every normal agent token remains clamped to MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS.
+const MAX_DURABLE_ACCESS_TOKEN_TTL_SECONDS = 90 * 24 * 3600; // 7_776_000 (90 days)
+// Minting a durable token is a distinct, separately-grantable capability. It is
+// NOT implied by `relayauth:token:create:*` (which covers resource `token`, not
+// `token-durable`), so an ordinary token-create caller cannot reach the durable
+// path — the workspace token must be explicitly granted this scope in addition.
+const DURABLE_TOKEN_CREATE_SCOPE = "relayauth:token-durable:create:*";
 const DELEGATION_NOT_AFTER_META_KEY = "delegationNotAfter";
 const RELAYHISTORY_ASSERTION_SCOPE = "relayauth:assertion:create:relayhistory";
 const RELAYHISTORY_ASSERTION_AUDIENCE = "relayhistory";
@@ -300,6 +325,25 @@ tokens.post("/agent", async (c) => {
     return c.json({ error: "agentId is required" }, 400);
   }
 
+  // Durable mode is a narrow, tightly-gated exemption from the 1h agent cap. The
+  // gate (distinct mint capability, read-only fs scopes, workspace binding) is
+  // evaluated BEFORE the identity lookup so an unauthorized or unbound durable
+  // request fails closed with its own 400/403 code rather than leaking a 404
+  // identity_not_found. The default (non-durable) path is unchanged.
+  const durable = isDurableRequested(body);
+  if (durable) {
+    // Validate against the explicitly requested scopes (no identity fallback):
+    // a durable token must name its read-only scopes rather than inherit them.
+    const requestedScopes = normalizeScopes(body.scopes, []);
+    const gate = authorizeDurableIssuance({
+      workspaceToken,
+      accessScopes: requestedScopes,
+    });
+    if (!gate.ok) {
+      return c.json({ error: gate.error, code: gate.code }, gate.status);
+    }
+  }
+
   const identity = await storage.identities.get(agentId);
   if (
     !identity ||
@@ -328,28 +372,57 @@ tokens.post("/agent", async (c) => {
   }
 
   const accessAudience = normalizeAudience(body.audience, accessScopes);
-  const accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn);
+  // When durable, the TTL clamp is relaxed to 90d (the gate above has already
+  // approved the request); otherwise the standard 1h agent cap applies.
+  const accessExpiresIn = durable
+    ? normalizeDurableExpiresIn(body.expiresIn)
+    : normalizeAgentExpiresIn(body.expiresIn);
+
   const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(
     body.refreshTokenTtlSeconds,
   );
-  const tokenPair = await issueTokenPair(storage, c.env, identity, {
-    deferTask: c.get("deferTask"),
-    accessScopes,
-    accessAudience,
-    accessExpiresIn,
-    refreshTokenTtlSeconds,
-    action: "token.issued",
-    parentTokenId: workspaceToken.id,
-    meta: {
-      tokenClass: "agent",
-      workspaceTokenId: workspaceToken.id,
-      accessScopes: JSON.stringify(accessScopes),
-      accessAudience: JSON.stringify(accessAudience),
-    },
-    wrapAccessToken: true,
-    wrapRefreshToken: true,
-    tokenIdPrefix: "relay_ag_",
-  });
+  const meta: Record<string, string> = {
+    tokenClass: "agent",
+    workspaceTokenId: workspaceToken.id,
+    accessScopes: JSON.stringify(accessScopes),
+    accessAudience: JSON.stringify(accessAudience),
+    // Mark the long-lived, static class distinctly from the transient agent
+    // token so it is greppable in issued-token metadata. `tokenClass` stays
+    // "agent" so refresh detection and revocation lineage are unchanged.
+    ...(durable ? { accessTokenClass: "durable" } : {}),
+  };
+
+  // A durable token is a standalone, static access token: it is issued WITHOUT a
+  // refresh token so it can never be rotated into a fresh (short-lived) access
+  // token, which would silently extend the session past its 90d lifetime
+  // (CWE-613). Non-durable agent tokens keep their refreshable pair unchanged.
+  const tokenPair = durable
+    ? await issueTokenPair(storage, c.env, identity, {
+        deferTask: c.get("deferTask"),
+        accessScopes,
+        accessAudience,
+        accessExpiresIn,
+        action: "token.issued",
+        parentTokenId: workspaceToken.id,
+        durable: true,
+        issueRefreshToken: false,
+        meta,
+        wrapAccessToken: true,
+        tokenIdPrefix: "relay_ag_",
+      })
+    : await issueTokenPair(storage, c.env, identity, {
+        deferTask: c.get("deferTask"),
+        accessScopes,
+        accessAudience,
+        accessExpiresIn,
+        refreshTokenTtlSeconds,
+        action: "token.issued",
+        parentTokenId: workspaceToken.id,
+        meta,
+        wrapAccessToken: true,
+        wrapRefreshToken: true,
+        tokenIdPrefix: "relay_ag_",
+      });
 
   return c.json<AgentTokenResponse>(
     {
@@ -682,6 +755,20 @@ tokens.post("/refresh", async (c) => {
 
   if (verification.claims.token_type !== "refresh") {
     return c.json({ error: "Invalid refresh token" }, 401);
+  }
+
+  // Durable access tokens are standalone and never issue a refresh token. Reject
+  // any refresh token that claims the durable class (e.g. a legacy/migrated one)
+  // before rotating, so a durable session can never be extended past its 90d
+  // lifetime by silently downgrading to a fresh 1h access token (CWE-613).
+  if (verification.claims.meta?.accessTokenClass === "durable") {
+    return c.json(
+      {
+        error: "durable tokens are not refreshable",
+        code: "durable_token_not_refreshable",
+      },
+      400,
+    );
   }
 
   const presentedJti = verification.claims.jti;
@@ -1046,31 +1133,62 @@ tokens.get("/introspect", async (c) => {
 
 export default tokens;
 
+// A durable access token is issued standalone (no refresh token), so its result
+// carries only the access fields.
+type AccessOnlyTokenPair = Omit<
+  TokenPair,
+  "refreshToken" | "refreshTokenExpiresAt"
+>;
+
+type IssueTokenPairOptions = {
+  deferTask: DeferredTaskScheduler;
+  accessScopes: string[];
+  accessAudience: string[];
+  accessExpiresIn: number;
+  refreshTokenTtlSeconds?: number;
+  sessionId?: string;
+  action: "token.issued" | "token.refreshed";
+  parentTokenId?: string;
+  /**
+   * Marks this issuance as a durable, long-lived, read-only access token so
+   * the audit trail records it distinctly (long-lived keys must be traceable).
+   */
+  durable?: boolean;
+  /**
+   * When false, NO refresh token is signed, persisted, or returned — the access
+   * token is standalone and cannot be rotated. Defaults to true (a full pair).
+   */
+  issueRefreshToken?: boolean;
+  meta?: Record<string, string>;
+  expiresNotAfter?: number;
+  wrapAccessToken?: boolean;
+  wrapRefreshToken?: boolean;
+  tokenIdPrefix?: string;
+  previousRefreshToken?: {
+    id: string;
+    identityId: string;
+    expiresAt: number;
+  };
+};
+
+function issueTokenPair(
+  storage: AuthStorage,
+  env: AppEnv["Bindings"],
+  identity: StoredIdentity,
+  options: IssueTokenPairOptions & { issueRefreshToken: false },
+): Promise<AccessOnlyTokenPair>;
+function issueTokenPair(
+  storage: AuthStorage,
+  env: AppEnv["Bindings"],
+  identity: StoredIdentity,
+  options: IssueTokenPairOptions,
+): Promise<TokenPair>;
 async function issueTokenPair(
   storage: AuthStorage,
   env: AppEnv["Bindings"],
   identity: StoredIdentity,
-  options: {
-    deferTask: DeferredTaskScheduler;
-    accessScopes: string[];
-    accessAudience: string[];
-    accessExpiresIn: number;
-    refreshTokenTtlSeconds?: number;
-    sessionId?: string;
-    action: "token.issued" | "token.refreshed";
-    parentTokenId?: string;
-    meta?: Record<string, string>;
-    expiresNotAfter?: number;
-    wrapAccessToken?: boolean;
-    wrapRefreshToken?: boolean;
-    tokenIdPrefix?: string;
-    previousRefreshToken?: {
-      id: string;
-      identityId: string;
-      expiresAt: number;
-    };
-  },
-): Promise<TokenPair> {
+  options: IssueTokenPairOptions,
+): Promise<TokenPair | AccessOnlyTokenPair> {
   const issuedAtSeconds = Math.floor(Date.now() / 1000);
   const sessionId = options.sessionId ?? createSessionId();
   const refreshTtl =
@@ -1129,32 +1247,50 @@ async function issueTokenPair(
   };
 
   const signedAccessToken = await signToken(accessClaims, env);
-  const signedRefreshToken = await signToken(refreshClaims, env);
   const accessToken = options.wrapAccessToken
     ? wrapRelayToken(signedAccessToken, relayTokenPrefix(options.tokenIdPrefix))
     : signedAccessToken;
-  const refreshToken = options.wrapRefreshToken
-    ? wrapRelayToken(
-        signedRefreshToken,
-        relayTokenPrefix(options.tokenIdPrefix),
-      )
-    : signedRefreshToken;
-
   const accessTokenRecord = toIssuedTokenRecord(
     identity.id,
     accessClaims,
-    identity.name,
-  );
-  const refreshTokenRecord = toIssuedTokenRecord(
-    identity.id,
-    refreshClaims,
     identity.name,
   );
   const issueAuditEntry = createTokenAuditEntry({
     action: options.action,
     identity,
     tokenId: accessClaims.jti,
+    durable: options.durable,
+    accessTtlSeconds: options.accessExpiresIn,
   });
+
+  // Standalone (durable) access token: persist the access row + audit only. No
+  // refresh token is signed, persisted, or returned, so the token cannot be
+  // rotated into a fresh short-lived access token (CWE-613 session extension).
+  if (options.issueRefreshToken === false) {
+    await storage.tokens.persistIssuedWithAudit({
+      token: accessTokenRecord,
+      auditEntry: issueAuditEntry,
+    });
+
+    return {
+      accessToken,
+      accessTokenExpiresAt: new Date(accessClaims.exp * 1000).toISOString(),
+      tokenType: "Bearer",
+    };
+  }
+
+  const signedRefreshToken = await signToken(refreshClaims, env);
+  const refreshToken = options.wrapRefreshToken
+    ? wrapRelayToken(
+        signedRefreshToken,
+        relayTokenPrefix(options.tokenIdPrefix),
+      )
+    : signedRefreshToken;
+  const refreshTokenRecord = toIssuedTokenRecord(
+    identity.id,
+    refreshClaims,
+    identity.name,
+  );
   if (options.previousRefreshToken) {
     await storage.tokens.rotateIssuedPairWithAudit({
       accessToken: accessTokenRecord,
@@ -1281,6 +1417,8 @@ function createTokenAuditEntry(options: {
   identity: StoredIdentity;
   tokenId: string;
   actorId?: string;
+  durable?: boolean;
+  accessTtlSeconds?: number;
 }): AuditLogWriteEntry {
   return {
     id: crypto.randomUUID(),
@@ -1294,6 +1432,16 @@ function createTokenAuditEntry(options: {
     metadata: {
       tokenId: options.tokenId,
       ...(options.actorId ? { actorId: options.actorId } : {}),
+      // Long-lived durable keys are flagged distinctly so they are traceable in
+      // the audit log alongside their granted access TTL.
+      ...(options.durable
+        ? {
+            accessTokenClass: "durable",
+            ...(options.accessTtlSeconds !== undefined
+              ? { accessTtlSeconds: String(options.accessTtlSeconds) }
+              : {}),
+          }
+        : {}),
     },
     timestamp: new Date().toISOString(),
   };
@@ -1974,6 +2122,104 @@ function normalizeAgentExpiresIn(value: unknown): number {
     normalizeExpiresIn(value),
     MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS,
   );
+}
+
+// Durable access tokens may be requested up to a 90-day ceiling. This is the
+// ONLY place that clamp is relaxed above the 1h agent cap, and it is reached
+// only after authorizeDurableIssuance() has approved the request.
+function normalizeDurableExpiresIn(value: unknown): number {
+  return Math.min(
+    normalizeExpiresIn(value),
+    MAX_DURABLE_ACCESS_TOKEN_TTL_SECONDS,
+  );
+}
+
+// The durable opt-in: `durable: true` (boolean) or `accessTokenClass: "durable"`.
+// Anything else (absent, false, or an unrelated string) leaves the token on the
+// standard 1h-capped agent path.
+function isDurableRequested(body: AgentTokenRequest): boolean {
+  if (body.durable === true) {
+    return true;
+  }
+  return (
+    typeof body.accessTokenClass === "string" &&
+    body.accessTokenClass.trim().toLowerCase() === "durable"
+  );
+}
+
+// A durable, long-lived static key must be strictly read-only: every scope must
+// be a filesystem READ scope (`relayfile:fs:read:*` or `relayfile:fs:read:/...`).
+// Any write/manage/*/run action, any non-`fs` resource (e.g. `agent-runtime`,
+// sync/ops mutations), or any non-`relayfile` plane fails this test.
+function isReadOnlyFilesystemScope(scope: string): boolean {
+  try {
+    const parsed = parseScope(scope);
+    return (
+      parsed.plane === "relayfile" &&
+      parsed.resource === "fs" &&
+      parsed.action === "read"
+    );
+  } catch {
+    return false;
+  }
+}
+
+// Gates the durable path. ALL conditions must hold, else the request is rejected
+// with a clear code. Ordering favors the authz check first so an unentitled
+// caller cannot probe scope-shape errors.
+function authorizeDurableIssuance(opts: {
+  workspaceToken: StoredApiKey;
+  accessScopes: string[];
+}):
+  | { ok: true }
+  | { ok: false; error: string; code: string; status: 400 | 403 } {
+  // 1. Authorized caller: the workspace token must carry the distinct durable
+  //    mint capability IN ADDITION to the normal token:create grant. This scope
+  //    is not implied by `relayauth:token:create:*`.
+  let entitled = false;
+  try {
+    entitled = matchScope(DURABLE_TOKEN_CREATE_SCOPE, opts.workspaceToken.scopes);
+  } catch {
+    entitled = false;
+  }
+  if (!entitled) {
+    return {
+      ok: false,
+      error: "durable_capability_required",
+      code: "durable_capability_required",
+      status: 403,
+    };
+  }
+
+  // 2. Least-privilege: every scope on the durable token must be read-only fs.
+  if (
+    opts.accessScopes.length === 0 ||
+    !opts.accessScopes.every(isReadOnlyFilesystemScope)
+  ) {
+    return {
+      ok: false,
+      error: "durable_requires_read_only_scopes",
+      code: "durable_requires_read_only_scopes",
+      status: 400,
+    };
+  }
+
+  // 3. Workspace-bound: durable keys are per-workspace. A workspace token always
+  //    carries a workspaceId, but assert it so a mis-provisioned token cannot
+  //    mint an unbound long-lived key.
+  if (
+    typeof opts.workspaceToken.workspaceId !== "string" ||
+    opts.workspaceToken.workspaceId.trim().length === 0
+  ) {
+    return {
+      ok: false,
+      error: "durable_requires_workspace_binding",
+      code: "durable_requires_workspace_binding",
+      status: 400,
+    };
+  }
+
+  return { ok: true };
 }
 
 function normalizeRefreshTokenTtl(value: unknown): number | undefined {
