@@ -13,6 +13,14 @@ export interface VerifyOptions {
   cacheTtlMs?: number;
   checkRevocation?: boolean;
   revocationUrl?: string;
+  /**
+   * Set ONLY by an embedding application that enforces revocation itself. It
+   * suppresses the forced revocation check applied to indefinite (never-expiring)
+   * tokens. Resource servers using this verifier as their complete verification
+   * MUST NOT set this — leaving it unset keeps indefinite tokens fail-closed.
+   * Has no effect on finite tokens.
+   */
+  revocationHandledExternally?: boolean;
   /** Clock skew tolerance in seconds for nbf/exp checks. Defaults to 30. */
   clockSkewLeewaySeconds?: number;
 }
@@ -72,7 +80,25 @@ export class TokenVerifier {
 
     this.#validateClaims(payload);
 
-    if (this.options?.checkRevocation) {
+    // An indefinite (never-expiring) token has a far-future exp, so revocation is
+    // its ONLY lifecycle control. Force a fail-closed revocation check regardless
+    // of `checkRevocation`, so a resource server using the default verifier
+    // config still rejects a revoked indefinite token. An issuer that enforces
+    // revocation itself opts out via `revocationHandledExternally`. Finite tokens
+    // are unaffected.
+    const revocationForced =
+      isIndefiniteToken(payload) &&
+      this.options?.revocationHandledExternally !== true;
+
+    if (revocationForced && !this.options?.revocationUrl) {
+      throw new RelayAuthError(
+        "Indefinite tokens require a configured revocation check",
+        "revocation_required",
+        500,
+      );
+    }
+
+    if (this.options?.checkRevocation || revocationForced) {
       await this.#checkRevocation(payload.jti);
     }
 
@@ -281,6 +307,13 @@ export class TokenVerifier {
 
 function invalidTokenError(): RelayAuthError {
   return new RelayAuthError("Invalid access token", "invalid_token", 401);
+}
+
+// An indefinite (never-expiring) durable token is minted with `meta.indefinite`
+// set to the string "true"; it relies on revocation, not expiry, so the verifier
+// forces a revocation check for it.
+function isIndefiniteToken(claims: RelayAuthTokenClaims): boolean {
+  return claims.meta?.indefinite === "true";
 }
 
 function isSupportedAlgorithm(alg: string | undefined): alg is "RS256" | "EdDSA" {

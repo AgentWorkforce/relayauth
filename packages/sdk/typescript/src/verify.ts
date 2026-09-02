@@ -18,6 +18,15 @@ export interface VerifyOptions {
   revocationUrl?: string;
   jwksTimeoutMs?: number;
   revocationTimeoutMs?: number;
+  /**
+   * Set ONLY by an embedding application that enforces revocation itself (e.g.
+   * the relayauth issuer, which checks its own denylist on every request). It
+   * suppresses the forced revocation check that is otherwise applied to
+   * indefinite (never-expiring) tokens. Resource servers using this verifier as
+   * their complete verification MUST NOT set this — leaving it unset keeps
+   * indefinite tokens fail-closed. Has no effect on finite tokens.
+   */
+  revocationHandledExternally?: boolean;
 }
 
 type JwtHeader = {
@@ -77,7 +86,28 @@ export class TokenVerifier {
 
     this._validateClaims(payload);
 
-    if (this.options?.checkRevocation) {
+    // An indefinite (never-expiring) token has a far-future exp, so the `exp`
+    // check can never retire it — revocation is its ONLY lifecycle control.
+    // Force a fail-closed revocation check regardless of `checkRevocation`, so a
+    // resource server using the default verifier config still rejects a revoked
+    // indefinite token. The relayauth issuer, which enforces revocation via its
+    // own denylist, opts out via `revocationHandledExternally`. Finite tokens are
+    // unaffected: they still honor `checkRevocation` exactly as before.
+    const revocationForced =
+      isIndefiniteToken(payload) &&
+      this.options?.revocationHandledExternally !== true;
+
+    if (revocationForced && !this.options?.revocationUrl) {
+      // Without a revocation source, a never-expiring token cannot be safely
+      // accepted (it could be revoked with no way to observe it). Fail closed.
+      throw new RelayAuthError(
+        "Indefinite tokens require a configured revocation check",
+        "revocation_required",
+        500,
+      );
+    }
+
+    if (this.options?.checkRevocation || revocationForced) {
       await this.#checkRevocation(payload.jti);
     }
 
@@ -303,6 +333,13 @@ function unwrapRelayToken(token: string): string {
 
 function invalidTokenError(): RelayAuthError {
   return new RelayAuthError("Invalid access token", "invalid_token", 401);
+}
+
+// An indefinite (never-expiring) durable token is minted with `meta.indefinite`
+// set to the string "true". Such a token relies on revocation, not expiry, so the
+// verifier forces a revocation check for it.
+function isIndefiniteToken(claims: RelayAuthTokenClaims): boolean {
+  return claims.meta?.indefinite === "true";
 }
 
 function isSupportedAlgorithm(alg: string | undefined): alg is "RS256" | "EdDSA" | "HS256" {

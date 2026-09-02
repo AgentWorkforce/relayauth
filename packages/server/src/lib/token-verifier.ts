@@ -14,6 +14,13 @@ export async function verifyRs256Token(
   options: VerifyTokenOptions = {},
 ): Promise<RelayAuthTokenClaims> {
   const verifier = new TokenVerifier({
+    // The relayauth server enforces revocation itself on every request via its
+    // own fail-closed denylist (authenticateFromContext -> isBearerTokenInactive,
+    // and the /introspect + /refresh routes). It does not use the SDK verifier's
+    // HTTP revocation endpoint, so opt out of the forced indefinite-token check
+    // here to avoid a spurious `revocation_required` on the issuer's own path.
+    // External resource servers using the SDK verifier keep the forced check.
+    revocationHandledExternally: true,
     ...options,
     jwksUrl: await resolveJwksUrl(env),
   });

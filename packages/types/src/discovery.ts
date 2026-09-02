@@ -108,13 +108,23 @@ export interface AccessTokenClassLifetime {
 export interface TokenLifetimeConfiguration {
   access_token_default: string;
   refresh_token_default: string;
-  /** Maximum lifetime across all access-token classes (see access_token_classes). */
+  /**
+   * Maximum lifetime for BOUNDED access tokens. This is NOT an absolute ceiling
+   * across all tokens: a class advertising `indefinite_supported: true` (e.g.
+   * `durable`) issues never-expiring tokens whose `exp` is far past `maximum` by
+   * design. Clients MUST NOT clamp or reject a token solely because its `exp`
+   * exceeds `maximum` — consult the per-class metadata in `access_token_classes`
+   * (`indefinite_supported`) instead. For such tokens, revocation, not expiry, is
+   * the control.
+   */
   maximum: string;
   permanent_tokens_allowed: boolean;
   /**
    * Optional per-class lifetime ceilings. Advertises that some classes (e.g.
-   * `durable`) permit a longer ceiling than the standard `agent` access token,
-   * so discovery-driven clients do not clamp or reject a valid long-lived request.
+   * `durable`) permit a longer ceiling than the standard `agent` access token —
+   * or, when `indefinite_supported` is true, never-expiring tokens that exceed
+   * `maximum` entirely — so discovery-driven clients do not clamp or reject a
+   * valid long-lived / indefinite request.
    */
   access_token_classes?: Record<string, AccessTokenClassLifetime>;
 }
