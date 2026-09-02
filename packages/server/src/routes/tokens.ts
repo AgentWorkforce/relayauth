@@ -1062,8 +1062,16 @@ async function issueTokenPair(
       )
     : signedRefreshToken;
 
-  const accessTokenRecord = toIssuedTokenRecord(identity.id, accessClaims);
-  const refreshTokenRecord = toIssuedTokenRecord(identity.id, refreshClaims);
+  const accessTokenRecord = toIssuedTokenRecord(
+    identity.id,
+    accessClaims,
+    identity.name,
+  );
+  const refreshTokenRecord = toIssuedTokenRecord(
+    identity.id,
+    refreshClaims,
+    identity.name,
+  );
   const issueAuditEntry = createTokenAuditEntry({
     action: options.action,
     identity,
@@ -1161,7 +1169,15 @@ async function issueRelayhistoryAssertion(
 function toIssuedTokenRecord(
   identityId: string,
   claims: RelayAuthTokenClaims,
+  agentName?: string,
 ): IssuedTokenRecord {
+  // Persist the minting agent name on the lineage so workspace+agentName
+  // revocation can resolve the original identity even when agentId != agentName.
+  // Fall back to the token's own meta.agentName when the caller does not supply
+  // one (e.g. refreshes reconstructed purely from claims).
+  const resolvedAgentName =
+    normalizeOptionalString(agentName) ??
+    normalizeOptionalString(claims.meta?.agentName);
   return {
     id: claims.jti,
     tokenId: claims.jti,
@@ -1177,6 +1193,7 @@ function toIssuedTokenRecord(
       sponsorId: claims.sponsorId,
       sponsorChain: [...claims.sponsorChain],
       tokenType: claims.token_type,
+      ...(resolvedAgentName ? { agentName: resolvedAgentName } : {}),
     },
   };
 }
@@ -1306,26 +1323,35 @@ async function findTargetTokensByWorkspaceAgent(
   // to the identities table (see createPathTokenIdentity), so findDuplicate
   // above misses them. Their JTIs are still durable and carry token lineage, so
   // resolve them directly from the token store — scoped to org+workspace via
-  // lineage — reconstructing the deterministic path-token identity id from the
-  // caller-supplied agent name (the same derivation the mint used). Without
-  // this, `POST /v1/tokens/revoke {workspaceId, agentName}` 404s before ever
-  // examining the stored token record and path-token JTIs can never be revoked.
+  // lineage — matching on the stored agent name so the ORIGINAL minting
+  // identity is found even when the path token was minted with an agentId that
+  // diverges from its agentName. A reconstructed identity id is supplied only
+  // as a legacy fallback for lineage rows written before the agent name was
+  // persisted. Without this, `POST /v1/tokens/revoke {workspaceId, agentName}`
+  // 404s before ever examining the stored token record and path-token JTIs can
+  // never be revoked.
   if (typeof storage.tokens.listActiveByWorkspaceAgent !== "function") {
     return empty;
   }
 
-  const pathIdentityId = normalizeAgentIdentifier(normalizedAgentName);
+  const legacyPathIdentityId = normalizeAgentIdentifier(normalizedAgentName);
   const pathTokens = await storage.tokens.listActiveByWorkspaceAgent(
     orgId,
     normalizedWorkspaceId,
-    pathIdentityId,
+    normalizedAgentName,
+    legacyPathIdentityId,
   );
   if (pathTokens.length === 0) {
     return empty;
   }
 
+  // Use the identity id carried on the resolved token rows (the real minted
+  // agentId), not the reconstructed name-derived id: revocation flips the token
+  // row status scoped by identity_id, so this must match what was minted.
+  const mintedIdentityId =
+    normalizeOptionalString(pathTokens[0]?.identityId) ?? legacyPathIdentityId;
   const identity = createPathTokenIdentity({
-    agentId: pathIdentityId,
+    agentId: mintedIdentityId,
     agentName: normalizedAgentName,
     orgId,
     workspaceId: normalizedWorkspaceId,

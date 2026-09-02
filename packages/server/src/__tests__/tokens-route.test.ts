@@ -15,7 +15,7 @@ import {
   pruneExpiredTokensWindow,
   scanExpiredTokensWindow,
 } from "../engine/retention-gc.js";
-import { REVOCATION_CHECK_RATE_LIMIT } from "../server.js";
+import { FixedWindowRateLimiter } from "../lib/rate-limit.js";
 import type { DeferredTask } from "../lib/deferred.js";
 import {
   isStorageCapacityExhausted,
@@ -2772,11 +2772,13 @@ test("GET /v1/tokens/revocation", async (t) => {
   await t.test(
     "rate-limits the unauthenticated endpoint once the per-window ceiling is exceeded",
     async () => {
-      const { app } = await createHarness();
+      const app = createTestApp(
+        {},
+        { revocationCheckRateLimiter: new FixedWindowRateLimiter(3, 60_000, 8) },
+      );
       const path = "/v1/tokens/revocation?jti=rate-limit-probe";
 
-      // Exhaust the window (default IP bucket, no proxy headers in tests).
-      for (let i = 0; i < REVOCATION_CHECK_RATE_LIMIT; i++) {
+      for (let i = 0; i < 3; i++) {
         const ok = await requestRoute(app, "GET", path);
         assert.equal(ok.status, 200);
       }
@@ -2786,6 +2788,30 @@ test("GET /v1/tokens/revocation", async (t) => {
       const body = (await limited.json()) as { code?: string };
       assert.equal(body.code, "rate_limited");
       assert.ok(limited.headers.get("retry-after"));
+      assert.ok(limited.headers.get("ratelimit-limit"));
+    },
+  );
+
+  await t.test(
+    "revocation limiter is bounded: rotated x-forwarded-for cannot grow it unboundedly",
+    async () => {
+      // maxEntries=3: a bounded map that fails closed rather than growing or
+      // resetting counters when flooded with distinct (spoofable) client IPs.
+      const app = createTestApp(
+        {},
+        { revocationCheckRateLimiter: new FixedWindowRateLimiter(1, 60_000, 3) },
+      );
+      const hit = (ip: string) =>
+        requestRoute(app, "GET", "/v1/tokens/revocation?jti=x", {
+          headers: { "x-forwarded-for": ip },
+        });
+
+      assert.equal((await hit("1.1.1.1")).status, 200);
+      assert.equal((await hit("2.2.2.2")).status, 200);
+      assert.equal((await hit("3.3.3.3")).status, 200);
+      // The bounded map is full; a fourth distinct spoofed IP is rejected
+      // (fail-closed) instead of allocating an unbounded new bucket.
+      assert.equal((await hit("4.4.4.4")).status, 429);
     },
   );
 
@@ -2920,6 +2946,99 @@ test("POST /v1/tokens/revoke by workspaceId+agentName covers path tokens", async
         (await assertJsonResponse<{ revoked: boolean }>(postCheck, 200)).revoked,
         true,
       );
+    },
+  );
+
+  await t.test(
+    "revokes a path token minted with agentId divergent from agentName",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      // Mint with an agentId that does NOT derive from agentName. The stored
+      // token.identityId is the agentId; resolving by name-reconstruction alone
+      // would miss it (the previously-deferred gap).
+      const mintResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "billing-bot",
+            agentId: "custom_worker_42",
+            paths: ["/linear/issues/**"],
+            scopes: ["relayfile:fs:write:/linear/issues/**"],
+            ttlSeconds: 300,
+          },
+          headers: { "x-api-key": orgApiKey.key },
+        },
+      );
+      const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+        mintResponse,
+        201,
+      );
+      // Confirm the divergence the regression depends on.
+      assert.equal(minted.agentId, "agent_custom_worker_42");
+      assert.equal(minted.agentName, "billing-bot");
+      const accessJti = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.accessToken,
+        1,
+      ).jti;
+      const refreshJti = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.refreshToken,
+        1,
+      ).jti;
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const revokeResponse = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: {
+          workspaceId: "ws_tokens_route",
+          agentName: "billing-bot",
+        },
+        headers: manageHeaders,
+      });
+      assert.equal(
+        revokeResponse.status,
+        204,
+        "revoke by {workspaceId, agentName} must resolve the minted identity even when agentId != agentName",
+      );
+
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        revoked.includes(accessJti),
+        `access JTI ${accessJti} should be revoked, got ${JSON.stringify(revoked)}`,
+      );
+      assert.ok(
+        revoked.includes(refreshJti),
+        `refresh JTI ${refreshJti} should be revoked, got ${JSON.stringify(revoked)}`,
+      );
+
+      // The token rows' status must have flipped to 'revoked' under the REAL
+      // minted identity id (not the name-reconstructed one). If it had not, the
+      // tokens would still be 'active' and a re-revoke would find them again
+      // instead of 404-ing.
+      const reRevoke = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "billing-bot" },
+        headers: manageHeaders,
+      });
+      assert.equal(reRevoke.status, 404);
     },
   );
 

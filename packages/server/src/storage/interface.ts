@@ -278,6 +278,14 @@ export type TokenLineageSnapshot = {
   sponsorId: string;
   sponsorChain: string[];
   tokenType: "access" | "refresh";
+  /**
+   * The minting identity's agent name, persisted so workspace+agentName
+   * revocation can resolve the original identity for path tokens (whose
+   * identity is transient and never written to the identities table) regardless
+   * of any agentId/agentName divergence. Optional for adapters/records that
+   * predate the column.
+   */
+  agentName?: string;
 };
 
 export type TokenLineageRecord = TokenLineageSnapshot & {
@@ -400,14 +408,19 @@ export interface TokenStorage {
    * transient. Path tokens are minted without a persisted identity row, so they
    * cannot be found via `identities.findDuplicate`; their durable token lineage
    * is scanned instead so workspace-agent revocation covers their JTIs. Scoped
-   * to org+workspace via the token lineage. Optional so external adapters can
-   * adopt it incrementally; when absent, workspace-agent revocation covers only
-   * registered identities. The Node/SQLite implementation always provides it.
+   * to org+workspace via the token lineage. Matches on the stored agent name so
+   * the original minting identity is found even when a path token was minted
+   * with an agentId that diverges from its agentName; `fallbackIdentityId`
+   * covers legacy lineage rows written before the agent name was persisted.
+   * Optional so external adapters can adopt it incrementally; when absent,
+   * workspace-agent revocation covers only registered identities. The
+   * Node/SQLite implementation always provides it.
    */
   listActiveByWorkspaceAgent?(
     orgId: string,
     workspaceId: string,
-    agentIdentityId: string,
+    agentName: string,
+    fallbackIdentityId: string,
   ): Promise<StoredTokenRecord[]>;
 }
 

@@ -57,6 +57,13 @@ const BRIDGE_RATE_WINDOW_MS = 60_000;
 // token check — while still capping an unauthenticated flood.
 export const REVOCATION_CHECK_RATE_LIMIT = 600;
 const REVOCATION_CHECK_RATE_WINDOW_MS = 60_000;
+// The per-IP key is derived from caller-supplied forwarding headers, which an
+// attacker can rotate. FixedWindowRateLimiter caps its bucket map at
+// maxEntries and evicts expired buckets on every consume, so header rotation
+// can neither grow memory without bound nor reset an active bucket's counter
+// (it fails closed with a 429 once the cap is reached) — closing both the OOM
+// and the limit-bypass vectors.
+const REVOCATION_CHECK_RATE_MAX_ENTRIES = 20_000;
 const IDENTITY_CREATE_RATE_LIMIT = 60;
 const IDENTITY_CREATE_RATE_WINDOW_MS = 60_000;
 
@@ -71,6 +78,11 @@ const sharedIdentityCreatePreAuthRateLimiter = new FixedWindowSketchRateLimiter(
   IDENTITY_CREATE_RATE_LIMIT,
   IDENTITY_CREATE_RATE_WINDOW_MS,
 );
+const sharedRevocationCheckRateLimiter = new FixedWindowRateLimiter(
+  REVOCATION_CHECK_RATE_LIMIT,
+  REVOCATION_CHECK_RATE_WINDOW_MS,
+  REVOCATION_CHECK_RATE_MAX_ENTRIES,
+);
 const sharedSponsorOidcService = new SponsorOidcService();
 
 export type CreateAppOptions = {
@@ -83,6 +95,7 @@ export type CreateAppOptions = {
   deferTask?: DeferredTaskScheduler;
   identityCreatePreAuthRateLimiter?: RequestRateLimiter;
   identityCreateRateLimiter?: RequestRateLimiter;
+  revocationCheckRateLimiter?: RequestRateLimiter;
   sponsorOidcService?: SponsorOidcService;
 };
 
@@ -115,10 +128,8 @@ function getClientIp(forwardedFor: string | undefined, realIp: string | undefine
 export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const bridgeRateMap = new Map<string, { count: number; resetAt: number }>();
-  const revocationCheckRateMap = new Map<
-    string,
-    { count: number; resetAt: number }
-  >();
+  const revocationCheckRateLimiter =
+    options.revocationCheckRateLimiter ?? sharedRevocationCheckRateLimiter;
   const identityCreatePreAuthRateLimiter =
     options.identityCreatePreAuthRateLimiter ?? sharedIdentityCreatePreAuthRateLimiter;
   const identityCreateRateLimiter =
@@ -273,21 +284,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
 
   app.use("/v1/tokens/revocation", async (c, next) => {
     const ip = getClientIp(c.req.header("x-forwarded-for"), c.req.header("x-real-ip"));
-    const now = Date.now();
-
-    let entry = revocationCheckRateMap.get(ip);
-    if (!entry || now >= entry.resetAt) {
-      entry = { count: 0, resetAt: now + REVOCATION_CHECK_RATE_WINDOW_MS };
-      revocationCheckRateMap.set(ip, entry);
-    }
-
-    entry.count++;
-    if (entry.count > REVOCATION_CHECK_RATE_LIMIT) {
-      const retryAfterSeconds = Math.max(
-        1,
-        Math.ceil((entry.resetAt - now) / 1000),
-      );
-      c.header("Retry-After", String(retryAfterSeconds));
+    const decision = revocationCheckRateLimiter.consume([
+      `revocation-check-ip:${ip}`,
+    ]);
+    c.header("RateLimit-Limit", String(decision.limit));
+    c.header("RateLimit-Remaining", String(decision.remaining));
+    c.header("RateLimit-Reset", String(decision.retryAfterSeconds));
+    if (!decision.allowed) {
+      c.header("Retry-After", String(decision.retryAfterSeconds));
       return c.json({ error: "Rate limit exceeded", code: "rate_limited" }, 429);
     }
 

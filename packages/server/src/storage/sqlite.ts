@@ -507,16 +507,23 @@ const SELECT_TOKENS_BY_SESSION_SQL = `
 // Path tokens have no persisted identity row, so workspace-agent revocation
 // resolves them through the durable token lineage instead. Join each active
 // token to its lineage row (token_lineages.token_id = tokens.id) and scope to
-// org+workspace so a caller can never revoke across a boundary.
+// org+workspace so a caller can never revoke across a boundary. Resolve by the
+// stored agent_name (the minting identity's name) so the original identity is
+// found even when a path token was minted with agentId != agentName; the
+// identity_id fallback covers legacy rows written before agent_name existed
+// (whose agentId was derived from the agent name).
 const SELECT_ACTIVE_TOKENS_BY_WORKSPACE_AGENT_SQL = `
   SELECT tokens.id, tokens.token_id, tokens.jti, tokens.identity_id,
          tokens.status, tokens.session_id, tokens.expires_at
   FROM tokens
   INNER JOIN token_lineages ON token_lineages.token_id = tokens.id
   WHERE tokens.status = 'active'
-    AND tokens.identity_id = ?
     AND token_lineages.org_id = ?
     AND token_lineages.workspace_id = ?
+    AND (
+      token_lineages.agent_name = ?
+      OR (token_lineages.agent_name IS NULL AND tokens.identity_id = ?)
+    )
 `;
 
 const INSERT_TOKEN_SQL = `
@@ -582,9 +589,10 @@ const INSERT_TOKEN_LINEAGE_SQL = `
     workspace_id,
     sponsor_id,
     token_type,
-    created_at
+    created_at,
+    agent_name
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const INSERT_TOKEN_LINEAGE_MEMBER_SQL = `
@@ -2109,12 +2117,19 @@ class SqliteTokenStorage implements TokenStorage {
   async listActiveByWorkspaceAgent(
     orgId: string,
     workspaceId: string,
-    agentIdentityId: string,
+    agentName: string,
+    fallbackIdentityId: string,
   ): Promise<StoredTokenRecord[]> {
     const normalizedOrgId = normalizeOptionalString(orgId);
     const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
-    const normalizedIdentityId = normalizeOptionalString(agentIdentityId);
-    if (!normalizedOrgId || !normalizedWorkspaceId || !normalizedIdentityId) {
+    const normalizedAgentName = normalizeOptionalString(agentName);
+    const normalizedFallbackIdentityId =
+      normalizeOptionalString(fallbackIdentityId);
+    if (
+      !normalizedOrgId ||
+      !normalizedWorkspaceId ||
+      (!normalizedAgentName && !normalizedFallbackIdentityId)
+    ) {
       return [];
     }
 
@@ -2124,16 +2139,25 @@ class SqliteTokenStorage implements TokenStorage {
         .filter(
           (token) =>
             token.status === "active" &&
-            token.identityId === normalizedIdentityId &&
             token.lineage?.orgId === normalizedOrgId &&
-            token.lineage?.workspaceId === normalizedWorkspaceId,
+            token.lineage?.workspaceId === normalizedWorkspaceId &&
+            (normalizedAgentName
+              ? token.lineage?.agentName === normalizedAgentName ||
+                (token.lineage?.agentName === undefined &&
+                  token.identityId === normalizedFallbackIdentityId)
+              : token.identityId === normalizedFallbackIdentityId),
         )
         .map(toStoredTokenRecord);
     }
 
     return backend.db
       .prepare<TokenRow>(SELECT_ACTIVE_TOKENS_BY_WORKSPACE_AGENT_SQL)
-      .all(normalizedIdentityId, normalizedOrgId, normalizedWorkspaceId)
+      .all(
+        normalizedOrgId,
+        normalizedWorkspaceId,
+        normalizedAgentName ?? null,
+        normalizedFallbackIdentityId ?? null,
+      )
       .map(toStoredTokenRecord);
   }
 
@@ -2209,6 +2233,7 @@ function insertTokenLineage(db: SqliteDatabase, token: IssuedTokenRecord): void 
     lineage.sponsorId,
     lineage.tokenType,
     token.createdAt,
+    lineage.agentName ?? null,
   );
   const insertMember = db.prepare(INSERT_TOKEN_LINEAGE_MEMBER_SQL);
   lineage.sponsorChain.forEach((principalId, chainPosition) => {
