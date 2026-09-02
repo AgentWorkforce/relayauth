@@ -911,20 +911,44 @@ tokens.post("/revoke", async (c) => {
   }
 
   const revokedAt = new Date().toISOString();
-  for (const { identity, tokenIds } of groups) {
-    const auditEntry = createTokenAuditEntry({
-      action: "token.revoked",
+  const revocationGroups = groups.map(({ identity, tokenIds }) => ({
+    identity,
+    tokenIds,
+    auditEntry: createTokenAuditEntry({
+      action: "token.revoked" as const,
       identity,
-      tokenId:
-        tokenIds[0] ?? tokenId ?? sessionId ?? identityId ?? identity.id,
+      tokenId: tokenIds[0] ?? tokenId ?? sessionId ?? identityId ?? identity.id,
       actorId: auth.claims.sub,
-    });
-    await storage.revocations.revokeIdentityTokensWithAudit({
-      identityId: identity.id,
-      tokenIds,
+    }),
+  }));
+
+  // Revoke every group in ONE transaction so a request spanning multiple
+  // identities is all-or-nothing: a failure on any group rolls the whole thing
+  // back rather than leaving earlier groups revoked. Adapters that predate the
+  // bulk primitive fall back to the per-identity path (unchanged behavior).
+  if (typeof storage.revocations.revokeIdentityTokenGroupsWithAudit === "function") {
+    await storage.revocations.revokeIdentityTokenGroupsWithAudit({
+      groups: revocationGroups.map(({ identity, tokenIds, auditEntry }) => ({
+        identityId: identity.id,
+        tokenIds,
+        auditEntry,
+      })),
       revokedAt,
-      auditEntry,
     });
+  } else {
+    for (const { identity, tokenIds, auditEntry } of revocationGroups) {
+      await storage.revocations.revokeIdentityTokensWithAudit({
+        identityId: identity.id,
+        tokenIds,
+        revokedAt,
+        auditEntry,
+      });
+    }
+  }
+
+  // Cache population is a non-durable, best-effort side effect (it already
+  // swallows its own failures); run it after the durable revoke commits.
+  for (const { identity, tokenIds } of revocationGroups) {
     await populateRevocationCache(storage, identity.id, tokenIds, revokedAt);
   }
 

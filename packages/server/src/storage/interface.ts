@@ -363,6 +363,28 @@ export type RevokedTokenAudit = {
   auditEntry: AuditLogWriteEntry;
 };
 
+/**
+ * One identity's slice of a multi-identity revoke: its token ids and the audit
+ * entry recorded for revoking them.
+ */
+export type RevokedTokenGroup = {
+  identityId: string;
+  tokenIds: string[];
+  auditEntry: AuditLogWriteEntry;
+};
+
+/**
+ * Atomic multi-identity revoke boundary. Every token id across every group, its
+ * denylist row, and every group's audit entry commit as ONE transaction. A
+ * failure in any group must leave every token active (all-or-nothing) so a
+ * single revoke request spanning multiple identities can never be left
+ * partially applied.
+ */
+export type RevokedTokenGroupsAudit = {
+  groups: RevokedTokenGroup[];
+  revokedAt: string;
+};
+
 export interface IdentityStorage {
   list(
     orgId: string,
@@ -431,6 +453,16 @@ export interface RevocationStorage {
     revokedAt: string,
   ): Promise<void>;
   revokeIdentityTokensWithAudit(input: RevokedTokenAudit): Promise<void>;
+  /**
+   * Atomically revoke token ids spanning multiple identities in a single
+   * transaction (see RevokedTokenGroupsAudit). Optional so external adapters can
+   * adopt it incrementally; when absent, callers fall back to per-identity
+   * revokeIdentityTokensWithAudit. The Node/SQLite implementation always
+   * provides it.
+   */
+  revokeIdentityTokenGroupsWithAudit?(
+    input: RevokedTokenGroupsAudit,
+  ): Promise<void>;
   /**
    * Optionally populate a low-latency cache after the durable transaction
    * commits. Cache failure must not change the durable revoke result.

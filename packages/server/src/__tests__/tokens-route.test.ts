@@ -2560,17 +2560,21 @@ test("POST /v1/tokens/revoke", async (t) => {
     const { app, identity, authHeaders } = await createHarness();
     const { accessClaims } = createRs256TokenPair(identity);
     await seedActiveTokens(app, identity.id, [accessClaims.jti]);
-    const atomicRevocations =
-      app.storage.revocations.revokeIdentityTokensWithAudit.bind(
+    const bulkRevocations =
+      app.storage.revocations.revokeIdentityTokenGroupsWithAudit!.bind(
         app.storage.revocations,
       );
     let atomicRevokeCalls = 0;
-    app.storage.revocations.revokeIdentityTokensWithAudit = async (input) => {
+    app.storage.revocations.revokeIdentityTokenGroupsWithAudit = async (
+      input,
+    ) => {
       atomicRevokeCalls += 1;
-      await atomicRevocations(input);
+      await bulkRevocations(input);
     };
     app.storage.revocations.revokeIdentityTokens = async () => {
-      throw new Error("public revoke must use revokeIdentityTokensWithAudit");
+      throw new Error(
+        "public revoke must use the atomic audited revoke path",
+      );
     };
 
     const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
@@ -2582,6 +2586,7 @@ test("POST /v1/tokens/revoke", async (t) => {
 
     assert.equal(response.status, 204);
     assert.deepEqual(await listRevokedTokenIds(app), [accessClaims.jti]);
+    // The single atomic (bulk) call carries every group, so it is invoked once.
     assert.equal(atomicRevokeCalls, 1);
   });
 
@@ -3218,6 +3223,90 @@ test("POST /v1/tokens/revoke by workspaceId+agentName covers path tokens", async
         headers: manageHeaders,
       });
       assert.equal(reRevoke.status, 404);
+    },
+  );
+
+  await t.test(
+    "a failing multi-identity revoke leaves no token revoked (all-or-nothing)",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const mintVariant = async (agentId: string): Promise<string> => {
+        const response = await requestRoute(
+          app,
+          "POST",
+          "/v1/tokens/workspace-path",
+          {
+            body: {
+              workspaceId: "ws_tokens_route",
+              agentName: "atomic-bot",
+              agentId,
+              paths: ["/linear/issues/**"],
+              scopes: ["relayfile:fs:write:/linear/issues/**"],
+              ttlSeconds: 300,
+            },
+            headers: { "x-api-key": orgApiKey.key },
+          },
+        );
+        const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+          response,
+          201,
+        );
+        return decodeJwtJsonSegment<RelayAuthTokenClaims>(minted.accessToken, 1)
+          .jti;
+      };
+
+      const jtiA = await mintVariant("variant_a");
+      const jtiB = await mintVariant("variant_b");
+
+      // Force the bulk (atomic) revoke to fail; the handler must surface the
+      // error and leave every group's tokens active — no partial apply.
+      app.storage.revocations.revokeIdentityTokenGroupsWithAudit = async () => {
+        throw new Error("simulated revoke failure");
+      };
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const response = await withSilencedConsoleError(() =>
+        requestRoute(app, "POST", "/v1/tokens/revoke", {
+          body: { workspaceId: "ws_tokens_route", agentName: "atomic-bot" },
+          headers: manageHeaders,
+        }),
+      );
+      assert.equal(response.status, 500);
+
+      assert.deepEqual(
+        await listRevokedTokenIds(app),
+        [],
+        "no token may be revoked when the atomic revoke fails",
+      );
+      for (const jti of [jtiA, jtiB]) {
+        const check = await requestRoute(
+          app,
+          "GET",
+          `/v1/tokens/revocation?jti=${encodeURIComponent(jti)}`,
+        );
+        assert.equal(
+          (await assertJsonResponse<{ revoked: boolean }>(check, 200)).revoked,
+          false,
+        );
+      }
     },
   );
 

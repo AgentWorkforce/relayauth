@@ -226,6 +226,142 @@ test("sqlite revoke with audit rolls all durable state back when the audit inser
   }
 });
 
+test("sqlite bulk revoke commits every identity group atomically", async () => {
+  const { storage, cleanup } = createHarness();
+
+  try {
+    for (const [id, identityId] of [
+      ["tok_group_a", "agent_group_a"],
+      ["tok_group_b", "agent_group_b"],
+    ] as const) {
+      await storage.tokens.persistIssued({
+        id,
+        tokenId: id,
+        jti: id,
+        identityId,
+        issuedAt: 1_774_608_000,
+        expiresAt: 1_800_000_000,
+        createdAt: "2026-03-27T12:00:00.000Z",
+      });
+    }
+
+    await storage.revocations.revokeIdentityTokenGroupsWithAudit!({
+      revokedAt: "2026-03-27T12:01:00.000Z",
+      groups: [
+        {
+          identityId: "agent_group_a",
+          tokenIds: ["tok_group_a"],
+          auditEntry: createAuditEntry({
+            id: "aud_group_a",
+            action: "token.revoked",
+            identityId: "agent_group_a",
+          }),
+        },
+        {
+          identityId: "agent_group_b",
+          tokenIds: ["tok_group_b"],
+          auditEntry: createAuditEntry({
+            id: "aud_group_b",
+            action: "token.revoked",
+            identityId: "agent_group_b",
+          }),
+        },
+      ],
+    });
+
+    assert.equal(await storage.revocations.isRevoked("tok_group_a"), true);
+    assert.equal(await storage.revocations.isRevoked("tok_group_b"), true);
+    assert.equal(
+      (await storage.tokens.getById("tok_group_a"))?.status,
+      "revoked",
+    );
+    assert.equal(
+      (await storage.tokens.getById("tok_group_b"))?.status,
+      "revoked",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("sqlite bulk revoke rolls back ALL groups when one group's write fails", async () => {
+  const { storage, cleanup } = createHarness();
+
+  try {
+    for (const [id, identityId] of [
+      ["tok_bulk_a", "agent_bulk_a"],
+      ["tok_bulk_b", "agent_bulk_b"],
+    ] as const) {
+      await storage.tokens.persistIssued({
+        id,
+        tokenId: id,
+        jti: id,
+        identityId,
+        issuedAt: 1_774_608_000,
+        expiresAt: 1_800_000_000,
+        createdAt: "2026-03-27T12:00:00.000Z",
+      });
+    }
+
+    // The SECOND group's audit id already exists, so its INSERT fails after the
+    // FIRST group's token/denylist writes have already run in the same
+    // transaction — the whole request must roll back.
+    const conflictingAudit = createAuditEntry({
+      id: "aud_bulk_conflict",
+      action: "token.revoked",
+      identityId: "agent_bulk_b",
+    });
+    await storage.audit.write(conflictingAudit);
+
+    await assert.rejects(() =>
+      storage.revocations.revokeIdentityTokenGroupsWithAudit!({
+        revokedAt: "2026-03-27T12:01:00.000Z",
+        groups: [
+          {
+            identityId: "agent_bulk_a",
+            tokenIds: ["tok_bulk_a"],
+            auditEntry: createAuditEntry({
+              id: "aud_bulk_a",
+              action: "token.revoked",
+              identityId: "agent_bulk_a",
+            }),
+          },
+          {
+            identityId: "agent_bulk_b",
+            tokenIds: ["tok_bulk_b"],
+            auditEntry: conflictingAudit,
+          },
+        ],
+      }),
+    );
+
+    // No partial apply: the first group's token was NOT revoked.
+    assert.equal(await storage.revocations.isRevoked("tok_bulk_a"), false);
+    assert.equal(await storage.revocations.isRevoked("tok_bulk_b"), false);
+    assert.equal(
+      (await storage.tokens.getById("tok_bulk_a"))?.status,
+      "active",
+    );
+    assert.equal(
+      (await storage.tokens.getById("tok_bulk_b"))?.status,
+      "active",
+    );
+    // Only the pre-seeded conflicting audit survives; neither group's audit
+    // was committed.
+    const auditResult = await storage.audit.query(
+      { orgId: "org_test", action: "token.revoked", limit: 10 },
+      { includeOverflowRow: false },
+    );
+    assert.equal(auditResult.kind, "complete");
+    assert.deepEqual(
+      auditResult.entries.map((entry) => entry.id),
+      ["aud_bulk_conflict"],
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("sqlite token pair and audit entry commit atomically and retries do not duplicate", async () => {
   const { storage, cleanup } = createHarness();
   const pair = {

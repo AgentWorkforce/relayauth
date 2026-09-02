@@ -59,6 +59,7 @@ import type {
   PolicyStorage,
   PolicyUpdate,
   RevokedTokenAudit,
+  RevokedTokenGroupsAudit,
   RevocationStorage,
   RedeemAttestationGrantInput,
   RoleStorage,
@@ -2415,6 +2416,90 @@ class SqliteRevocationStorage implements RevocationStorage {
       commitSqliteTransaction(backend.db);
     } catch (error) {
       // Preserve the originating audit or storage failure.
+      rollbackSqliteTransaction(backend.db);
+      throw error;
+    }
+  }
+
+  async revokeIdentityTokenGroupsWithAudit(
+    input: RevokedTokenGroupsAudit,
+  ): Promise<void> {
+    const timestamp = normalizeTimestamp(input.revokedAt);
+    // Normalize and drop empty groups up front so an all-or-nothing failure
+    // never depends on partially-formed input.
+    const groups = (input.groups ?? [])
+      .map((group) => ({
+        identityId: requireString(group.identityId, "identityId is required"),
+        tokenIds: normalizeStringArray(group.tokenIds),
+        auditEntry: normalizeAuditWriteEntry(group.auditEntry),
+      }))
+      .filter((group) => group.tokenIds.length > 0);
+    if (groups.length === 0) {
+      return;
+    }
+
+    const backend = await this.provider.getBackend();
+    pruneExpiredRevocations(backend);
+
+    if (backend.kind === "memory") {
+      // Validate every failure condition before mutating any state, matching the
+      // all-or-nothing contract of the SQLite transaction below.
+      const seenAuditIds = new Set<string>();
+      for (const group of groups) {
+        if (
+          seenAuditIds.has(group.auditEntry.id) ||
+          backend.state.auditLogs.some(
+            (entry) => entry.id === group.auditEntry.id,
+          )
+        ) {
+          throw new StorageError(
+            "audit_entry_already_exists",
+            409,
+            "audit_entry_already_exists",
+          );
+        }
+        seenAuditIds.add(group.auditEntry.id);
+      }
+
+      for (const group of groups) {
+        for (const tokenId of group.tokenIds) {
+          backend.state.revokedTokens.set(tokenId, {
+            expiresAt: MAX_REVOCATION_EXPIRY,
+            identityId: group.identityId,
+            revokedAt: timestamp,
+          });
+          for (const token of backend.state.tokens.values()) {
+            if (
+              token.identityId === group.identityId &&
+              (token.id === tokenId ||
+                token.jti === tokenId ||
+                token.tokenId === tokenId)
+            ) {
+              token.status = "revoked";
+            }
+          }
+        }
+        backend.state.auditLogs.push(cloneAuditEntryRecord(group.auditEntry));
+      }
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return;
+    }
+
+    beginSqliteTransaction(backend.db);
+    try {
+      const upsertRevokedToken = backend.db.prepare(UPSERT_REVOKED_TOKEN_SQL);
+      const updateTokenStatus = backend.db.prepare(UPDATE_TOKEN_STATUS_SQL);
+      const insertAudit = backend.db.prepare(INSERT_AUDIT_LOG_SQL);
+      for (const group of groups) {
+        for (const tokenId of group.tokenIds) {
+          upsertRevokedToken.run(tokenId, MAX_REVOCATION_EXPIRY);
+          updateTokenStatus.run(group.identityId, tokenId, tokenId, tokenId);
+        }
+        insertAudit.run(...toAuditParams(group.auditEntry));
+      }
+      commitSqliteTransaction(backend.db);
+    } catch (error) {
+      // Any group's failure rolls back the whole request — no partial apply.
       rollbackSqliteTransaction(backend.db);
       throw error;
     }
