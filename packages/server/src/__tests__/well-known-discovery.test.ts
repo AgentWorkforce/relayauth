@@ -248,12 +248,14 @@ function assertAgentConfiguration(value: unknown): asserts value is AgentConfigu
     value.token_lifetimes.permanent_tokens_allowed,
     "token_lifetimes.permanent_tokens_allowed",
   );
-  // The advertised maximum must cover the 90-day durable ceiling, with a
-  // class-specific breakdown so clients do not clamp a valid durable request.
+  // `maximum` is the BOUNDED-token ceiling (P90D), NOT an absolute limit: the
+  // durable class also mints indefinite tokens whose exp exceeds it by design.
+  // Clients must consult `access_token_classes` (indefinite_supported), asserted
+  // below, rather than clamping against `maximum`.
   assert.equal(
     value.token_lifetimes.maximum,
     "P90D",
-    "token_lifetimes.maximum should advertise the 90d durable ceiling",
+    "token_lifetimes.maximum should advertise the bounded 90d ceiling",
   );
   assert.ok(
     isRecord(value.token_lifetimes.access_token_classes),
@@ -264,6 +266,10 @@ function assertAgentConfiguration(value: unknown): asserts value is AgentConfigu
   assert.equal(durableClass.access_token_maximum, "P90D");
   assert.equal(durableClass.refreshable, false);
   assert.equal(durableClass.read_only, true);
+  // The durable class also supports indefinite (never-expiring) keys controlled
+  // by revocation.
+  assert.equal(durableClass.indefinite_supported, true);
+  assert.equal(durableClass.revocation_controlled, true);
   const agentClass = value.token_lifetimes.access_token_classes.agent;
   assert.ok(isRecord(agentClass), "access_token_classes.agent should be an object");
   assert.equal(agentClass.access_token_maximum, "PT1H");

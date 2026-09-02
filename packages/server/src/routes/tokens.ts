@@ -67,6 +67,12 @@ type AgentTokenRequest = {
    */
   durable?: unknown;
   accessTokenClass?: unknown;
+  /**
+   * Opt-in to an INDEFINITE (never-expiring) durable access token, controlled by
+   * revocation instead of a timer. Implies the durable path (same tight gate)
+   * and forces `issueRefreshToken: false`. Defaults to false.
+   */
+  indefinite?: unknown;
 };
 
 type PathTokenRequest = {
@@ -183,6 +189,16 @@ const MAX_DURABLE_ACCESS_TOKEN_TTL_SECONDS = 90 * 24 * 3600; // 7_776_000 (90 da
 // `token-durable`), so an ordinary token-create caller cannot reach the durable
 // path — the workspace token must be explicitly granted this scope in addition.
 const DURABLE_TOKEN_CREATE_SCOPE = "relayauth:token-durable:create:*";
+// Effectively-indefinite access-token expiry. The core/SDK verifier hard-requires
+// a finite numeric `exp` (RelayAuthTokenClaims.exp is required, and both verifiers'
+// isRelayAuthTokenClaims guards reject a missing/non-finite exp), so a true no-exp
+// token would be rejected as malformed and loosening that guard would weaken
+// exp-enforcement for EVERY token. Instead an indefinite durable key is stamped
+// with a fixed far-future exp (2100-01-01T00:00:00Z) and controlled by revocation.
+// This is not a special-cased "never" sentinel — it is an ordinary, fully-valid
+// token whose expiry is simply beyond any practical horizon; the denylist is the
+// real control. ~2.4 billion; safely within JS/JWT NumericDate range.
+const INDEFINITE_ACCESS_TOKEN_EXP = Math.floor(Date.UTC(2100, 0, 1) / 1000);
 const DELEGATION_NOT_AFTER_META_KEY = "delegationNotAfter";
 const RELAYHISTORY_ASSERTION_SCOPE = "relayauth:assertion:create:relayhistory";
 const RELAYHISTORY_ASSERTION_AUDIENCE = "relayhistory";
@@ -330,7 +346,12 @@ tokens.post("/agent", async (c) => {
   // evaluated BEFORE the identity lookup so an unauthorized or unbound durable
   // request fails closed with its own 400/403 code rather than leaking a 404
   // identity_not_found. The default (non-durable) path is unchanged.
-  const durable = isDurableRequested(body);
+  //
+  // Indefinite (never-expiring) mode is a sub-mode of durable, controlled by
+  // revocation instead of a timer. It IMPLIES durable, so it runs through the
+  // exact same gate — it can never be less restricted than a bounded durable key.
+  const indefinite = isIndefiniteRequested(body);
+  const durable = isDurableRequested(body) || indefinite;
   if (durable) {
     // Validate against the explicitly requested scopes (no identity fallback):
     // a durable token must name its read-only scopes rather than inherit them.
@@ -390,12 +411,18 @@ tokens.post("/agent", async (c) => {
     // token so it is greppable in issued-token metadata. `tokenClass` stays
     // "agent" so refresh detection and revocation lineage are unchanged.
     ...(durable ? { accessTokenClass: "durable" } : {}),
+    // A never-expiring key is flagged explicitly so it is unmistakable in token
+    // metadata and the audit trail (its expiry is a far-future sentinel, so exp
+    // alone does not reveal that revocation is its only control).
+    ...(indefinite ? { indefinite: "true" } : {}),
   };
 
   // A durable token is a standalone, static access token: it is issued WITHOUT a
   // refresh token so it can never be rotated into a fresh (short-lived) access
   // token, which would silently extend the session past its 90d lifetime
-  // (CWE-613). Non-durable agent tokens keep their refreshable pair unchanged.
+  // (CWE-613). An indefinite token additionally overrides the access expiry with
+  // a fixed far-future sentinel (revocation is its control). Non-durable agent
+  // tokens keep their refreshable pair unchanged.
   const tokenPair = durable
     ? await issueTokenPair(storage, c.env, identity, {
         deferTask: c.get("deferTask"),
@@ -405,6 +432,10 @@ tokens.post("/agent", async (c) => {
         action: "token.issued",
         parentTokenId: workspaceToken.id,
         durable: true,
+        indefinite,
+        ...(indefinite
+          ? { accessExpiresAtOverride: INDEFINITE_ACCESS_TOKEN_EXP }
+          : {}),
         issueRefreshToken: false,
         meta,
         wrapAccessToken: true,
@@ -1155,10 +1186,21 @@ type IssueTokenPairOptions = {
    */
   durable?: boolean;
   /**
+   * Marks this issuance as an indefinite (never-expiring) durable key so the
+   * audit trail flags it distinctly from a bounded durable token.
+   */
+  indefinite?: boolean;
+  /**
    * When false, NO refresh token is signed, persisted, or returned — the access
    * token is standalone and cannot be rotated. Defaults to true (a full pair).
    */
   issueRefreshToken?: boolean;
+  /**
+   * Sets the access token `exp` claim directly, bypassing the
+   * `accessExpiresIn`/`expiresNotAfter` computation. Used for indefinite durable
+   * keys to stamp a fixed far-future sentinel expiry.
+   */
+  accessExpiresAtOverride?: number;
   meta?: Record<string, string>;
   expiresNotAfter?: number;
   wrapAccessToken?: boolean;
@@ -1193,10 +1235,11 @@ async function issueTokenPair(
   const sessionId = options.sessionId ?? createSessionId();
   const refreshTtl =
     options.refreshTokenTtlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
-  const accessExpiresAt = capExpiry(
-    issuedAtSeconds + options.accessExpiresIn,
-    options.expiresNotAfter,
-  );
+  // An indefinite key stamps a fixed far-future exp directly; every other token
+  // uses the normal TTL computation (and delegation-horizon cap).
+  const accessExpiresAt =
+    options.accessExpiresAtOverride ??
+    capExpiry(issuedAtSeconds + options.accessExpiresIn, options.expiresNotAfter);
   const refreshExpiresAt = capExpiry(
     issuedAtSeconds + refreshTtl,
     options.expiresNotAfter,
@@ -1260,7 +1303,9 @@ async function issueTokenPair(
     identity,
     tokenId: accessClaims.jti,
     durable: options.durable,
+    indefinite: options.indefinite,
     accessTtlSeconds: options.accessExpiresIn,
+    accessExpiresAt,
   });
 
   // Standalone (durable) access token: persist the access row + audit only. No
@@ -1418,7 +1463,9 @@ function createTokenAuditEntry(options: {
   tokenId: string;
   actorId?: string;
   durable?: boolean;
+  indefinite?: boolean;
   accessTtlSeconds?: number;
+  accessExpiresAt?: number;
 }): AuditLogWriteEntry {
   return {
     id: crypto.randomUUID(),
@@ -1439,6 +1486,16 @@ function createTokenAuditEntry(options: {
             accessTokenClass: "durable",
             ...(options.accessTtlSeconds !== undefined
               ? { accessTtlSeconds: String(options.accessTtlSeconds) }
+              : {}),
+          }
+        : {}),
+      // A never-expiring credential is flagged unmistakably (with its far-future
+      // sentinel expiry) so it is reviewable — revocation is its only control.
+      ...(options.indefinite
+        ? {
+            indefinite: "true",
+            ...(options.accessExpiresAt !== undefined
+              ? { accessExpiresAt: String(options.accessExpiresAt) }
               : {}),
           }
         : {}),
@@ -2145,6 +2202,13 @@ function isDurableRequested(body: AgentTokenRequest): boolean {
     typeof body.accessTokenClass === "string" &&
     body.accessTokenClass.trim().toLowerCase() === "durable"
   );
+}
+
+// The indefinite (never-expiring) opt-in: an explicit `indefinite: true`. It
+// implies the durable path, so it is always gated exactly like a bounded durable
+// mint. Anything else leaves the token bounded.
+function isIndefiniteRequested(body: AgentTokenRequest): boolean {
+  return body.indefinite === true;
 }
 
 // A durable, long-lived static key must be strictly read-only: every scope must

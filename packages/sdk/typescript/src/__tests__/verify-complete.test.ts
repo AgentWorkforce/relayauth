@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { test, afterEach } from "node:test";
 import type { JWKSResponse, RelayAuthTokenClaims } from "@relayauth/types";
 
-import { RelayAuthError, TokenExpiredError } from "../errors.js";
+import { RelayAuthError, TokenExpiredError, TokenRevokedError } from "../errors.js";
 import { TokenVerifier, type VerifyOptions } from "../verify.js";
 
 type CompleteVerifyOptions = VerifyOptions & {
   cacheTtlMs?: number;
   checkRevocation?: boolean;
   revocationUrl?: string;
+  revocationHandledExternally?: boolean;
 };
 
 type TokenVerifierInstance = {
@@ -499,4 +500,296 @@ test("revocation checking calls the revocation endpoint when enabled", async (t)
   const queryJti = revocationCall.url.searchParams.get("jti");
   const bodyJti = revocationCall.body ? JSON.parse(revocationCall.body).jti : undefined;
   assert.equal(queryJti ?? bodyJti, claims.jti);
+});
+
+// The 2100-01-01 far-future sentinel used for indefinite (never-expiring) tokens.
+const INDEFINITE_EXP = Math.floor(Date.UTC(2100, 0, 1) / 1000);
+
+test("indefinite token: DEFAULT config (checkRevocation unset) forces the revocation check — accepted while active, rejected after revoke", async (t) => {
+  const [fixture] = await signingFixturesPromise;
+  const claims = createClaims({
+    jti: "jti_indefinite_forced",
+    exp: INDEFINITE_EXP,
+    meta: { indefinite: "true", accessTokenClass: "durable" },
+  });
+  const token = await createJwt(claims, fixture);
+  const now = { value: fixedNowSeconds * 1000 };
+
+  // Revocation state flips from active to revoked between the two verifies.
+  let revoked = false;
+  const fetchMock = mockFetch((input) => {
+    const url =
+      typeof input === "string"
+        ? new URL(input)
+        : input instanceof URL
+          ? new URL(input.toString())
+          : new URL(input.url);
+
+    if (url.toString() === jwksUrl) {
+      return jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] });
+    }
+    if (url.toString().startsWith(revocationUrl)) {
+      return jsonResponse({ revoked });
+    }
+    assert.fail(`unexpected fetch request: ${url.toString()}`);
+  });
+  t.after(() => fetchMock.restore());
+  mockNow(now);
+
+  // DEFAULT config: checkRevocation is deliberately NOT set. A revocation source
+  // is configured (as a resource server would), but the flag is off.
+  const verifier = getVerifier({
+    jwksUrl,
+    issuer: claims.iss,
+    audience: ["relaycast"],
+    revocationUrl,
+  });
+  const verify = requireVerify(verifier);
+
+  // Active: the forced check queries the denylist and the token verifies.
+  const active = await verify(token);
+  assert.equal(active.jti, claims.jti);
+
+  // Revoke it, then the SAME token must be rejected despite checkRevocation unset.
+  revoked = true;
+  await assert.rejects(
+    verify(token),
+    (error: unknown) => error instanceof TokenRevokedError,
+    "a revoked indefinite token must be rejected even with default verifier config",
+  );
+});
+
+test("indefinite token: fails closed when NO revocation source is configured", async (t) => {
+  const [fixture] = await signingFixturesPromise;
+  const claims = createClaims({
+    jti: "jti_indefinite_norevurl",
+    exp: INDEFINITE_EXP,
+    meta: { indefinite: "true", accessTokenClass: "durable" },
+  });
+  const token = await createJwt(claims, fixture);
+  const now = { value: fixedNowSeconds * 1000 };
+  const fetchMock = mockFetch((input) => {
+    const url = typeof input === "string" ? new URL(input) : new URL(input.toString());
+    if (url.toString() === jwksUrl) {
+      return jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] });
+    }
+    assert.fail(`unexpected fetch request: ${url.toString()}`);
+  });
+  t.after(() => fetchMock.restore());
+  mockNow(now);
+
+  // No revocationUrl → a never-expiring token cannot be safely accepted.
+  const verifier = getVerifier({ jwksUrl, issuer: claims.iss, audience: ["relaycast"] });
+  const verify = requireVerify(verifier);
+
+  await assert.rejects(
+    verify(token),
+    (error: unknown) =>
+      error instanceof RelayAuthError && error.code === "revocation_required",
+    "an indefinite token with no revocation source must fail closed",
+  );
+});
+
+test("indefinite token: revocationHandledExternally opts out of the forced check (issuer path)", async (t) => {
+  const [fixture] = await signingFixturesPromise;
+  const claims = createClaims({
+    jti: "jti_indefinite_external",
+    exp: INDEFINITE_EXP,
+    meta: { indefinite: "true", accessTokenClass: "durable" },
+  });
+  const token = await createJwt(claims, fixture);
+  const now = { value: fixedNowSeconds * 1000 };
+  const fetchMock = mockFetch((input) => {
+    const url = typeof input === "string" ? new URL(input) : new URL(input.toString());
+    if (url.toString() === jwksUrl) {
+      return jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] });
+    }
+    // No revocation endpoint should be hit when the embedder handles revocation.
+    assert.fail(`unexpected fetch request: ${url.toString()}`);
+  });
+  t.after(() => fetchMock.restore());
+  mockNow(now);
+
+  // The relayauth issuer sets this because it enforces revocation via its own
+  // denylist; the verifier must then NOT force (or require) an HTTP revocation call.
+  const verifier = getVerifier({
+    jwksUrl,
+    issuer: claims.iss,
+    audience: ["relaycast"],
+    revocationHandledExternally: true,
+  });
+  const verify = requireVerify(verifier);
+
+  const result = await verify(token);
+  assert.equal(result.jti, claims.jti);
+  // Only the JWKS fetch — no revocation call was forced.
+  assert.equal(fetchMock.calls.length, 1);
+});
+
+test("finite token: default config leaves revocation UNCHECKED (no behavior change)", async (t) => {
+  const [fixture] = await signingFixturesPromise;
+  const claims = createClaims({ jti: "jti_finite_default" });
+  const token = await createJwt(claims, fixture);
+  const now = { value: fixedNowSeconds * 1000 };
+  const fetchMock = mockFetch((input) => {
+    const url = typeof input === "string" ? new URL(input) : new URL(input.toString());
+    if (url.toString() === jwksUrl) {
+      return jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] });
+    }
+    // A normal finite token with checkRevocation unset must NOT hit revocation.
+    assert.fail(`unexpected revocation fetch for a finite token: ${url.toString()}`);
+  });
+  t.after(() => fetchMock.restore());
+  mockNow(now);
+
+  const verifier = getVerifier({
+    jwksUrl,
+    issuer: claims.iss,
+    audience: ["relaycast"],
+    revocationUrl,
+  });
+  const verify = requireVerify(verifier);
+
+  const result = await verify(token);
+  assert.equal(result.jti, claims.jti);
+  assert.equal(fetchMock.calls.length, 1, "finite token must not trigger a revocation call");
+});
+
+test("indefinite token: a 200 revocation response WITHOUT a boolean `revoked` field is rejected (fail closed)", async (t) => {
+  const [fixture] = await signingFixturesPromise;
+  const claims = createClaims({
+    jti: "jti_indefinite_malformed",
+    exp: INDEFINITE_EXP,
+    meta: { indefinite: "true", accessTokenClass: "durable" },
+  });
+  const token = await createJwt(claims, fixture);
+  const now = { value: fixedNowSeconds * 1000 };
+  const fetchMock = mockFetch((input) => {
+    const url =
+      typeof input === "string" ? new URL(input) : new URL(input.toString());
+    if (url.toString() === jwksUrl) {
+      return jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] });
+    }
+    if (url.toString().startsWith(revocationUrl)) {
+      // 200 OK, but no `revoked` field — an ambiguous answer that must NOT be
+      // read as "not revoked".
+      return jsonResponse({ status: "ok" });
+    }
+    assert.fail(`unexpected fetch request: ${url.toString()}`);
+  });
+  t.after(() => fetchMock.restore());
+  mockNow(now);
+
+  const verifier = getVerifier({
+    jwksUrl,
+    issuer: claims.iss,
+    audience: ["relaycast"],
+    revocationUrl,
+  });
+  const verify = requireVerify(verifier);
+
+  await assert.rejects(
+    verify(token),
+    (error: unknown) =>
+      error instanceof RelayAuthError && error.code === "invalid_revocation_response",
+    "a malformed 200 revocation response must fail closed for an indefinite token",
+  );
+});
+
+test("indefinite token: a stalling revocation source is rejected within the timeout, not hung", async (t) => {
+  const [fixture] = await signingFixturesPromise;
+  const claims = createClaims({
+    jti: "jti_indefinite_stall",
+    exp: INDEFINITE_EXP,
+    meta: { indefinite: "true", accessTokenClass: "durable" },
+  });
+  const token = await createJwt(claims, fixture);
+  const now = { value: fixedNowSeconds * 1000 };
+  const fetchMock = mockFetch((input, init) => {
+    const url =
+      typeof input === "string" ? new URL(input) : new URL(input.toString());
+    if (url.toString() === jwksUrl) {
+      return jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] });
+    }
+    if (url.toString().startsWith(revocationUrl)) {
+      // Stall: never resolve; only settle when the bounded timeout aborts the fetch.
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError")),
+        );
+      });
+    }
+    assert.fail(`unexpected fetch request: ${url.toString()}`);
+  });
+  t.after(() => fetchMock.restore());
+  mockNow(now);
+
+  const verifier = getVerifier({
+    jwksUrl,
+    issuer: claims.iss,
+    audience: ["relaycast"],
+    revocationUrl,
+    revocationTimeoutMs: 50,
+  });
+  const verify = requireVerify(verifier);
+
+  // `AbortSignal.timeout`'s timer is unref'd, so hold the loop open for the test
+  // (a real hang would still exceed this and fail).
+  const keepAlive = setTimeout(() => {}, 4000);
+  const start = performance.now();
+  await assert.rejects(
+    verify(token),
+    (error: unknown) =>
+      error instanceof RelayAuthError && error.code === "revocation_check_failed",
+    "a stalling revocation source must fail closed via the bounded timeout",
+  );
+  clearTimeout(keepAlive);
+  // The bounded timeout (50ms) must have fired well under any hang threshold.
+  assert.ok(performance.now() - start < 4000, "verification must not hang");
+});
+
+test("indefinite token: a fractional or out-of-range revocationTimeoutMs override does not spuriously reject a valid token", async (t) => {
+  const [fixture] = await signingFixturesPromise;
+  const now = { value: fixedNowSeconds * 1000 };
+  mockNow(now);
+
+  for (const timeout of [50.5, 2 ** 40, Number.MAX_SAFE_INTEGER]) {
+    const claims = createClaims({
+      jti: `jti_indefinite_to_${timeout}`,
+      exp: INDEFINITE_EXP,
+      meta: { indefinite: "true", accessTokenClass: "durable" },
+    });
+    const token = await createJwt(claims, fixture);
+    const fetchMock = mockFetch((input) => {
+      const url =
+        typeof input === "string" ? new URL(input) : new URL(input.toString());
+      if (url.toString() === jwksUrl) {
+        return jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] });
+      }
+      if (url.toString().startsWith(revocationUrl)) {
+        return jsonResponse({ revoked: false });
+      }
+      assert.fail(`unexpected fetch request: ${url.toString()}`);
+    });
+
+    try {
+      const verifier = getVerifier({
+        jwksUrl,
+        issuer: claims.iss,
+        audience: ["relaycast"],
+        revocationUrl,
+        revocationTimeoutMs: timeout,
+      });
+      const verify = requireVerify(verifier);
+
+      // The sanitized (floored + clamped) timeout must still let a valid,
+      // non-revoked token through — it must NOT throw or overflow into a 1ms
+      // timer that rejects every revocation check.
+      const result = await verify(token);
+      assert.equal(result.jti, `jti_indefinite_to_${timeout}`);
+    } finally {
+      // Always restore so a failed iteration cannot leak the mocked fetch.
+      fetchMock.restore();
+    }
+  }
 });

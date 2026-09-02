@@ -1,9 +1,15 @@
 import type { JWKSResponse, RelayAuthTokenClaims } from "@relayauth/types";
 
+import { normalizeTimeoutMs } from "@relayauth/sdk";
+
 import { RelayAuthError, TokenExpiredError, TokenRevokedError } from "./errors.js";
 import { ScopeChecker } from "./scope-checker.js";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
+// Bounded timeout for the revocation lookup. Matches the SDK verifier's value so
+// a stalling revocation service cannot hang verification indefinitely — critical
+// because revocation is the ONLY control for an indefinite (never-expiring) token.
+const DEFAULT_REVOCATION_TIMEOUT_MS = 5000;
 
 export interface VerifyOptions {
   jwksUrl?: string;
@@ -13,6 +19,20 @@ export interface VerifyOptions {
   cacheTtlMs?: number;
   checkRevocation?: boolean;
   revocationUrl?: string;
+  /**
+   * Timeout in ms for the revocation lookup. Defaults to 5000. The value is
+   * floored to an integer and clamped to [1ms, 60000ms] before use; a NaN,
+   * non-finite, or <= 0 value falls back to the default.
+   */
+  revocationTimeoutMs?: number;
+  /**
+   * Set ONLY by an embedding application that enforces revocation itself. It
+   * suppresses the forced revocation check applied to indefinite (never-expiring)
+   * tokens. Resource servers using this verifier as their complete verification
+   * MUST NOT set this — leaving it unset keeps indefinite tokens fail-closed.
+   * Has no effect on finite tokens.
+   */
+  revocationHandledExternally?: boolean;
   /** Clock skew tolerance in seconds for nbf/exp checks. Defaults to 30. */
   clockSkewLeewaySeconds?: number;
 }
@@ -72,7 +92,25 @@ export class TokenVerifier {
 
     this.#validateClaims(payload);
 
-    if (this.options?.checkRevocation) {
+    // An indefinite (never-expiring) token has a far-future exp, so revocation is
+    // its ONLY lifecycle control. Force a fail-closed revocation check regardless
+    // of `checkRevocation`, so a resource server using the default verifier
+    // config still rejects a revoked indefinite token. An issuer that enforces
+    // revocation itself opts out via `revocationHandledExternally`. Finite tokens
+    // are unaffected.
+    const revocationForced =
+      isIndefiniteToken(payload) &&
+      this.options?.revocationHandledExternally !== true;
+
+    if (revocationForced && !this.options?.revocationUrl) {
+      throw new RelayAuthError(
+        "Indefinite tokens require a configured revocation check",
+        "revocation_required",
+        500,
+      );
+    }
+
+    if (this.options?.checkRevocation || revocationForced) {
       await this.#checkRevocation(payload.jti);
     }
 
@@ -255,7 +293,17 @@ export class TokenVerifier {
 
     let response: Response;
     try {
-      response = await fetch(url);
+      // Bounded timeout: a revocation service that accepts the connection but
+      // stalls must not hang verification. AbortSignal.timeout rejects the fetch,
+      // which is caught here and surfaced as a fail-closed revocation_check_failed.
+      response = await fetch(url, {
+        signal: AbortSignal.timeout(
+          normalizeTimeoutMs(
+            this.options?.revocationTimeoutMs,
+            DEFAULT_REVOCATION_TIMEOUT_MS,
+          ),
+        ),
+      });
     } catch {
       throw new RelayAuthError("Failed to check token revocation", "revocation_check_failed", 502);
     }
@@ -273,14 +321,32 @@ export class TokenVerifier {
       throw new RelayAuthError("Invalid revocation response", "invalid_revocation_response", 502);
     }
 
-    if ((revokePayload as { revoked?: unknown }).revoked === true) {
+    const revoked = (revokePayload as { revoked?: unknown }).revoked;
+    if (revoked === true) {
       throw new TokenRevokedError();
+    }
+    // Fail closed: only an explicit `revoked === false` is treated as "active".
+    // A missing field or any non-boolean value is an ambiguous answer and must
+    // NOT be read as "not revoked" — reject it.
+    if (revoked !== false) {
+      throw new RelayAuthError(
+        "Invalid revocation response",
+        "invalid_revocation_response",
+        502,
+      );
     }
   }
 }
 
 function invalidTokenError(): RelayAuthError {
   return new RelayAuthError("Invalid access token", "invalid_token", 401);
+}
+
+// An indefinite (never-expiring) durable token is minted with `meta.indefinite`
+// set to the string "true"; it relies on revocation, not expiry, so the verifier
+// forces a revocation check for it.
+function isIndefiniteToken(claims: RelayAuthTokenClaims): boolean {
+  return claims.meta?.indefinite === "true";
 }
 
 function isSupportedAlgorithm(alg: string | undefined): alg is "RS256" | "EdDSA" {

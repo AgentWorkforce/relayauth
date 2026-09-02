@@ -471,7 +471,9 @@ scope-system descriptions, and relayauth extensions.
             "properties": {
               "access_token_maximum": { "type": "string" },
               "refreshable": { "type": "boolean" },
-              "read_only": { "type": "boolean" }
+              "read_only": { "type": "boolean" },
+              "indefinite_supported": { "type": "boolean" },
+              "revocation_controlled": { "type": "boolean" }
             }
           }
         }
@@ -586,18 +588,32 @@ scope checks:
 
 ### Token Lifetime Metadata
 
-`token_lifetimes` communicates defaults and hard limits. Clients may request
-shorter TTLs, but they must not assume the server will honor longer durations
-than `maximum`.
+`token_lifetimes` communicates defaults and limits for **bounded** tokens.
+Clients may request shorter TTLs.
 
-`maximum` is the ceiling across **all** access-token classes, not a duration
-the server will honor for every request. Per-class caps in
-`access_token_classes` override it: a standard `agent` access token is capped at
+`maximum` is the ceiling for **bounded** tokens — it is NOT an absolute limit
+across every token the server issues, and clients **MUST NOT** clamp or reject a
+token solely because its `exp` exceeds `maximum`. Per-class caps in
+`access_token_classes` refine it: a standard `agent` access token is capped at
 `access_token_classes.agent.access_token_maximum` (`PT1H`) and is refreshable,
 while only the `durable` class may reach `access_token_classes.durable.access_token_maximum`
 (`P90D`) — and durable tokens are read-only and non-refreshable (issued without a
 refresh token). Clients should consult the relevant class cap, not the top-level
 `maximum`, before requesting a long-lived token.
+
+**Indefinite tokens are an explicit exception to `maximum`.** When a class
+advertises `indefinite_supported: true` (as `durable` does), it can issue
+**never-expiring** tokens whose `exp` is a far-future sentinel that intentionally
+exceeds both `access_token_maximum` and the top-level `maximum`. A discovery-driven
+client MUST NOT treat such a token as nonconforming for exceeding `maximum`; it
+must recognize `indefinite_supported` and rely on revocation instead of expiry.
+Such a class also carries `revocation_controlled: true`: an indefinite token is
+controlled by revocation (the fail-closed denylist and `/v1/tokens/revoke`), not
+by a timer — so any consumer accepting one MUST perform a revocation check on
+every use. `permanent_tokens_allowed` stays `false` because these keys remain
+revocable — they are never unrevocably permanent. An indefinite durable key is
+still read-only, workspace-scoped, and minted only by a caller holding the
+durable-create capability.
 
 ## Example Response: Minimal
 
@@ -665,7 +681,7 @@ refresh token). Clients should consult the relevant class cap, not the top-level
     "permanent_tokens_allowed": false,
     "access_token_classes": {
       "agent": { "access_token_maximum": "PT1H", "refreshable": true },
-      "durable": { "access_token_maximum": "P90D", "refreshable": false, "read_only": true }
+      "durable": { "access_token_maximum": "P90D", "refreshable": false, "read_only": true, "indefinite_supported": true, "revocation_controlled": true }
     }
   },
   "endpoints": {
@@ -842,7 +858,7 @@ refresh token). Clients should consult the relevant class cap, not the top-level
     "permanent_tokens_allowed": false,
     "access_token_classes": {
       "agent": { "access_token_maximum": "PT1H", "refreshable": true },
-      "durable": { "access_token_maximum": "P90D", "refreshable": false, "read_only": true }
+      "durable": { "access_token_maximum": "P90D", "refreshable": false, "read_only": true, "indefinite_supported": true, "revocation_controlled": true }
     }
   },
   "endpoints": {

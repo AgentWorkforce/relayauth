@@ -498,6 +498,55 @@ test("AgentTokenSession forwards accessTokenClass: 'durable' to issueAgentToken"
   assert.equal(sentBody.accessTokenClass, "durable");
 });
 
+test("AgentTokenSession forwards the indefinite opt-in to issueAgentToken and never rotates", async (t) => {
+  const client = new RelayAuthClient({ baseUrl, apiKey: workspaceTokenResponse.key });
+  const fetchMock = mockFetch((input) => {
+    const url = toUrl(input);
+    if (url.pathname === "/v1/tokens/agent") {
+      // An indefinite mint returns an access token only, with a far-future expiry.
+      return jsonResponse({
+        accessToken: agentTokenPair.accessToken,
+        accessTokenExpiresAt: new Date(Date.UTC(2100, 0, 1)).toISOString(),
+        tokenType: "Bearer",
+        agentId: agentTokenPair.agentId,
+        workspaceId: agentTokenPair.workspaceId,
+        tokenClass: "relay_ag",
+        issuedViaWorkspaceTokenId: agentTokenPair.issuedViaWorkspaceTokenId,
+      }, 201);
+    }
+    // A never-expiring durable session must never hit the refresh endpoint.
+    return jsonResponse({ error: "unexpected_request" }, 500);
+  });
+  t.after(() => fetchMock.restore());
+
+  const session = new AgentTokenSession({
+    client,
+    agentId: "agent_123",
+    scopes: ["relayfile:fs:read:/customer/*"],
+    durable: true,
+    indefinite: true,
+  });
+
+  const first = await session.getTokenPair();
+  const second = await session.getTokenPair();
+
+  assert.equal(first.refreshToken, undefined);
+  assert.equal(second.accessToken, agentTokenPair.accessToken);
+  assert.equal(fetchMock.calls.length, 1);
+
+  const request = await inspectCall(fetchMock.calls[0]);
+  const sentBody = JSON.parse(request.body) as {
+    durable?: boolean;
+    indefinite?: boolean;
+  };
+  assert.equal(sentBody.durable, true);
+  assert.equal(
+    sentBody.indefinite,
+    true,
+    "the indefinite flag must reach issueAgentToken",
+  );
+});
+
 test("AgentTokenSession re-issues through the workspace token when refresh is revoked", async (t) => {
   const client = new RelayAuthClient({ baseUrl, apiKey: workspaceTokenResponse.key });
   let issueCount = 0;

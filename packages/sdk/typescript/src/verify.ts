@@ -2,6 +2,7 @@ import type { JWKSResponse, RelayAuthTokenClaims } from "@relayauth/types";
 
 import { RelayAuthError, TokenExpiredError, TokenRevokedError } from "./errors.js";
 import { ScopeChecker } from "./scopes.js";
+import { normalizeTimeoutMs } from "./timeout.js";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_JWKS_TIMEOUT_MS = 5000;
@@ -16,8 +17,26 @@ export interface VerifyOptions {
   cacheTtlMs?: number;
   checkRevocation?: boolean;
   revocationUrl?: string;
+  /**
+   * Timeout in ms for the JWKS fetch. Defaults to 5000. Floored to an integer
+   * and clamped to [1ms, 60000ms]; a NaN/non-finite/<= 0 value uses the default.
+   */
   jwksTimeoutMs?: number;
+  /**
+   * Timeout in ms for the revocation lookup. Defaults to 5000. Floored to an
+   * integer and clamped to [1ms, 60000ms]; a NaN/non-finite/<= 0 value falls
+   * back to the default.
+   */
   revocationTimeoutMs?: number;
+  /**
+   * Set ONLY by an embedding application that enforces revocation itself (e.g.
+   * the relayauth issuer, which checks its own denylist on every request). It
+   * suppresses the forced revocation check that is otherwise applied to
+   * indefinite (never-expiring) tokens. Resource servers using this verifier as
+   * their complete verification MUST NOT set this — leaving it unset keeps
+   * indefinite tokens fail-closed. Has no effect on finite tokens.
+   */
+  revocationHandledExternally?: boolean;
 }
 
 type JwtHeader = {
@@ -77,7 +96,28 @@ export class TokenVerifier {
 
     this._validateClaims(payload);
 
-    if (this.options?.checkRevocation) {
+    // An indefinite (never-expiring) token has a far-future exp, so the `exp`
+    // check can never retire it — revocation is its ONLY lifecycle control.
+    // Force a fail-closed revocation check regardless of `checkRevocation`, so a
+    // resource server using the default verifier config still rejects a revoked
+    // indefinite token. The relayauth issuer, which enforces revocation via its
+    // own denylist, opts out via `revocationHandledExternally`. Finite tokens are
+    // unaffected: they still honor `checkRevocation` exactly as before.
+    const revocationForced =
+      isIndefiniteToken(payload) &&
+      this.options?.revocationHandledExternally !== true;
+
+    if (revocationForced && !this.options?.revocationUrl) {
+      // Without a revocation source, a never-expiring token cannot be safely
+      // accepted (it could be revoked with no way to observe it). Fail closed.
+      throw new RelayAuthError(
+        "Indefinite tokens require a configured revocation check",
+        "revocation_required",
+        500,
+      );
+    }
+
+    if (this.options?.checkRevocation || revocationForced) {
       await this.#checkRevocation(payload.jti);
     }
 
@@ -289,8 +329,19 @@ export class TokenVerifier {
       throw new RelayAuthError("Invalid revocation response", "invalid_revocation_response", 502);
     }
 
-    if ((payload as { revoked?: unknown }).revoked === true) {
+    const revoked = (payload as { revoked?: unknown }).revoked;
+    if (revoked === true) {
       throw new TokenRevokedError();
+    }
+    // Fail closed: only an explicit `revoked === false` is treated as "active".
+    // A missing field or any non-boolean value is an ambiguous answer and must
+    // NOT be read as "not revoked" — reject it.
+    if (revoked !== false) {
+      throw new RelayAuthError(
+        "Invalid revocation response",
+        "invalid_revocation_response",
+        502,
+      );
     }
   }
 }
@@ -303,6 +354,13 @@ function unwrapRelayToken(token: string): string {
 
 function invalidTokenError(): RelayAuthError {
   return new RelayAuthError("Invalid access token", "invalid_token", 401);
+}
+
+// An indefinite (never-expiring) durable token is minted with `meta.indefinite`
+// set to the string "true". Such a token relies on revocation, not expiry, so the
+// verifier forces a revocation check for it.
+function isIndefiniteToken(claims: RelayAuthTokenClaims): boolean {
+  return claims.meta?.indefinite === "true";
 }
 
 function isSupportedAlgorithm(alg: string | undefined): alg is "RS256" | "EdDSA" | "HS256" {
@@ -502,14 +560,6 @@ function normalizeCacheTtlMs(cacheTtlMs: number | undefined): number {
   }
 
   return Math.max(0, cacheTtlMs);
-}
-
-function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number): number {
-  if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return fallback;
-  }
-
-  return timeoutMs;
 }
 
 function decodeBase64UrlJson<T>(value: string): T | null {
