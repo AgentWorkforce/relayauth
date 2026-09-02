@@ -85,11 +85,27 @@ export interface BudgetCapabilities {
   auto_suspend_supported: boolean;
 }
 
+export interface AccessTokenClassLifetime {
+  /** ISO-8601 duration ceiling for this access-token class. */
+  access_token_maximum: string;
+  /** Whether tokens of this class can be rotated via the refresh endpoint. */
+  refreshable: boolean;
+  /** Whether tokens of this class are restricted to read-only scopes. */
+  read_only?: boolean;
+}
+
 export interface TokenLifetimeConfiguration {
   access_token_default: string;
   refresh_token_default: string;
+  /** Maximum lifetime across all access-token classes (see access_token_classes). */
   maximum: string;
   permanent_tokens_allowed: boolean;
+  /**
+   * Optional per-class lifetime ceilings. Advertises that some classes (e.g.
+   * `durable`) permit a longer ceiling than the standard `agent` access token,
+   * so discovery-driven clients do not clamp or reject a valid long-lived request.
+   */
+  access_token_classes?: Record<string, AccessTokenClassLifetime>;
 }
 
 export interface AgentConfiguration {

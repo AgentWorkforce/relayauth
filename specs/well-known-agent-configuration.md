@@ -461,6 +461,19 @@ scope-system descriptions, and relayauth extensions.
         },
         "permanent_tokens_allowed": {
           "type": "boolean"
+        },
+        "access_token_classes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["access_token_maximum", "refreshable"],
+            "properties": {
+              "access_token_maximum": { "type": "string" },
+              "refreshable": { "type": "boolean" },
+              "read_only": { "type": "boolean" }
+            }
+          }
         }
       }
     },
@@ -639,8 +652,12 @@ than `maximum`.
   "token_lifetimes": {
     "access_token_default": "PT1H",
     "refresh_token_default": "PT24H",
-    "maximum": "P30D",
-    "permanent_tokens_allowed": false
+    "maximum": "P90D",
+    "permanent_tokens_allowed": false,
+    "access_token_classes": {
+      "agent": { "access_token_maximum": "PT1H", "refreshable": true },
+      "durable": { "access_token_maximum": "P90D", "refreshable": false, "read_only": true }
+    }
   },
   "endpoints": {
     "jwks": {
@@ -812,8 +829,12 @@ than `maximum`.
   "token_lifetimes": {
     "access_token_default": "PT1H",
     "refresh_token_default": "PT24H",
-    "maximum": "P30D",
-    "permanent_tokens_allowed": false
+    "maximum": "P90D",
+    "permanent_tokens_allowed": false,
+    "access_token_classes": {
+      "agent": { "access_token_maximum": "PT1H", "refreshable": true },
+      "durable": { "access_token_maximum": "P90D", "refreshable": false, "read_only": true }
+    }
   },
   "endpoints": {
     "jwks": {

@@ -123,11 +123,17 @@ type WorkspaceTokenResponse = {
   key: string;
 };
 
-type AgentTokenResponse = TokenPair & {
+type AgentTokenResponse = Omit<
+  TokenPair,
+  "refreshToken" | "refreshTokenExpiresAt"
+> & {
   agentId: string;
   workspaceId: string;
   tokenClass: "relay_ag";
   issuedViaWorkspaceTokenId: string;
+  // Durable agent tokens are standalone and omit the refresh token.
+  refreshToken?: string;
+  refreshTokenExpiresAt?: string;
 };
 
 type PathTokenResponse = TokenPair & {
@@ -319,6 +325,25 @@ tokens.post("/agent", async (c) => {
     return c.json({ error: "agentId is required" }, 400);
   }
 
+  // Durable mode is a narrow, tightly-gated exemption from the 1h agent cap. The
+  // gate (distinct mint capability, read-only fs scopes, workspace binding) is
+  // evaluated BEFORE the identity lookup so an unauthorized or unbound durable
+  // request fails closed with its own 400/403 code rather than leaking a 404
+  // identity_not_found. The default (non-durable) path is unchanged.
+  const durable = isDurableRequested(body);
+  if (durable) {
+    // Validate against the explicitly requested scopes (no identity fallback):
+    // a durable token must name its read-only scopes rather than inherit them.
+    const requestedScopes = normalizeScopes(body.scopes, []);
+    const gate = authorizeDurableIssuance({
+      workspaceToken,
+      accessScopes: requestedScopes,
+    });
+    if (!gate.ok) {
+      return c.json({ error: gate.error, code: gate.code }, gate.status);
+    }
+  }
+
   const identity = await storage.identities.get(agentId);
   if (
     !identity ||
@@ -347,48 +372,57 @@ tokens.post("/agent", async (c) => {
   }
 
   const accessAudience = normalizeAudience(body.audience, accessScopes);
-
-  // Durable mode is a narrow, tightly-gated exemption from the 1h agent cap. The
-  // default path is unchanged: when durable is not requested, the access TTL is
-  // clamped to MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS exactly as before.
-  const durable = isDurableRequested(body);
-  let accessExpiresIn: number;
-  if (durable) {
-    const gate = authorizeDurableIssuance({ workspaceToken, accessScopes });
-    if (!gate.ok) {
-      return c.json({ error: gate.error, code: gate.code }, gate.status);
-    }
-    accessExpiresIn = normalizeDurableExpiresIn(body.expiresIn);
-  } else {
-    accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn);
-  }
+  // When durable, the TTL clamp is relaxed to 90d (the gate above has already
+  // approved the request); otherwise the standard 1h agent cap applies.
+  const accessExpiresIn = durable
+    ? normalizeDurableExpiresIn(body.expiresIn)
+    : normalizeAgentExpiresIn(body.expiresIn);
 
   const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(
     body.refreshTokenTtlSeconds,
   );
-  const tokenPair = await issueTokenPair(storage, c.env, identity, {
-    deferTask: c.get("deferTask"),
-    accessScopes,
-    accessAudience,
-    accessExpiresIn,
-    refreshTokenTtlSeconds,
-    action: "token.issued",
-    parentTokenId: workspaceToken.id,
-    durable,
-    meta: {
-      tokenClass: "agent",
-      workspaceTokenId: workspaceToken.id,
-      accessScopes: JSON.stringify(accessScopes),
-      accessAudience: JSON.stringify(accessAudience),
-      // Mark the long-lived, static class distinctly from the transient agent
-      // token so it is greppable in issued-token metadata. `tokenClass` stays
-      // "agent" so refresh detection and revocation lineage are unchanged.
-      ...(durable ? { accessTokenClass: "durable" } : {}),
-    },
-    wrapAccessToken: true,
-    wrapRefreshToken: true,
-    tokenIdPrefix: "relay_ag_",
-  });
+  const meta: Record<string, string> = {
+    tokenClass: "agent",
+    workspaceTokenId: workspaceToken.id,
+    accessScopes: JSON.stringify(accessScopes),
+    accessAudience: JSON.stringify(accessAudience),
+    // Mark the long-lived, static class distinctly from the transient agent
+    // token so it is greppable in issued-token metadata. `tokenClass` stays
+    // "agent" so refresh detection and revocation lineage are unchanged.
+    ...(durable ? { accessTokenClass: "durable" } : {}),
+  };
+
+  // A durable token is a standalone, static access token: it is issued WITHOUT a
+  // refresh token so it can never be rotated into a fresh (short-lived) access
+  // token, which would silently extend the session past its 90d lifetime
+  // (CWE-613). Non-durable agent tokens keep their refreshable pair unchanged.
+  const tokenPair = durable
+    ? await issueTokenPair(storage, c.env, identity, {
+        deferTask: c.get("deferTask"),
+        accessScopes,
+        accessAudience,
+        accessExpiresIn,
+        action: "token.issued",
+        parentTokenId: workspaceToken.id,
+        durable: true,
+        issueRefreshToken: false,
+        meta,
+        wrapAccessToken: true,
+        tokenIdPrefix: "relay_ag_",
+      })
+    : await issueTokenPair(storage, c.env, identity, {
+        deferTask: c.get("deferTask"),
+        accessScopes,
+        accessAudience,
+        accessExpiresIn,
+        refreshTokenTtlSeconds,
+        action: "token.issued",
+        parentTokenId: workspaceToken.id,
+        meta,
+        wrapAccessToken: true,
+        wrapRefreshToken: true,
+        tokenIdPrefix: "relay_ag_",
+      });
 
   return c.json<AgentTokenResponse>(
     {
@@ -721,6 +755,20 @@ tokens.post("/refresh", async (c) => {
 
   if (verification.claims.token_type !== "refresh") {
     return c.json({ error: "Invalid refresh token" }, 401);
+  }
+
+  // Durable access tokens are standalone and never issue a refresh token. Reject
+  // any refresh token that claims the durable class (e.g. a legacy/migrated one)
+  // before rotating, so a durable session can never be extended past its 90d
+  // lifetime by silently downgrading to a fresh 1h access token (CWE-613).
+  if (verification.claims.meta?.accessTokenClass === "durable") {
+    return c.json(
+      {
+        error: "durable tokens are not refreshable",
+        code: "durable_token_not_refreshable",
+      },
+      400,
+    );
   }
 
   const presentedJti = verification.claims.jti;
@@ -1085,36 +1133,62 @@ tokens.get("/introspect", async (c) => {
 
 export default tokens;
 
+// A durable access token is issued standalone (no refresh token), so its result
+// carries only the access fields.
+type AccessOnlyTokenPair = Omit<
+  TokenPair,
+  "refreshToken" | "refreshTokenExpiresAt"
+>;
+
+type IssueTokenPairOptions = {
+  deferTask: DeferredTaskScheduler;
+  accessScopes: string[];
+  accessAudience: string[];
+  accessExpiresIn: number;
+  refreshTokenTtlSeconds?: number;
+  sessionId?: string;
+  action: "token.issued" | "token.refreshed";
+  parentTokenId?: string;
+  /**
+   * Marks this issuance as a durable, long-lived, read-only access token so
+   * the audit trail records it distinctly (long-lived keys must be traceable).
+   */
+  durable?: boolean;
+  /**
+   * When false, NO refresh token is signed, persisted, or returned — the access
+   * token is standalone and cannot be rotated. Defaults to true (a full pair).
+   */
+  issueRefreshToken?: boolean;
+  meta?: Record<string, string>;
+  expiresNotAfter?: number;
+  wrapAccessToken?: boolean;
+  wrapRefreshToken?: boolean;
+  tokenIdPrefix?: string;
+  previousRefreshToken?: {
+    id: string;
+    identityId: string;
+    expiresAt: number;
+  };
+};
+
+function issueTokenPair(
+  storage: AuthStorage,
+  env: AppEnv["Bindings"],
+  identity: StoredIdentity,
+  options: IssueTokenPairOptions & { issueRefreshToken: false },
+): Promise<AccessOnlyTokenPair>;
+function issueTokenPair(
+  storage: AuthStorage,
+  env: AppEnv["Bindings"],
+  identity: StoredIdentity,
+  options: IssueTokenPairOptions,
+): Promise<TokenPair>;
 async function issueTokenPair(
   storage: AuthStorage,
   env: AppEnv["Bindings"],
   identity: StoredIdentity,
-  options: {
-    deferTask: DeferredTaskScheduler;
-    accessScopes: string[];
-    accessAudience: string[];
-    accessExpiresIn: number;
-    refreshTokenTtlSeconds?: number;
-    sessionId?: string;
-    action: "token.issued" | "token.refreshed";
-    parentTokenId?: string;
-    /**
-     * Marks this issuance as a durable, long-lived, read-only access token so
-     * the audit trail records it distinctly (long-lived keys must be traceable).
-     */
-    durable?: boolean;
-    meta?: Record<string, string>;
-    expiresNotAfter?: number;
-    wrapAccessToken?: boolean;
-    wrapRefreshToken?: boolean;
-    tokenIdPrefix?: string;
-    previousRefreshToken?: {
-      id: string;
-      identityId: string;
-      expiresAt: number;
-    };
-  },
-): Promise<TokenPair> {
+  options: IssueTokenPairOptions,
+): Promise<TokenPair | AccessOnlyTokenPair> {
   const issuedAtSeconds = Math.floor(Date.now() / 1000);
   const sessionId = options.sessionId ?? createSessionId();
   const refreshTtl =
@@ -1173,25 +1247,12 @@ async function issueTokenPair(
   };
 
   const signedAccessToken = await signToken(accessClaims, env);
-  const signedRefreshToken = await signToken(refreshClaims, env);
   const accessToken = options.wrapAccessToken
     ? wrapRelayToken(signedAccessToken, relayTokenPrefix(options.tokenIdPrefix))
     : signedAccessToken;
-  const refreshToken = options.wrapRefreshToken
-    ? wrapRelayToken(
-        signedRefreshToken,
-        relayTokenPrefix(options.tokenIdPrefix),
-      )
-    : signedRefreshToken;
-
   const accessTokenRecord = toIssuedTokenRecord(
     identity.id,
     accessClaims,
-    identity.name,
-  );
-  const refreshTokenRecord = toIssuedTokenRecord(
-    identity.id,
-    refreshClaims,
     identity.name,
   );
   const issueAuditEntry = createTokenAuditEntry({
@@ -1201,6 +1262,35 @@ async function issueTokenPair(
     durable: options.durable,
     accessTtlSeconds: options.accessExpiresIn,
   });
+
+  // Standalone (durable) access token: persist the access row + audit only. No
+  // refresh token is signed, persisted, or returned, so the token cannot be
+  // rotated into a fresh short-lived access token (CWE-613 session extension).
+  if (options.issueRefreshToken === false) {
+    await storage.tokens.persistIssuedWithAudit({
+      token: accessTokenRecord,
+      auditEntry: issueAuditEntry,
+    });
+
+    return {
+      accessToken,
+      accessTokenExpiresAt: new Date(accessClaims.exp * 1000).toISOString(),
+      tokenType: "Bearer",
+    };
+  }
+
+  const signedRefreshToken = await signToken(refreshClaims, env);
+  const refreshToken = options.wrapRefreshToken
+    ? wrapRelayToken(
+        signedRefreshToken,
+        relayTokenPrefix(options.tokenIdPrefix),
+      )
+    : signedRefreshToken;
+  const refreshTokenRecord = toIssuedTokenRecord(
+    identity.id,
+    refreshClaims,
+    identity.name,
+  );
   if (options.previousRefreshToken) {
     await storage.tokens.rotateIssuedPairWithAudit({
       accessToken: accessTokenRecord,

@@ -1036,6 +1036,10 @@ test("POST /v1/tokens/agent (durable mode)", async (t) => {
       assert.equal(accessClaims.meta?.tokenClass, "agent");
       assert.equal(accessClaims.meta?.accessTokenClass, "durable");
       assert.deepEqual(accessClaims.scopes, ["relayfile:fs:read:/customer/*"]);
+      // Standalone: a durable mint returns NO refresh token, so it can never be
+      // rotated into a fresh short-lived access token.
+      assert.equal(body.refreshToken, undefined);
+      assert.equal(body.refreshTokenExpiresAt, undefined);
     },
   );
 
@@ -1183,6 +1187,125 @@ test("POST /v1/tokens/agent (durable mode)", async (t) => {
       "durable token jti should be on the revocation denylist",
     );
   });
+
+  await t.test(
+    "durable mint yields no usable refresh downgrade (access token only)",
+    async () => {
+      const { app, identity, workspaceToken } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayauth:token-durable:create:*",
+        "relayfile:fs:read:*",
+      ]);
+
+      const mint = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:fs:read:/customer/*"],
+          durable: true,
+          expiresIn: DURABLE_TTL_SECONDS,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+      const minted = await assertJsonResponse<AgentTokenPair>(mint, 201);
+
+      // No refresh token is issued: there is nothing to rotate into a 1h token.
+      assert.equal(minted.refreshToken, undefined);
+      assert.equal(minted.refreshTokenExpiresAt, undefined);
+    },
+  );
+
+  await t.test(
+    "rejects refresh of a token that claims the durable class (defense in depth)",
+    async () => {
+      const { app, identity } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayauth:token-durable:create:*",
+        "relayfile:fs:read:*",
+      ]);
+
+      // A durable mint issues no refresh token, but a legacy/migrated durable
+      // refresh token must still be rejected before any rotation occurs.
+      const now = Math.floor(Date.now() / 1000);
+      const durableRefreshToken = signRs256Jwt({
+        sub: identity.id,
+        org: identity.orgId,
+        wks: identity.workspaceId,
+        scopes: ["relayauth:token:refresh"],
+        sponsorId: identity.sponsorId,
+        sponsorChain: [...identity.sponsorChain],
+        token_type: "refresh",
+        iss: "https://relayauth.dev",
+        aud: ["relayauth"],
+        exp: now + 24 * 3600,
+        iat: now,
+        jti: `tok_durable_refresh_${crypto.randomUUID().replace(/-/g, "")}`,
+        meta: { tokenClass: "agent", accessTokenClass: "durable" },
+      });
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+        body: { refreshToken: durableRefreshToken },
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 400, (b) => {
+        assert.equal(b.code, "durable_token_not_refreshable");
+      });
+    },
+  );
+
+  await t.test(
+    "runs the durable gate BEFORE the identity lookup (no 404 leak)",
+    async () => {
+      // Unauthorized caller (no durable capability) + a non-existent agent: the
+      // gate must fail closed with durable_capability_required (403), NOT the
+      // identity_not_found (404) that a later identity lookup would return.
+      const { app, workspaceToken } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayfile:fs:read:*",
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: "agent_does_not_exist",
+          scopes: ["relayfile:fs:read:/customer/*"],
+          durable: true,
+          expiresIn: DURABLE_TTL_SECONDS,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 403, (b) => {
+        assert.equal(b.code, "durable_capability_required");
+      });
+    },
+  );
+
+  await t.test(
+    "durable read-only check runs before the identity lookup too",
+    async () => {
+      // Authorized caller, write scope, non-existent agent → read-only rejection
+      // (400) must win over identity_not_found (404).
+      const { app, workspaceToken } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayauth:token-durable:create:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: "agent_does_not_exist",
+          scopes: ["relayfile:fs:write:/customer/*"],
+          durable: true,
+          expiresIn: DURABLE_TTL_SECONDS,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 400, (b) => {
+        assert.equal(b.code, "durable_requires_read_only_scopes");
+      });
+    },
+  );
 });
 
 test("POST /v1/tokens/path", async (t) => {

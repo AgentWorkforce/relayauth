@@ -71,7 +71,13 @@ export class AgentTokenSession {
   }
 
   async #rotateTokenPair(): Promise<AgentTokenPair> {
-    if (!this.#current || shouldRotate(this.#current.refreshTokenExpiresAt, this.refreshWindowMs)) {
+    // A durable token carries no refresh token; it can only be re-issued, never
+    // rotated. Fall back to a fresh mint when no rotatable refresh token exists.
+    if (
+      !this.#current ||
+      this.#current.refreshToken === undefined ||
+      shouldRotate(this.#current.refreshTokenExpiresAt, this.refreshWindowMs)
+    ) {
       return this.#issueTokenPair();
     }
 
@@ -123,7 +129,11 @@ function normalizeRefreshWindowMs(value: number | undefined): number {
   return Math.floor(value);
 }
 
-function shouldRotate(expiresAt: string, refreshWindowMs: number): boolean {
+function shouldRotate(expiresAt: string | undefined, refreshWindowMs: number): boolean {
+  if (expiresAt === undefined) {
+    return true;
+  }
+
   const expiresAtMs = Date.parse(expiresAt);
   if (Number.isNaN(expiresAtMs)) {
     return true;
