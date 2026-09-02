@@ -1,9 +1,34 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { AgentConfiguration, EndpointAuthMode, GrantType, TokenSigningAlgorithm } from "@relayauth/types";
 import { createTestApp, createTestRequest } from "./test-helpers.js";
 
 const DISCOVERY_PATH = "/.well-known/agent-configuration";
+
+// Parse the published strict JSON Schema out of the spec so a drift between the
+// emitted document and the contract (e.g. an endpoint property missing from the
+// schema under additionalProperties:false) fails the suite.
+function loadPublishedConfigurationSchema(): {
+  additionalProperties?: boolean;
+  required: string[];
+  properties: Record<string, unknown>;
+} {
+  const specUrl = new URL(
+    "../../../../specs/well-known-agent-configuration.md",
+    import.meta.url,
+  );
+  const spec = readFileSync(specUrl, "utf8");
+  const marker = "## Full JSON Schema";
+  const markerIndex = spec.indexOf(marker);
+  assert.ok(markerIndex >= 0, "spec must contain a Full JSON Schema section");
+  const fenceStart = spec.indexOf("```json", markerIndex);
+  assert.ok(fenceStart >= 0, "Full JSON Schema must be a ```json block");
+  const bodyStart = fenceStart + "```json".length;
+  const fenceEnd = spec.indexOf("```", bodyStart);
+  assert.ok(fenceEnd >= 0, "Full JSON Schema block must be closed");
+  return JSON.parse(spec.slice(bodyStart, fenceEnd));
+}
 
 const VALID_GRANT_TYPES = new Set<GrantType>([
   "client_credentials",
@@ -304,4 +329,49 @@ test("discovery response validates against the AgentConfiguration contract", asy
 
   const typedBody: AgentConfiguration = body;
   assert.equal(typeof typedBody.schema_version, "string");
+});
+
+test("discovery response advertises the revocation_check_endpoint", async () => {
+  const body = await getAgentConfigurationJson();
+
+  assertUrl(
+    (body as Record<string, unknown>).revocation_check_endpoint,
+    "revocation_check_endpoint",
+  );
+  assert.match(
+    String((body as Record<string, unknown>).revocation_check_endpoint),
+    /\/v1\/tokens\/revocation$/,
+  );
+});
+
+test("discovery document conforms to the published strict JSON Schema", async () => {
+  const body = (await getAgentConfigurationJson()) as Record<string, unknown>;
+  const schema = loadPublishedConfigurationSchema();
+
+  // The published schema is strict; an emitted key with no matching property
+  // (e.g. revocation_check_endpoint) would be rejected by any conforming
+  // validator. Enforce that here so the schema and the emitter never drift.
+  assert.equal(
+    schema.additionalProperties,
+    false,
+    "published schema must remain strict",
+  );
+  const allowed = new Set(Object.keys(schema.properties));
+  for (const key of Object.keys(body)) {
+    assert.ok(
+      allowed.has(key),
+      `emitted key "${key}" is not declared in the published schema`,
+    );
+  }
+  for (const requiredKey of schema.required) {
+    assert.ok(
+      requiredKey in body,
+      `required schema key "${requiredKey}" is missing from the emitted document`,
+    );
+  }
+  // The new field must be modeled in the schema, not merely emitted.
+  assert.ok(
+    allowed.has("revocation_check_endpoint"),
+    "schema must declare revocation_check_endpoint",
+  );
 });

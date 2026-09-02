@@ -15,6 +15,7 @@ import {
   pruneExpiredTokensWindow,
   scanExpiredTokensWindow,
 } from "../engine/retention-gc.js";
+import { REVOCATION_CHECK_RATE_LIMIT } from "../server.js";
 import type { DeferredTask } from "../lib/deferred.js";
 import {
   isStorageCapacityExhausted,
@@ -2767,6 +2768,207 @@ test("GET /v1/tokens/revocation", async (t) => {
       assert.match(JSON.stringify(body), /jti/i);
     });
   });
+
+  await t.test(
+    "rate-limits the unauthenticated endpoint once the per-window ceiling is exceeded",
+    async () => {
+      const { app } = await createHarness();
+      const path = "/v1/tokens/revocation?jti=rate-limit-probe";
+
+      // Exhaust the window (default IP bucket, no proxy headers in tests).
+      for (let i = 0; i < REVOCATION_CHECK_RATE_LIMIT; i++) {
+        const ok = await requestRoute(app, "GET", path);
+        assert.equal(ok.status, 200);
+      }
+
+      const limited = await requestRoute(app, "GET", path);
+      assert.equal(limited.status, 429);
+      const body = (await limited.json()) as { code?: string };
+      assert.equal(body.code, "rate_limited");
+      assert.ok(limited.headers.get("retry-after"));
+    },
+  );
+
+  await t.test(
+    "fails closed (5xx, not revoked:false) when the adapter cannot read revocation state",
+    async () => {
+      const { app, identity } = await createHarness();
+      const { accessClaims } = createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [accessClaims.jti]);
+
+      // Simulate an adapter that does not implement the optional revocation
+      // read capability. Returning revoked:false here would let a verifier
+      // accept an already-revoked token — a security fail-open.
+      app.storage.revocations.isRevoked = undefined;
+
+      const response = await requestRoute(
+        app,
+        "GET",
+        `/v1/tokens/revocation?jti=${encodeURIComponent(accessClaims.jti)}`,
+      );
+
+      assert.equal(response.status, 501);
+      const body = (await response.json()) as {
+        revoked?: boolean;
+        error?: string;
+      };
+      assert.notEqual(
+        body.revoked,
+        false,
+        "must not report a resolvable revoked:false when the capability is unavailable",
+      );
+      assert.match(JSON.stringify(body), /unavailable/i);
+    },
+  );
+});
+
+test("POST /v1/tokens/revoke by workspaceId+agentName covers path tokens", async (t) => {
+  await t.test(
+    "revokes a path-token JTI whose identity was never persisted (no premature 404)",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      // Mint a path token directly. Its identity (agent_path-revoke-target) is
+      // transient — createPathTokenIdentity is never written to the identities
+      // table — so findDuplicate cannot resolve it.
+      const mintResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/workspace-path",
+        {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "path-revoke-target",
+            paths: ["/linear/issues/**"],
+            scopes: ["relayfile:fs:write:/linear/issues/**"],
+            ttlSeconds: 300,
+          },
+          headers: { "x-api-key": orgApiKey.key },
+        },
+      );
+      const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+        mintResponse,
+        201,
+      );
+      const accessJti = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.accessToken,
+        1,
+      ).jti;
+      const refreshJti = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.refreshToken,
+        1,
+      ).jti;
+
+      // Sanity: before revocation the JTI reads active.
+      const preCheck = await requestRoute(
+        app,
+        "GET",
+        `/v1/tokens/revocation?jti=${encodeURIComponent(accessJti)}`,
+      );
+      assert.equal(
+        (await assertJsonResponse<{ revoked: boolean }>(preCheck, 200)).revoked,
+        false,
+      );
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const revokeResponse = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: {
+          workspaceId: "ws_tokens_route",
+          agentName: "path-revoke-target",
+        },
+        headers: manageHeaders,
+      });
+      assert.equal(
+        revokeResponse.status,
+        204,
+        "workspace-agent revoke must find and revoke the path token, not 404",
+      );
+
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        revoked.includes(accessJti),
+        `access JTI ${accessJti} should be revoked, got ${JSON.stringify(revoked)}`,
+      );
+      assert.ok(
+        revoked.includes(refreshJti),
+        `refresh JTI ${refreshJti} should be revoked, got ${JSON.stringify(revoked)}`,
+      );
+
+      const postCheck = await requestRoute(
+        app,
+        "GET",
+        `/v1/tokens/revocation?jti=${encodeURIComponent(accessJti)}`,
+      );
+      assert.equal(
+        (await assertJsonResponse<{ revoked: boolean }>(postCheck, 200)).revoked,
+        true,
+      );
+    },
+  );
+
+  await t.test(
+    "does not cross workspace boundaries when revoking a path token",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      await requestRoute(app, "POST", "/v1/tokens/workspace-path", {
+        body: {
+          workspaceId: "ws_tokens_route",
+          agentName: "path-boundary-agent",
+          paths: ["/linear/issues/**"],
+          scopes: ["relayfile:fs:write:/linear/issues/**"],
+          ttlSeconds: 300,
+        },
+        headers: { "x-api-key": orgApiKey.key },
+      });
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      // Same agent, a workspace it was never minted under — must not resolve.
+      const revokeResponse = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: {
+          workspaceId: "ws_other_workspace",
+          agentName: "path-boundary-agent",
+        },
+        headers: manageHeaders,
+      });
+      assert.equal(revokeResponse.status, 404);
+      assert.deepEqual(await listRevokedTokenIds(app), []);
+    },
+  );
 });
 
 test("GET /v1/tokens/introspect", async (t) => {

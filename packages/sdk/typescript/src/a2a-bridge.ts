@@ -34,6 +34,13 @@ export interface A2aAgentCard {
     schemes: string[];
     credentials?: string;
   };
+  /**
+   * Public, unauthenticated per-token revocation-check URL carried across the
+   * bridge so a config round-tripped through an A2A card keeps its
+   * `revocation_check_endpoint`. A2A has no native slot for this, so it rides
+   * as an extension field.
+   */
+  revocationCheckEndpoint?: string;
 }
 
 const DEFAULT_SCHEMA_VERSION = "1.0";
@@ -58,6 +65,9 @@ export function agentCardToConfiguration(card: A2aAgentCard): AgentConfiguration
     jwks_uri: new URL("/.well-known/jwks.json", origin).toString(),
     token_endpoint: rpcUrl.toString(),
     identity_endpoint: rpcUrl.toString(),
+    ...(isNonEmptyString(card.revocationCheckEndpoint)
+      ? { revocation_check_endpoint: card.revocationCheckEndpoint }
+      : {}),
     capabilities: mapCardCapabilities(card.capabilities),
     grant_types_supported: [...DEFAULT_GRANT_TYPES],
     token_endpoint_auth_methods_supported: authMethods,
@@ -126,6 +136,9 @@ export function configurationToAgentCard(
     description: `A2A bridge for ${name}`,
     url: config.token_endpoint,
     ...(config.server_version ? { version: config.server_version } : {}),
+    ...(isNonEmptyString(config.revocation_check_endpoint)
+      ? { revocationCheckEndpoint: config.revocation_check_endpoint }
+      : {}),
     capabilities: mapConfigurationCapabilities(config.capabilities),
     skills,
     defaultInputModes: ["application/json"],

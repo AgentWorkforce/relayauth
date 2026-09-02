@@ -51,6 +51,12 @@ const PUBLIC_PATHS = new Set([
 ]);
 const BRIDGE_RATE_LIMIT = 30;
 const BRIDGE_RATE_WINDOW_MS = 60_000;
+// The public revocation-check endpoint is auth-exempt and every call hits the
+// (SQLite) revocation store (prune + lookup), so bound it per-IP to blunt
+// abuse. The ceiling is generous — verifiers legitimately poll it on every
+// token check — while still capping an unauthenticated flood.
+export const REVOCATION_CHECK_RATE_LIMIT = 600;
+const REVOCATION_CHECK_RATE_WINDOW_MS = 60_000;
 const IDENTITY_CREATE_RATE_LIMIT = 60;
 const IDENTITY_CREATE_RATE_WINDOW_MS = 60_000;
 
@@ -109,6 +115,10 @@ function getClientIp(forwardedFor: string | undefined, realIp: string | undefine
 export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const bridgeRateMap = new Map<string, { count: number; resetAt: number }>();
+  const revocationCheckRateMap = new Map<
+    string,
+    { count: number; resetAt: number }
+  >();
   const identityCreatePreAuthRateLimiter =
     options.identityCreatePreAuthRateLimiter ?? sharedIdentityCreatePreAuthRateLimiter;
   const identityCreateRateLimiter =
@@ -255,6 +265,29 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
 
     entry.count++;
     if (entry.count > BRIDGE_RATE_LIMIT) {
+      return c.json({ error: "Rate limit exceeded", code: "rate_limited" }, 429);
+    }
+
+    await next();
+  });
+
+  app.use("/v1/tokens/revocation", async (c, next) => {
+    const ip = getClientIp(c.req.header("x-forwarded-for"), c.req.header("x-real-ip"));
+    const now = Date.now();
+
+    let entry = revocationCheckRateMap.get(ip);
+    if (!entry || now >= entry.resetAt) {
+      entry = { count: 0, resetAt: now + REVOCATION_CHECK_RATE_WINDOW_MS };
+      revocationCheckRateMap.set(ip, entry);
+    }
+
+    entry.count++;
+    if (entry.count > REVOCATION_CHECK_RATE_LIMIT) {
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil((entry.resetAt - now) / 1000),
+      );
+      c.header("Retry-After", String(retryAfterSeconds));
       return c.json({ error: "Rate limit exceeded", code: "rate_limited" }, 429);
     }
 

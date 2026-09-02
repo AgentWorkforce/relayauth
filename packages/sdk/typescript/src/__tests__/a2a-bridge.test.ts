@@ -146,6 +146,48 @@ test("round-trip preserves essential identity and endpoint metadata", () => {
   assert.equal(roundTrippedCard.skills?.[0]?.name, "Search");
 });
 
+test("both bridge conversions propagate revocation_check_endpoint", () => {
+  const configuration = buildConfiguration({
+    revocation_check_endpoint: "https://relayauth.example.com/v1/tokens/revocation",
+  });
+
+  // config -> card carries the public GET check URL as an extension field.
+  const card = configurationToAgentCard(configuration);
+  assert.equal(
+    card.revocationCheckEndpoint,
+    "https://relayauth.example.com/v1/tokens/revocation",
+  );
+
+  // card -> config restores it, so a bridged config keeps the check URL.
+  const bridged = agentCardToConfiguration({
+    name: "relayauth",
+    url: "https://relayauth.example.com/v1/tokens",
+    revocationCheckEndpoint: "https://relayauth.example.com/v1/tokens/revocation",
+  });
+  assert.equal(
+    bridged.revocation_check_endpoint,
+    "https://relayauth.example.com/v1/tokens/revocation",
+  );
+
+  // Full round-trip is lossless for the field.
+  assert.equal(
+    agentCardToConfiguration(configurationToAgentCard(configuration))
+      .revocation_check_endpoint,
+    "https://relayauth.example.com/v1/tokens/revocation",
+  );
+});
+
+test("bridge conversions omit revocation_check_endpoint when absent", () => {
+  const card = configurationToAgentCard(buildConfiguration());
+  assert.equal("revocationCheckEndpoint" in card, false);
+
+  const config = agentCardToConfiguration({
+    name: "minimal",
+    url: "https://minimal.example.com/rpc",
+  });
+  assert.equal("revocation_check_endpoint" in config, false);
+});
+
 test("agentCardToConfiguration handles missing optional fields", () => {
   const configuration = agentCardToConfiguration({
     name: "minimal",

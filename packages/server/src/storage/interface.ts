@@ -395,6 +395,20 @@ export interface TokenStorage {
   listActiveByIdentityId(identityId: string): Promise<StoredTokenRecord[]>;
   listActiveBySessionId(sessionId: string): Promise<StoredTokenRecord[]>;
   listActiveIds(identityId: string): Promise<string[]>;
+  /**
+   * Resolve active token records for a workspace+agent whose identity may be
+   * transient. Path tokens are minted without a persisted identity row, so they
+   * cannot be found via `identities.findDuplicate`; their durable token lineage
+   * is scanned instead so workspace-agent revocation covers their JTIs. Scoped
+   * to org+workspace via the token lineage. Optional so external adapters can
+   * adopt it incrementally; when absent, workspace-agent revocation covers only
+   * registered identities. The Node/SQLite implementation always provides it.
+   */
+  listActiveByWorkspaceAgent?(
+    orgId: string,
+    workspaceId: string,
+    agentIdentityId: string,
+  ): Promise<StoredTokenRecord[]>;
 }
 
 export interface RevocationStorage {

@@ -504,6 +504,21 @@ const SELECT_TOKENS_BY_SESSION_SQL = `
   WHERE session_id = ? AND status = 'active'
 `;
 
+// Path tokens have no persisted identity row, so workspace-agent revocation
+// resolves them through the durable token lineage instead. Join each active
+// token to its lineage row (token_lineages.token_id = tokens.id) and scope to
+// org+workspace so a caller can never revoke across a boundary.
+const SELECT_ACTIVE_TOKENS_BY_WORKSPACE_AGENT_SQL = `
+  SELECT tokens.id, tokens.token_id, tokens.jti, tokens.identity_id,
+         tokens.status, tokens.session_id, tokens.expires_at
+  FROM tokens
+  INNER JOIN token_lineages ON token_lineages.token_id = tokens.id
+  WHERE tokens.status = 'active'
+    AND tokens.identity_id = ?
+    AND token_lineages.org_id = ?
+    AND token_lineages.workspace_id = ?
+`;
+
 const INSERT_TOKEN_SQL = `
   INSERT INTO tokens (
     id,
@@ -2088,6 +2103,37 @@ class SqliteTokenStorage implements TokenStorage {
     return backend.db
       .prepare<TokenRow>(SELECT_TOKENS_BY_SESSION_SQL)
       .all(normalizedSessionId)
+      .map(toStoredTokenRecord);
+  }
+
+  async listActiveByWorkspaceAgent(
+    orgId: string,
+    workspaceId: string,
+    agentIdentityId: string,
+  ): Promise<StoredTokenRecord[]> {
+    const normalizedOrgId = normalizeOptionalString(orgId);
+    const normalizedWorkspaceId = normalizeOptionalString(workspaceId);
+    const normalizedIdentityId = normalizeOptionalString(agentIdentityId);
+    if (!normalizedOrgId || !normalizedWorkspaceId || !normalizedIdentityId) {
+      return [];
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      return [...backend.state.tokens.values()]
+        .filter(
+          (token) =>
+            token.status === "active" &&
+            token.identityId === normalizedIdentityId &&
+            token.lineage?.orgId === normalizedOrgId &&
+            token.lineage?.workspaceId === normalizedWorkspaceId,
+        )
+        .map(toStoredTokenRecord);
+    }
+
+    return backend.db
+      .prepare<TokenRow>(SELECT_ACTIVE_TOKENS_BY_WORKSPACE_AGENT_SQL)
+      .all(normalizedIdentityId, normalizedOrgId, normalizedWorkspaceId)
       .map(toStoredTokenRecord);
   }
 
