@@ -92,6 +92,17 @@ export interface AccessTokenClassLifetime {
   refreshable: boolean;
   /** Whether tokens of this class are restricted to read-only scopes. */
   read_only?: boolean;
+  /**
+   * Whether this class also supports indefinite (never-expiring) tokens, in
+   * addition to bounded lifetimes up to `access_token_maximum`.
+   */
+  indefinite_supported?: boolean;
+  /**
+   * Whether tokens of this class are controlled by revocation (a fail-closed
+   * denylist) rather than (or in addition to) a timer. Always true for classes
+   * that support indefinite tokens.
+   */
+  revocation_controlled?: boolean;
 }
 
 export interface TokenLifetimeConfiguration {

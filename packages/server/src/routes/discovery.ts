@@ -247,10 +247,13 @@ function buildAgentConfiguration(origin: string): AgentConfiguration {
       access_token_default: "PT1H",
       refresh_token_default: "PT24H",
       // Maximum lifetime across all access-token classes. Durable, read-only,
-      // workspace-scoped access tokens may live up to 90 days; see
+      // workspace-scoped access tokens may live up to 90 days — or, in the
+      // indefinite variant, never expire (revocation-controlled). See
       // `access_token_classes` for the per-class ceilings so discovery-driven
-      // clients do not clamp or reject a valid 90-day durable request.
+      // clients do not clamp or reject a valid 90-day / indefinite durable request.
       maximum: "P90D",
+      // The durable class additionally supports never-expiring keys controlled by
+      // revocation; those are not "permanent" in the unrevocable sense.
       permanent_tokens_allowed: false,
       access_token_classes: {
         // Standard agent access tokens remain capped at 1h and are refreshable.
@@ -259,10 +262,14 @@ function buildAgentConfiguration(origin: string): AgentConfiguration {
           refreshable: true,
         },
         // Durable keys: long-lived, read-only, standalone (no refresh token).
+        // Bounded up to P90D, or indefinite (never-expiring) when requested —
+        // in both cases revocation is the control (fail-closed denylist).
         durable: {
           access_token_maximum: "P90D",
           refreshable: false,
           read_only: true,
+          indefinite_supported: true,
+          revocation_controlled: true,
         },
       },
     },

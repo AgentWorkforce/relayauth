@@ -983,6 +983,7 @@ test("POST /v1/tokens/agent (durable mode)", async (t) => {
           "relayauth:token:create:*",
           "relayauth:token-durable:create:*",
           "relayauth:token:manage:*",
+          "relayauth:token:read:*",
           "relayfile:fs:read:*",
           "relayfile:fs:write:*",
           "relayfile:agent-runtime:invoke:*",
@@ -1304,6 +1305,220 @@ test("POST /v1/tokens/agent (durable mode)", async (t) => {
       await assertJsonResponse<ErrorBody>(response, 400, (b) => {
         assert.equal(b.code, "durable_requires_read_only_scopes");
       });
+    },
+  );
+
+  // Effectively-indefinite exp sentinel: 2100-01-01T00:00:00Z.
+  const INDEFINITE_EXP = Math.floor(Date.UTC(2100, 0, 1) / 1000);
+
+  await t.test(
+    "issues an indefinite (never-expiring) read-only access token with no refresh token",
+    async () => {
+      const { app, identity, workspaceToken } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayauth:token-durable:create:*",
+        "relayfile:fs:read:*",
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:fs:read:/customer/*"],
+          durable: true,
+          indefinite: true,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      const body = await assertJsonResponse<AgentTokenPair>(response, 201);
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      // Far-future sentinel exp (effectively-indefinite); not a bounded 90d TTL.
+      assert.equal(accessClaims.exp, INDEFINITE_EXP);
+      assert.equal(accessClaims.meta?.tokenClass, "agent");
+      assert.equal(accessClaims.meta?.accessTokenClass, "durable");
+      assert.equal(accessClaims.meta?.indefinite, "true");
+      assert.deepEqual(accessClaims.scopes, ["relayfile:fs:read:/customer/*"]);
+      // Standalone: no refresh token — it never needs one.
+      assert.equal(body.refreshToken, undefined);
+      assert.equal(body.refreshTokenExpiresAt, undefined);
+    },
+  );
+
+  await t.test(
+    "an indefinite token verifies (not expired) and is rejected once revoked",
+    async () => {
+      const { app, identity, authHeaders, workspaceToken } =
+        await createDurableHarness([
+          "relayauth:token:create:*",
+          "relayauth:token-durable:create:*",
+          "relayfile:fs:read:*",
+        ]);
+
+      const mint = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:fs:read:/customer/*"],
+          durable: true,
+          indefinite: true,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+      const minted = await assertJsonResponse<AgentTokenPair>(mint, 201);
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        minted.accessToken,
+        1,
+      );
+
+      // Before revocation: the real verifier accepts the far-future exp and the
+      // introspect endpoint returns the live claims (proves it is NOT expired).
+      const before = await requestRoute(
+        app,
+        "GET",
+        `/v1/tokens/introspect?token=${encodeURIComponent(minted.accessToken)}`,
+        { headers: authHeaders },
+      );
+      const beforeBody = await assertJsonResponse<RelayAuthTokenClaims | null>(
+        before,
+        200,
+      );
+      assert.ok(beforeBody, "indefinite token should introspect as active");
+      assert.equal(beforeBody?.jti, accessClaims.jti);
+
+      // Revocation is the control: revoke by jti, then the same token is rejected.
+      const revoke = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { jti: accessClaims.jti },
+        headers: authHeaders,
+      });
+      assert.equal(revoke.status, 204);
+      assert.ok(
+        (await listRevokedTokenIds(app)).includes(accessClaims.jti),
+        "indefinite token jti should be on the revocation denylist",
+      );
+
+      const after = await requestRoute(
+        app,
+        "GET",
+        `/v1/tokens/introspect?token=${encodeURIComponent(minted.accessToken)}`,
+        { headers: authHeaders },
+      );
+      const afterBody = await assertJsonResponse<RelayAuthTokenClaims | null>(
+        after,
+        200,
+      );
+      assert.equal(
+        afterBody,
+        null,
+        "a revoked indefinite token must be rejected by verification",
+      );
+    },
+  );
+
+  await t.test(
+    "indefinite: true alone (without durable) still runs the durable gate",
+    async () => {
+      // No durable-create capability on the workspace token → indefinite request
+      // is rejected by the same capability gate, proving indefinite implies durable.
+      const { app, identity, workspaceToken } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayfile:fs:read:*",
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:fs:read:/customer/*"],
+          indefinite: true,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 403, (b) => {
+        assert.equal(b.code, "durable_capability_required");
+      });
+    },
+  );
+
+  await t.test(
+    "rejects an indefinite request that includes a write scope",
+    async () => {
+      const { app, identity, workspaceToken } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayauth:token-durable:create:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:fs:write:/customer/*"],
+          indefinite: true,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 400, (b) => {
+        assert.equal(b.code, "durable_requires_read_only_scopes");
+      });
+    },
+  );
+
+  await t.test(
+    "rejects an indefinite request carrying an agent-runtime scope",
+    async () => {
+      const { app, identity, workspaceToken } = await createDurableHarness(
+        [
+          "relayauth:token:create:*",
+          "relayauth:token-durable:create:*",
+          "relayfile:agent-runtime:invoke:*",
+        ],
+        ["relayfile:agent-runtime:invoke:*"],
+      );
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:agent-runtime:invoke:*"],
+          indefinite: true,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 400, (b) => {
+        assert.equal(b.code, "durable_requires_read_only_scopes");
+      });
+    },
+  );
+
+  await t.test(
+    "bounded durable (no indefinite) still clamps to the 90d ceiling",
+    async () => {
+      const { app, identity, workspaceToken } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayauth:token-durable:create:*",
+        "relayfile:fs:read:*",
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:fs:read:/customer/*"],
+          durable: true,
+          expiresIn: 120 * 24 * 3600,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      const body = await assertJsonResponse<AgentTokenPair>(response, 201);
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      assert.equal(accessClaims.exp - accessClaims.iat, DURABLE_TTL_SECONDS);
+      assert.equal(accessClaims.meta?.indefinite, undefined);
     },
   );
 });

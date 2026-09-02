@@ -94,6 +94,15 @@ export interface AgentTokenIssueRequest {
    * durable access-token class.
    */
   accessTokenClass?: "durable";
+  /**
+   * Opt into an INDEFINITE (never-expiring) durable access token. Implies
+   * `durable` (same tight gate: read-only fs scopes, workspace-bound, minted by
+   * a `relayauth:token-durable:create:*` caller) and returns an access token
+   * only. The key never expires on a timer — it is controlled entirely by
+   * revocation (`/v1/tokens/revoke` + the fail-closed denylist). Defaults to
+   * false. Use for a pasteable customer credential that must not lapse silently.
+   */
+  indefinite?: boolean;
 }
 
 export interface AgentTokenPair extends Omit<

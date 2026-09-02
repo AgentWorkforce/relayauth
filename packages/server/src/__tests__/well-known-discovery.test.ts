@@ -264,6 +264,10 @@ function assertAgentConfiguration(value: unknown): asserts value is AgentConfigu
   assert.equal(durableClass.access_token_maximum, "P90D");
   assert.equal(durableClass.refreshable, false);
   assert.equal(durableClass.read_only, true);
+  // The durable class also supports indefinite (never-expiring) keys controlled
+  // by revocation.
+  assert.equal(durableClass.indefinite_supported, true);
+  assert.equal(durableClass.revocation_controlled, true);
   const agentClass = value.token_lifetimes.access_token_classes.agent;
   assert.ok(isRecord(agentClass), "access_token_classes.agent should be an object");
   assert.equal(agentClass.access_token_maximum, "PT1H");

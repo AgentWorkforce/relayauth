@@ -32,6 +32,10 @@ export class AgentTokenSession {
       ...(options.accessTokenClass !== undefined
         ? { accessTokenClass: options.accessTokenClass }
         : {}),
+      // Thread the indefinite (never-expiring) opt-in through as well.
+      ...(options.indefinite !== undefined
+        ? { indefinite: options.indefinite }
+        : {}),
     };
   }
 
