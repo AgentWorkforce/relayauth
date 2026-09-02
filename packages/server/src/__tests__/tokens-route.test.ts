@@ -921,6 +921,268 @@ test("POST /v1/tokens/agent", async (t) => {
       });
     },
   );
+
+  await t.test(
+    "caps a NON-durable agent access token at 1h even when a long TTL is requested",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayfile:fs:read:*",
+          ],
+        },
+        identity: createStoredIdentity({
+          id: "agent_regression_cap",
+          orgId: "org_tokens_route",
+          workspaceId: "ws_tokens_route",
+          scopes: ["relayfile:fs:read:*"],
+        }),
+      });
+      const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
+        scopes: ["relayauth:token:create:*", "relayfile:fs:read:*"],
+      });
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:fs:read:/customer/*"],
+          // 90 days requested, but no durable opt-in → must stay clamped to 1h.
+          expiresIn: 90 * 24 * 3600,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      const body = await assertJsonResponse<AgentTokenPair>(response, 201);
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      assert.equal(
+        accessClaims.exp - accessClaims.iat,
+        3600,
+        "non-durable agent token must remain capped at the 1h agent cap",
+      );
+      assert.equal(accessClaims.meta?.accessTokenClass, undefined);
+    },
+  );
+});
+
+test("POST /v1/tokens/agent (durable mode)", async (t) => {
+  const DURABLE_TTL_SECONDS = 90 * 24 * 3600;
+
+  async function createDurableHarness(
+    workspaceScopes: string[],
+    identityScopes: string[] = ["relayfile:fs:read:*", "relayfile:fs:write:*"],
+  ) {
+    const harness = await createHarness({
+      authClaims: {
+        scopes: [
+          "relayauth:api-key:manage:*",
+          "relayauth:token:create:*",
+          "relayauth:token-durable:create:*",
+          "relayauth:token:manage:*",
+          "relayfile:fs:read:*",
+          "relayfile:fs:write:*",
+          "relayfile:agent-runtime:invoke:*",
+        ],
+      },
+      identity: createStoredIdentity({
+        id: "agent_durable_subject",
+        orgId: "org_tokens_route",
+        workspaceId: "ws_tokens_route",
+        scopes: identityScopes,
+      }),
+    });
+    const workspaceToken = await issueWorkspaceToken(harness.app, harness.authHeaders, {
+      scopes: workspaceScopes,
+    });
+    return { ...harness, workspaceToken };
+  }
+
+  await t.test(
+    "issues a ~90d read-only access token for an authorized durable caller",
+    async () => {
+      const { app, identity, workspaceToken } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayauth:token-durable:create:*",
+        "relayfile:fs:read:*",
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:fs:read:/customer/*"],
+          durable: true,
+          // Ask for more than the 90d ceiling → must clamp to exactly 90d.
+          expiresIn: 120 * 24 * 3600,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      const body = await assertJsonResponse<AgentTokenPair>(response, 201);
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      assert.equal(
+        accessClaims.exp - accessClaims.iat,
+        DURABLE_TTL_SECONDS,
+        "durable access TTL should clamp to the 90d ceiling",
+      );
+      // tokenClass stays "agent" (refresh/revocation lineage unchanged); the
+      // durable class is recorded distinctly.
+      assert.equal(accessClaims.meta?.tokenClass, "agent");
+      assert.equal(accessClaims.meta?.accessTokenClass, "durable");
+      assert.deepEqual(accessClaims.scopes, ["relayfile:fs:read:/customer/*"]);
+    },
+  );
+
+  await t.test(
+    "accepts accessTokenClass: 'durable' as an equivalent opt-in",
+    async () => {
+      const { app, identity, workspaceToken } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayauth:token-durable:create:*",
+        "relayfile:fs:read:*",
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:fs:read:*"],
+          accessTokenClass: "durable",
+          expiresIn: DURABLE_TTL_SECONDS,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      const body = await assertJsonResponse<AgentTokenPair>(response, 201);
+      const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      assert.equal(accessClaims.exp - accessClaims.iat, DURABLE_TTL_SECONDS);
+      assert.equal(accessClaims.meta?.accessTokenClass, "durable");
+    },
+  );
+
+  await t.test(
+    "rejects a durable request that includes a write scope",
+    async () => {
+      const { app, identity, workspaceToken } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayauth:token-durable:create:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          // Within grant (so it passes scope-subset), but not read-only.
+          scopes: ["relayfile:fs:write:/customer/*"],
+          durable: true,
+          expiresIn: DURABLE_TTL_SECONDS,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 400, (b) => {
+        assert.equal(b.code, "durable_requires_read_only_scopes");
+      });
+    },
+  );
+
+  await t.test(
+    "rejects a durable request carrying an agent-runtime scope",
+    async () => {
+      const { app, identity, workspaceToken } = await createDurableHarness(
+        [
+          "relayauth:token:create:*",
+          "relayauth:token-durable:create:*",
+          "relayfile:agent-runtime:invoke:*",
+        ],
+        ["relayfile:agent-runtime:invoke:*"],
+      );
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:agent-runtime:invoke:*"],
+          durable: true,
+          expiresIn: DURABLE_TTL_SECONDS,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 400, (b) => {
+        assert.equal(b.code, "durable_requires_read_only_scopes");
+      });
+    },
+  );
+
+  await t.test(
+    "rejects a durable request when the caller lacks the durable capability",
+    async () => {
+      // Workspace token can create tokens and read fs, but is NOT granted the
+      // distinct durable-create capability.
+      const { app, identity, workspaceToken } = await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayfile:fs:read:*",
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+        body: {
+          agentId: identity.id,
+          scopes: ["relayfile:fs:read:/customer/*"],
+          durable: true,
+          expiresIn: DURABLE_TTL_SECONDS,
+        },
+        headers: { "x-api-key": workspaceToken.key },
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 403, (b) => {
+        assert.equal(b.code, "durable_capability_required");
+      });
+    },
+  );
+
+  await t.test("a durable token remains revocable via /v1/tokens/revoke", async () => {
+    const { app, identity, authHeaders, workspaceToken } =
+      await createDurableHarness([
+        "relayauth:token:create:*",
+        "relayauth:token-durable:create:*",
+        "relayfile:fs:read:*",
+      ]);
+
+    const mint = await requestRoute(app, "POST", "/v1/tokens/agent", {
+      body: {
+        agentId: identity.id,
+        scopes: ["relayfile:fs:read:/customer/*"],
+        durable: true,
+        expiresIn: DURABLE_TTL_SECONDS,
+      },
+      headers: { "x-api-key": workspaceToken.key },
+    });
+    const minted = await assertJsonResponse<AgentTokenPair>(mint, 201);
+    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+      minted.accessToken,
+      1,
+    );
+
+    // A durable token carries a jti and is revoked by the identifier on it.
+    const revoke = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+      body: { jti: accessClaims.jti },
+      headers: authHeaders,
+    });
+    assert.equal(revoke.status, 204);
+    assert.ok(
+      (await listRevokedTokenIds(app)).includes(accessClaims.jti),
+      "durable token jti should be on the revocation denylist",
+    );
+  });
 });
 
 test("POST /v1/tokens/path", async (t) => {

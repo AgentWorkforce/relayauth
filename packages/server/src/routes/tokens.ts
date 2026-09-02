@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { RelayAuthTokenClaims, TokenPair } from "@relayauth/types";
 import {
   matchScope,
+  parseScope,
   TokenExpiredError,
   type VerifyOptions,
 } from "@relayauth/sdk";
@@ -59,6 +60,13 @@ type AgentTokenRequest = {
   audience?: unknown;
   expiresIn?: unknown;
   refreshTokenTtlSeconds?: unknown;
+  /**
+   * Opt-in to the durable, read-only, long-lived access token mode. Defaults to
+   * false — omitting it (or sending false) preserves the existing 1h agent cap.
+   * `accessTokenClass: "durable"` is accepted as an equivalent opt-in.
+   */
+  durable?: unknown;
+  accessTokenClass?: unknown;
 };
 
 type PathTokenRequest = {
@@ -158,6 +166,17 @@ const MAX_SPONSOR_CHAIN_DEPTH = 10;
 const EXPECTED_ISSUER = "https://relayauth.dev";
 const REFRESH_AUDIENCE = "relayauth";
 const MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS = 3600;
+// A durable, read-only, workspace-scoped access token may live far longer than
+// the 1h agent cap because the client never refreshes it — it pastes one static
+// key. This ceiling applies ONLY on the tightly-gated durable path below (an
+// explicit opt-in, read-only filesystem scopes, and a distinct mint capability);
+// every normal agent token remains clamped to MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS.
+const MAX_DURABLE_ACCESS_TOKEN_TTL_SECONDS = 90 * 24 * 3600; // 7_776_000 (90 days)
+// Minting a durable token is a distinct, separately-grantable capability. It is
+// NOT implied by `relayauth:token:create:*` (which covers resource `token`, not
+// `token-durable`), so an ordinary token-create caller cannot reach the durable
+// path — the workspace token must be explicitly granted this scope in addition.
+const DURABLE_TOKEN_CREATE_SCOPE = "relayauth:token-durable:create:*";
 const DELEGATION_NOT_AFTER_META_KEY = "delegationNotAfter";
 const RELAYHISTORY_ASSERTION_SCOPE = "relayauth:assertion:create:relayhistory";
 const RELAYHISTORY_ASSERTION_AUDIENCE = "relayhistory";
@@ -328,7 +347,22 @@ tokens.post("/agent", async (c) => {
   }
 
   const accessAudience = normalizeAudience(body.audience, accessScopes);
-  const accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn);
+
+  // Durable mode is a narrow, tightly-gated exemption from the 1h agent cap. The
+  // default path is unchanged: when durable is not requested, the access TTL is
+  // clamped to MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS exactly as before.
+  const durable = isDurableRequested(body);
+  let accessExpiresIn: number;
+  if (durable) {
+    const gate = authorizeDurableIssuance({ workspaceToken, accessScopes });
+    if (!gate.ok) {
+      return c.json({ error: gate.error, code: gate.code }, gate.status);
+    }
+    accessExpiresIn = normalizeDurableExpiresIn(body.expiresIn);
+  } else {
+    accessExpiresIn = normalizeAgentExpiresIn(body.expiresIn);
+  }
+
   const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(
     body.refreshTokenTtlSeconds,
   );
@@ -340,11 +374,16 @@ tokens.post("/agent", async (c) => {
     refreshTokenTtlSeconds,
     action: "token.issued",
     parentTokenId: workspaceToken.id,
+    durable,
     meta: {
       tokenClass: "agent",
       workspaceTokenId: workspaceToken.id,
       accessScopes: JSON.stringify(accessScopes),
       accessAudience: JSON.stringify(accessAudience),
+      // Mark the long-lived, static class distinctly from the transient agent
+      // token so it is greppable in issued-token metadata. `tokenClass` stays
+      // "agent" so refresh detection and revocation lineage are unchanged.
+      ...(durable ? { accessTokenClass: "durable" } : {}),
     },
     wrapAccessToken: true,
     wrapRefreshToken: true,
@@ -1059,6 +1098,11 @@ async function issueTokenPair(
     sessionId?: string;
     action: "token.issued" | "token.refreshed";
     parentTokenId?: string;
+    /**
+     * Marks this issuance as a durable, long-lived, read-only access token so
+     * the audit trail records it distinctly (long-lived keys must be traceable).
+     */
+    durable?: boolean;
     meta?: Record<string, string>;
     expiresNotAfter?: number;
     wrapAccessToken?: boolean;
@@ -1154,6 +1198,8 @@ async function issueTokenPair(
     action: options.action,
     identity,
     tokenId: accessClaims.jti,
+    durable: options.durable,
+    accessTtlSeconds: options.accessExpiresIn,
   });
   if (options.previousRefreshToken) {
     await storage.tokens.rotateIssuedPairWithAudit({
@@ -1281,6 +1327,8 @@ function createTokenAuditEntry(options: {
   identity: StoredIdentity;
   tokenId: string;
   actorId?: string;
+  durable?: boolean;
+  accessTtlSeconds?: number;
 }): AuditLogWriteEntry {
   return {
     id: crypto.randomUUID(),
@@ -1294,6 +1342,16 @@ function createTokenAuditEntry(options: {
     metadata: {
       tokenId: options.tokenId,
       ...(options.actorId ? { actorId: options.actorId } : {}),
+      // Long-lived durable keys are flagged distinctly so they are traceable in
+      // the audit log alongside their granted access TTL.
+      ...(options.durable
+        ? {
+            accessTokenClass: "durable",
+            ...(options.accessTtlSeconds !== undefined
+              ? { accessTtlSeconds: String(options.accessTtlSeconds) }
+              : {}),
+          }
+        : {}),
     },
     timestamp: new Date().toISOString(),
   };
@@ -1974,6 +2032,104 @@ function normalizeAgentExpiresIn(value: unknown): number {
     normalizeExpiresIn(value),
     MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS,
   );
+}
+
+// Durable access tokens may be requested up to a 90-day ceiling. This is the
+// ONLY place that clamp is relaxed above the 1h agent cap, and it is reached
+// only after authorizeDurableIssuance() has approved the request.
+function normalizeDurableExpiresIn(value: unknown): number {
+  return Math.min(
+    normalizeExpiresIn(value),
+    MAX_DURABLE_ACCESS_TOKEN_TTL_SECONDS,
+  );
+}
+
+// The durable opt-in: `durable: true` (boolean) or `accessTokenClass: "durable"`.
+// Anything else (absent, false, or an unrelated string) leaves the token on the
+// standard 1h-capped agent path.
+function isDurableRequested(body: AgentTokenRequest): boolean {
+  if (body.durable === true) {
+    return true;
+  }
+  return (
+    typeof body.accessTokenClass === "string" &&
+    body.accessTokenClass.trim().toLowerCase() === "durable"
+  );
+}
+
+// A durable, long-lived static key must be strictly read-only: every scope must
+// be a filesystem READ scope (`relayfile:fs:read:*` or `relayfile:fs:read:/...`).
+// Any write/manage/*/run action, any non-`fs` resource (e.g. `agent-runtime`,
+// sync/ops mutations), or any non-`relayfile` plane fails this test.
+function isReadOnlyFilesystemScope(scope: string): boolean {
+  try {
+    const parsed = parseScope(scope);
+    return (
+      parsed.plane === "relayfile" &&
+      parsed.resource === "fs" &&
+      parsed.action === "read"
+    );
+  } catch {
+    return false;
+  }
+}
+
+// Gates the durable path. ALL conditions must hold, else the request is rejected
+// with a clear code. Ordering favors the authz check first so an unentitled
+// caller cannot probe scope-shape errors.
+function authorizeDurableIssuance(opts: {
+  workspaceToken: StoredApiKey;
+  accessScopes: string[];
+}):
+  | { ok: true }
+  | { ok: false; error: string; code: string; status: 400 | 403 } {
+  // 1. Authorized caller: the workspace token must carry the distinct durable
+  //    mint capability IN ADDITION to the normal token:create grant. This scope
+  //    is not implied by `relayauth:token:create:*`.
+  let entitled = false;
+  try {
+    entitled = matchScope(DURABLE_TOKEN_CREATE_SCOPE, opts.workspaceToken.scopes);
+  } catch {
+    entitled = false;
+  }
+  if (!entitled) {
+    return {
+      ok: false,
+      error: "durable_capability_required",
+      code: "durable_capability_required",
+      status: 403,
+    };
+  }
+
+  // 2. Least-privilege: every scope on the durable token must be read-only fs.
+  if (
+    opts.accessScopes.length === 0 ||
+    !opts.accessScopes.every(isReadOnlyFilesystemScope)
+  ) {
+    return {
+      ok: false,
+      error: "durable_requires_read_only_scopes",
+      code: "durable_requires_read_only_scopes",
+      status: 400,
+    };
+  }
+
+  // 3. Workspace-bound: durable keys are per-workspace. A workspace token always
+  //    carries a workspaceId, but assert it so a mis-provisioned token cannot
+  //    mint an unbound long-lived key.
+  if (
+    typeof opts.workspaceToken.workspaceId !== "string" ||
+    opts.workspaceToken.workspaceId.trim().length === 0
+  ) {
+    return {
+      ok: false,
+      error: "durable_requires_workspace_binding",
+      code: "durable_requires_workspace_binding",
+      status: 400,
+    };
+  }
+
+  return { ok: true };
 }
 
 function normalizeRefreshTokenTtl(value: unknown): number | undefined {
