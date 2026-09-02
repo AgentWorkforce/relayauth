@@ -166,10 +166,10 @@ export function assertValidA2aAgentCard(value: unknown): asserts value is A2aAge
     throw new Error("A2A agent card must include a non-empty url");
   }
 
-  try {
-    new URL(value.url);
-  } catch {
-    throw new Error("A2A agent card url must be a valid absolute URL");
+  if (!isHttpUrl(value.url)) {
+    throw new Error(
+      "A2A agent card url must be a valid absolute http(s) URL",
+    );
   }
 
   if (value.revocationCheckEndpoint !== undefined) {
@@ -181,14 +181,13 @@ export function assertValidA2aAgentCard(value: unknown): asserts value is A2aAge
         "A2A agent card revocationCheckEndpoint must be a non-empty string when provided",
       );
     }
-    try {
-      // The bridged config copies this into AgentConfiguration.
-      // revocation_check_endpoint, which is contractually `format: uri`, so a
-      // malformed value must be rejected before it is emitted.
-      new URL(value.revocationCheckEndpoint);
-    } catch {
+    // The bridged config copies this into
+    // AgentConfiguration.revocation_check_endpoint (contractually `format:
+    // uri`), and verifiers fetch it, so reject anything that is not an absolute
+    // http(s) URL — `new URL()` alone would accept javascript:/data:/file:.
+    if (!isHttpUrl(value.revocationCheckEndpoint)) {
       throw new Error(
-        "A2A agent card revocationCheckEndpoint must be a valid absolute URL",
+        "A2A agent card revocationCheckEndpoint must be a valid absolute http(s) URL",
       );
     }
   }
@@ -360,6 +359,19 @@ function unique<T>(values: readonly T[]): T[] {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+// A valid absolute http(s) URL. `new URL()` alone also parses dangerous schemes
+// (javascript:, data:, file:), so any endpoint emitted into a fetched/bridged
+// config must additionally be constrained to http/https.
+function isHttpUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return parsed.protocol === "http:" || parsed.protocol === "https:";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

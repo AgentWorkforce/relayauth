@@ -3311,6 +3311,96 @@ test("POST /v1/tokens/revoke by workspaceId+agentName covers path tokens", async
   );
 
   await t.test(
+    "fails closed (501) for a MULTI-identity revoke when the atomic bulk method is unavailable",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const orgApiKey = await issueApiKey(app, authHeaders, [
+        "relayauth:api-key:manage:*",
+        "relayfile:fs:read:*",
+        "relayfile:fs:write:*",
+      ]);
+
+      const mintVariant = async (agentId: string): Promise<string> => {
+        const response = await requestRoute(
+          app,
+          "POST",
+          "/v1/tokens/workspace-path",
+          {
+            body: {
+              workspaceId: "ws_tokens_route",
+              agentName: "no-bulk-bot",
+              agentId,
+              paths: ["/linear/issues/**"],
+              scopes: ["relayfile:fs:write:/linear/issues/**"],
+              ttlSeconds: 300,
+            },
+            headers: { "x-api-key": orgApiKey.key },
+          },
+        );
+        const minted = await assertJsonResponse<WorkspacePathTokenPair>(
+          response,
+          201,
+        );
+        return decodeJwtJsonSegment<RelayAuthTokenClaims>(minted.accessToken, 1)
+          .jti;
+      };
+
+      const jtiA = await mintVariant("variant_a");
+      const jtiB = await mintVariant("variant_b");
+
+      // Adapter without the atomic bulk primitive: a multi-identity revoke must
+      // NOT fall back to a sequential loop (partial-apply risk) — fail closed.
+      app.storage.revocations.revokeIdentityTokenGroupsWithAudit = undefined;
+
+      const manageHeaders: HeadersInit = {
+        Authorization: `Bearer ${createAuthToken({
+          scopes: ["relayauth:token:manage:*"],
+        })}`,
+      };
+      const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { workspaceId: "ws_tokens_route", agentName: "no-bulk-bot" },
+        headers: manageHeaders,
+      });
+      assert.equal(response.status, 501);
+      assert.match(JSON.stringify(await response.json()), /unsupported/i);
+      // Nothing was revoked — no partial apply.
+      const revoked = await listRevokedTokenIds(app);
+      assert.ok(
+        !revoked.includes(jtiA) && !revoked.includes(jtiB),
+        `no token may be revoked when the request fails closed, got ${JSON.stringify(revoked)}`,
+      );
+    },
+  );
+
+  await t.test(
+    "single-identity revoke still succeeds without the atomic bulk method",
+    async () => {
+      const { app, identity, authHeaders } = await createHarness();
+      const { accessClaims } = createRs256TokenPair(identity);
+      await seedActiveTokens(app, identity.id, [accessClaims.jti]);
+
+      // No cross-group atomicity concern for one identity, so the per-identity
+      // audited path remains available when the bulk method is absent.
+      app.storage.revocations.revokeIdentityTokenGroupsWithAudit = undefined;
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/revoke", {
+        body: { tokenId: accessClaims.jti },
+        headers: authHeaders,
+      });
+      assert.equal(response.status, 204);
+      assert.deepEqual(await listRevokedTokenIds(app), [accessClaims.jti]);
+    },
+  );
+
+  await t.test(
     "fails closed (501) when the adapter cannot resolve path tokens by workspace+agent",
     async () => {
       const { app } = await createHarness();

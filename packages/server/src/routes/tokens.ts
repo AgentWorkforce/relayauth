@@ -922,12 +922,17 @@ tokens.post("/revoke", async (c) => {
     }),
   }));
 
-  // Revoke every group in ONE transaction so a request spanning multiple
-  // identities is all-or-nothing: a failure on any group rolls the whole thing
-  // back rather than leaving earlier groups revoked. Adapters that predate the
-  // bulk primitive fall back to the per-identity path (unchanged behavior).
-  if (typeof storage.revocations.revokeIdentityTokenGroupsWithAudit === "function") {
-    await storage.revocations.revokeIdentityTokenGroupsWithAudit({
+  // A request spanning multiple identities must be all-or-nothing, which only
+  // the atomic bulk primitive can guarantee. When it is available, use it for
+  // every case. When it is NOT:
+  //   - a single group has no cross-group atomicity concern, so the per-identity
+  //     audited path (itself atomic) is safe;
+  //   - a multi-group request would risk a partial apply across groups if
+  //     looped sequentially, so fail CLOSED with 501 rather than loop — matching
+  //     the other unsupported-capability gates.
+  const bulkRevoke = storage.revocations.revokeIdentityTokenGroupsWithAudit;
+  if (typeof bulkRevoke === "function") {
+    await bulkRevoke.call(storage.revocations, {
       groups: revocationGroups.map(({ identity, tokenIds, auditEntry }) => ({
         identityId: identity.id,
         tokenIds,
@@ -935,15 +940,22 @@ tokens.post("/revoke", async (c) => {
       })),
       revokedAt,
     });
+  } else if (revocationGroups.length > 1) {
+    return c.json(
+      {
+        error: "atomic_multi_identity_revocation_unsupported",
+        code: "unsupported_capability",
+      },
+      501,
+    );
   } else {
-    for (const { identity, tokenIds, auditEntry } of revocationGroups) {
-      await storage.revocations.revokeIdentityTokensWithAudit({
-        identityId: identity.id,
-        tokenIds,
-        revokedAt,
-        auditEntry,
-      });
-    }
+    const { identity, tokenIds, auditEntry } = revocationGroups[0]!;
+    await storage.revocations.revokeIdentityTokensWithAudit({
+      identityId: identity.id,
+      tokenIds,
+      revokedAt,
+      auditEntry,
+    });
   }
 
   // Cache population is a non-durable, best-effort side effect (it already

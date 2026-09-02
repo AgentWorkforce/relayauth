@@ -247,3 +247,37 @@ test("agentCardToConfiguration accepts a valid revocationCheckEndpoint", () => {
     "https://agent.example.com/v1/tokens/revocation",
   );
 });
+
+test("assertValidA2aAgentCard rejects dangerous URL schemes", () => {
+  for (const scheme of [
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+    "data:text/html,<script>alert(1)</script>",
+  ]) {
+    assert.throws(
+      () => assertValidA2aAgentCard({ name: "evil", url: scheme }),
+      /http/i,
+      `url ${scheme} must be rejected`,
+    );
+    assert.throws(
+      () =>
+        assertValidA2aAgentCard({
+          name: "evil",
+          url: "https://agent.example.com/rpc",
+          revocationCheckEndpoint: scheme,
+        }),
+      /revocationCheckEndpoint/i,
+      `revocationCheckEndpoint ${scheme} must be rejected`,
+    );
+  }
+});
+
+test("assertValidA2aAgentCard accepts http and https schemes", () => {
+  assert.doesNotThrow(() =>
+    assertValidA2aAgentCard({
+      name: "planner",
+      url: "http://agent.example.com/rpc",
+      revocationCheckEndpoint: "https://agent.example.com/v1/tokens/revocation",
+    }),
+  );
+});
