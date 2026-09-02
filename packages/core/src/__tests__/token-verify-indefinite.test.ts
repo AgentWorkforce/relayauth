@@ -90,19 +90,19 @@ function indefiniteClaims(jti: string): RelayAuthTokenClaims {
 }
 
 function withMockedFetchAndNow(
-  responder: (url: URL) => Response,
+  responder: (url: URL, init?: RequestInit) => Response | Promise<Response>,
 ): () => void {
   const originalFetch = globalThis.fetch;
   const originalNow = Date.now;
   Date.now = () => nowSeconds * 1000;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url =
       typeof input === "string"
         ? new URL(input)
         : input instanceof URL
           ? input
           : new URL(input.url);
-    return responder(url);
+    return responder(url, init);
   }) as typeof globalThis.fetch;
   return () => {
     globalThis.fetch = originalFetch;
@@ -187,4 +187,73 @@ test("core: revocationHandledExternally opts an indefinite token out of the forc
 
   const result = await verifier.verify(token);
   assert.equal(result.jti, "jti_core_ext");
+});
+
+test("core: a 200 revocation response with no boolean `revoked` field fails closed", async (t) => {
+  const fixture = await createSigningFixture("kid-core4");
+  const token = await createJwt(indefiniteClaims("jti_core_malformed"), fixture);
+  const restore = withMockedFetchAndNow((url) => {
+    if (url.toString() === jwksUrl) {
+      return jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] });
+    }
+    if (url.toString().startsWith(revocationUrl)) {
+      // 200, but no `revoked` field — ambiguous; must not be read as "not revoked".
+      return jsonResponse({ status: "ok" });
+    }
+    throw new Error(`unexpected fetch: ${url.toString()}`);
+  });
+  t.after(restore);
+
+  const verifier = new TokenVerifier({
+    jwksUrl,
+    issuer: "https://relay.example.test",
+    audience: ["relayfile"],
+    revocationUrl,
+  });
+
+  await assert.rejects(
+    verifier.verify(token),
+    (error: unknown) =>
+      error instanceof RelayAuthError && error.code === "invalid_revocation_response",
+  );
+});
+
+test("core: a stalling revocation source is rejected within the bounded timeout, not hung", async (t) => {
+  const fixture = await createSigningFixture("kid-core5");
+  const token = await createJwt(indefiniteClaims("jti_core_stall"), fixture);
+  const restore = withMockedFetchAndNow((url, init) => {
+    if (url.toString() === jwksUrl) {
+      return jsonResponse({ keys: [fixture.publicJwk] satisfies JWKSResponse["keys"] });
+    }
+    if (url.toString().startsWith(revocationUrl)) {
+      // Stall until the bounded timeout aborts the fetch.
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError")),
+        );
+      });
+    }
+    throw new Error(`unexpected fetch: ${url.toString()}`);
+  });
+  t.after(restore);
+
+  const verifier = new TokenVerifier({
+    jwksUrl,
+    issuer: "https://relay.example.test",
+    audience: ["relayfile"],
+    revocationUrl,
+    revocationTimeoutMs: 50,
+  });
+
+  // `AbortSignal.timeout`'s timer is unref'd, so hold the loop open for the test
+  // (a real hang would still exceed this and fail).
+  const keepAlive = setTimeout(() => {}, 4000);
+  const start = performance.now();
+  await assert.rejects(
+    verifier.verify(token),
+    (error: unknown) =>
+      error instanceof RelayAuthError && error.code === "revocation_check_failed",
+  );
+  clearTimeout(keepAlive);
+  assert.ok(performance.now() - start < 4000, "verification must not hang");
 });

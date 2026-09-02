@@ -319,8 +319,19 @@ export class TokenVerifier {
       throw new RelayAuthError("Invalid revocation response", "invalid_revocation_response", 502);
     }
 
-    if ((payload as { revoked?: unknown }).revoked === true) {
+    const revoked = (payload as { revoked?: unknown }).revoked;
+    if (revoked === true) {
       throw new TokenRevokedError();
+    }
+    // Fail closed: only an explicit `revoked === false` is treated as "active".
+    // A missing field or any non-boolean value is an ambiguous answer and must
+    // NOT be read as "not revoked" — reject it.
+    if (revoked !== false) {
+      throw new RelayAuthError(
+        "Invalid revocation response",
+        "invalid_revocation_response",
+        502,
+      );
     }
   }
 }

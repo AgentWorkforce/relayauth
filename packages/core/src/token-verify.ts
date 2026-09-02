@@ -4,6 +4,10 @@ import { RelayAuthError, TokenExpiredError, TokenRevokedError } from "./errors.j
 import { ScopeChecker } from "./scope-checker.js";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
+// Bounded timeout for the revocation lookup. Matches the SDK verifier's value so
+// a stalling revocation service cannot hang verification indefinitely — critical
+// because revocation is the ONLY control for an indefinite (never-expiring) token.
+const DEFAULT_REVOCATION_TIMEOUT_MS = 5000;
 
 export interface VerifyOptions {
   jwksUrl?: string;
@@ -13,6 +17,8 @@ export interface VerifyOptions {
   cacheTtlMs?: number;
   checkRevocation?: boolean;
   revocationUrl?: string;
+  /** Timeout in ms for the revocation lookup. Defaults to 5000. */
+  revocationTimeoutMs?: number;
   /**
    * Set ONLY by an embedding application that enforces revocation itself. It
    * suppresses the forced revocation check applied to indefinite (never-expiring)
@@ -281,7 +287,17 @@ export class TokenVerifier {
 
     let response: Response;
     try {
-      response = await fetch(url);
+      // Bounded timeout: a revocation service that accepts the connection but
+      // stalls must not hang verification. AbortSignal.timeout rejects the fetch,
+      // which is caught here and surfaced as a fail-closed revocation_check_failed.
+      response = await fetch(url, {
+        signal: AbortSignal.timeout(
+          normalizeTimeoutMs(
+            this.options?.revocationTimeoutMs,
+            DEFAULT_REVOCATION_TIMEOUT_MS,
+          ),
+        ),
+      });
     } catch {
       throw new RelayAuthError("Failed to check token revocation", "revocation_check_failed", 502);
     }
@@ -299,10 +315,29 @@ export class TokenVerifier {
       throw new RelayAuthError("Invalid revocation response", "invalid_revocation_response", 502);
     }
 
-    if ((revokePayload as { revoked?: unknown }).revoked === true) {
+    const revoked = (revokePayload as { revoked?: unknown }).revoked;
+    if (revoked === true) {
       throw new TokenRevokedError();
     }
+    // Fail closed: only an explicit `revoked === false` is treated as "active".
+    // A missing field or any non-boolean value is an ambiguous answer and must
+    // NOT be read as "not revoked" — reject it.
+    if (revoked !== false) {
+      throw new RelayAuthError(
+        "Invalid revocation response",
+        "invalid_revocation_response",
+        502,
+      );
+    }
   }
+}
+
+function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number): number {
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return fallback;
+  }
+
+  return timeoutMs;
 }
 
 function invalidTokenError(): RelayAuthError {
