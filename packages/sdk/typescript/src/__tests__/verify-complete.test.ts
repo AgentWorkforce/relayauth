@@ -772,20 +772,24 @@ test("indefinite token: a fractional or out-of-range revocationTimeoutMs overrid
       assert.fail(`unexpected fetch request: ${url.toString()}`);
     });
 
-    const verifier = getVerifier({
-      jwksUrl,
-      issuer: claims.iss,
-      audience: ["relaycast"],
-      revocationUrl,
-      revocationTimeoutMs: timeout,
-    });
-    const verify = requireVerify(verifier);
+    try {
+      const verifier = getVerifier({
+        jwksUrl,
+        issuer: claims.iss,
+        audience: ["relaycast"],
+        revocationUrl,
+        revocationTimeoutMs: timeout,
+      });
+      const verify = requireVerify(verifier);
 
-    // The sanitized (floored + clamped) timeout must still let a valid,
-    // non-revoked token through — it must NOT throw or overflow into a 1ms
-    // timer that rejects every revocation check.
-    const result = await verify(token);
-    assert.equal(result.jti, `jti_indefinite_to_${timeout}`);
-    fetchMock.restore();
+      // The sanitized (floored + clamped) timeout must still let a valid,
+      // non-revoked token through — it must NOT throw or overflow into a 1ms
+      // timer that rejects every revocation check.
+      const result = await verify(token);
+      assert.equal(result.jti, `jti_indefinite_to_${timeout}`);
+    } finally {
+      // Always restore so a failed iteration cannot leak the mocked fetch.
+      fetchMock.restore();
+    }
   }
 });

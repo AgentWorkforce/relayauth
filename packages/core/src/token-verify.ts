@@ -1,5 +1,7 @@
 import type { JWKSResponse, RelayAuthTokenClaims } from "@relayauth/types";
 
+import { normalizeTimeoutMs } from "@relayauth/sdk";
+
 import { RelayAuthError, TokenExpiredError, TokenRevokedError } from "./errors.js";
 import { ScopeChecker } from "./scope-checker.js";
 
@@ -8,9 +10,6 @@ const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 // a stalling revocation service cannot hang verification indefinitely — critical
 // because revocation is the ONLY control for an indefinite (never-expiring) token.
 const DEFAULT_REVOCATION_TIMEOUT_MS = 5000;
-// Upper bound for a revocation timeout override, well within Node's timer range so
-// a huge or overflowing value can never degrade to a 1ms (reject-everything) timer.
-const MAX_TIMEOUT_MS = 60_000;
 
 export interface VerifyOptions {
   jwksUrl?: string;
@@ -20,7 +19,11 @@ export interface VerifyOptions {
   cacheTtlMs?: number;
   checkRevocation?: boolean;
   revocationUrl?: string;
-  /** Timeout in ms for the revocation lookup. Defaults to 5000. */
+  /**
+   * Timeout in ms for the revocation lookup. Defaults to 5000. The value is
+   * floored to an integer and clamped to [1ms, 60000ms] before use; a NaN,
+   * non-finite, or <= 0 value falls back to the default.
+   */
   revocationTimeoutMs?: number;
   /**
    * Set ONLY by an embedding application that enforces revocation itself. It
@@ -333,24 +336,6 @@ export class TokenVerifier {
       );
     }
   }
-}
-
-function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number): number {
-  if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return fallback;
-  }
-
-  // Sanitize before it reaches AbortSignal.timeout: a fractional value or one
-  // beyond Node's timer range would otherwise throw or overflow to a 1ms timer,
-  // making the catch reject EVERY revocation check. Floor to an integer and clamp
-  // to a sane [1ms, MAX_TIMEOUT_MS] window (a value <1ms after flooring falls
-  // back to the default rather than becoming a degenerate 0ms timer).
-  const floored = Math.floor(timeoutMs);
-  if (floored < 1) {
-    return fallback;
-  }
-
-  return Math.min(floored, MAX_TIMEOUT_MS);
 }
 
 function invalidTokenError(): RelayAuthError {

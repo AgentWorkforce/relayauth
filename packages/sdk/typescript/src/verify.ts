@@ -2,13 +2,11 @@ import type { JWKSResponse, RelayAuthTokenClaims } from "@relayauth/types";
 
 import { RelayAuthError, TokenExpiredError, TokenRevokedError } from "./errors.js";
 import { ScopeChecker } from "./scopes.js";
+import { normalizeTimeoutMs } from "./timeout.js";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_JWKS_TIMEOUT_MS = 5000;
 const DEFAULT_REVOCATION_TIMEOUT_MS = 5000;
-// Upper bound for any fetch timeout override, well within Node's timer range so a
-// huge or overflowing value can never degrade to a 1ms (reject-everything) timer.
-const MAX_TIMEOUT_MS = 60_000;
 const RELAY_AGENT_TOKEN_PREFIX = "relay_ag_";
 
 export interface VerifyOptions {
@@ -19,7 +17,16 @@ export interface VerifyOptions {
   cacheTtlMs?: number;
   checkRevocation?: boolean;
   revocationUrl?: string;
+  /**
+   * Timeout in ms for the JWKS fetch. Defaults to 5000. Floored to an integer
+   * and clamped to [1ms, 60000ms]; a NaN/non-finite/<= 0 value uses the default.
+   */
   jwksTimeoutMs?: number;
+  /**
+   * Timeout in ms for the revocation lookup. Defaults to 5000. Floored to an
+   * integer and clamped to [1ms, 60000ms]; a NaN/non-finite/<= 0 value falls
+   * back to the default.
+   */
   revocationTimeoutMs?: number;
   /**
    * Set ONLY by an embedding application that enforces revocation itself (e.g.
@@ -553,24 +560,6 @@ function normalizeCacheTtlMs(cacheTtlMs: number | undefined): number {
   }
 
   return Math.max(0, cacheTtlMs);
-}
-
-function normalizeTimeoutMs(timeoutMs: number | undefined, fallback: number): number {
-  if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return fallback;
-  }
-
-  // Sanitize before it reaches AbortSignal.timeout: a fractional value or one
-  // beyond Node's timer range would otherwise throw or overflow to a 1ms timer,
-  // making the catch reject EVERY revocation check. Floor to an integer and clamp
-  // to a sane [1ms, MAX_TIMEOUT_MS] window (a value <1ms after flooring falls
-  // back to the default rather than becoming a degenerate 0ms timer).
-  const floored = Math.floor(timeoutMs);
-  if (floored < 1) {
-    return fallback;
-  }
-
-  return Math.min(floored, MAX_TIMEOUT_MS);
 }
 
 function decodeBase64UrlJson<T>(value: string): T | null {

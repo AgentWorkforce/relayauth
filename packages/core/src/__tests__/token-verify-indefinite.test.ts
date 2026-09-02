@@ -272,19 +272,23 @@ test("core: a fractional or out-of-range revocationTimeoutMs override does not b
       throw new Error(`unexpected fetch: ${url.toString()}`);
     });
 
-    const verifier = new TokenVerifier({
-      jwksUrl,
-      issuer: "https://relay.example.test",
-      audience: ["relayfile"],
-      revocationUrl,
-      revocationTimeoutMs: timeout,
-    });
+    try {
+      const verifier = new TokenVerifier({
+        jwksUrl,
+        issuer: "https://relay.example.test",
+        audience: ["relayfile"],
+        revocationUrl,
+        revocationTimeoutMs: timeout,
+      });
 
-    // A sanitized (floored + clamped) timeout must still allow a valid,
-    // non-revoked token through — it must NOT throw/overflow into a 1ms timer
-    // that rejects every check.
-    const result = await verifier.verify(token);
-    assert.equal(result.jti, `jti_core_to_${timeout}`);
-    restore();
+      // A sanitized (floored + clamped) timeout must still allow a valid,
+      // non-revoked token through — it must NOT throw/overflow into a 1ms timer
+      // that rejects every check.
+      const result = await verifier.verify(token);
+      assert.equal(result.jti, `jti_core_to_${timeout}`);
+    } finally {
+      // Always restore so a failed iteration cannot leak the mocked fetch/Date.now.
+      restore();
+    }
   }
 });
