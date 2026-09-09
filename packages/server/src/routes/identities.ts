@@ -487,6 +487,15 @@ identities.post("/", async (c) => {
   const storage = c.get("storage");
   try {
     const federation = c.get("sponsorOidcService").resolveConfig(c.env, auth.claims.org);
+    const authenticatedWithWorkspaceKey =
+      normalizeCredential(auth.claims.meta?.apiKeyKind) === "workspace_token";
+    if (authenticatedWithWorkspaceKey && federation.sponsorBinding !== "oidc") {
+      return c.json({
+        error:
+          "Agent identity creation requires an SSO-authenticated human sponsor; workspace-key-set sponsors are not accepted",
+        code: "sso_sponsor_required",
+      }, 403);
+    }
     let sponsorBinding: SponsorBinding = { mode: "legacy" };
     if (federation.sponsorBinding === "oidc") {
       const sponsorProof = typeof body.sponsorProof === "string" ? body.sponsorProof.trim() : "";

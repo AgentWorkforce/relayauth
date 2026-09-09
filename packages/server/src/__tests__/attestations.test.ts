@@ -80,6 +80,12 @@ function createIdentity(): StoredIdentity {
     workspaceId: "ws_attestation",
     sponsorId: "user_attestation_owner",
     sponsorChain: ["user_attestation_owner", base.id],
+    sponsorBinding: {
+      mode: "oidc",
+      issuer: "https://sso.example.com",
+      subject: "human-owner-123",
+      iat: 1_700_000_000,
+    },
   };
 }
 
@@ -274,6 +280,49 @@ test("ordinary grants refuse suspended and retired identities", async (t) => {
       assert.equal(body.code, "identity_not_found");
     });
   }
+});
+
+test("grants refuse identities whose sponsor was set through a workspace-key-only path", async (t) => {
+  const { app, key } = await createWorkspaceGrantClient();
+  t.after(() => app.close());
+  const legacyIdentity: StoredIdentity = {
+    ...createIdentity(),
+    id: "agent_legacy_sponsor",
+    name: "Legacy Sponsor Agent",
+    sponsorChain: ["user_attestation_owner", "agent_legacy_sponsor"],
+    sponsorBinding: { mode: "legacy" },
+  };
+  await seedStoredIdentity(app, legacyIdentity);
+
+  const response = await app.fetch(createTestRequest(
+    "POST",
+    "/v1/attestations/grants",
+    { agentId: legacyIdentity.id, repo: "AgentWorkforce/example" },
+    { "x-api-key": key },
+  ));
+  await assertJsonResponse<{ code: string; error: string }>(response, 403, (body) => {
+    assert.equal(body.code, "sso_sponsor_required");
+    assert.match(body.error, /SSO-authenticated human sponsor/i);
+  });
+});
+
+test("workspace keys cannot set a sponsor on a new identity", async (t) => {
+  const { app, key } = await createWorkspaceGrantClient([
+    "relayauth:attest:grant:*",
+    "relayauth:identity:manage:*",
+  ]);
+  t.after(() => app.close());
+
+  const response = await app.fetch(createTestRequest(
+    "POST",
+    "/v1/identities",
+    { name: "forged-sponsor-agent", sponsorId: "user_forged" },
+    { "x-api-key": key },
+  ));
+  await assertJsonResponse<{ code: string; error: string }>(response, 403, (body) => {
+    assert.equal(body.code, "sso_sponsor_required");
+    assert.match(body.error, /workspace-key-set sponsors are not accepted/i);
+  });
 });
 
 test("finalize rejects a wrong key and an expired grant", async (t) => {

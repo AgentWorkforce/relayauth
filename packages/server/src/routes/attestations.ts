@@ -94,6 +94,13 @@ attestations.post("/grants", async (c) => {
   ) {
     return c.json({ error: "identity_not_found", code: "identity_not_found" }, 404);
   }
+  if (identity.sponsorBinding?.mode !== "oidc") {
+    return c.json({
+      error:
+        "Attestation issuance requires an SSO-authenticated human sponsor; workspace-key-set sponsors are not accepted",
+      code: "sso_sponsor_required",
+    }, 403);
+  }
 
   const createdAt = new Date().toISOString();
   const jti = `att_${crypto.randomUUID().replace(/-/g, "")}`;
