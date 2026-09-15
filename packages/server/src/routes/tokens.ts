@@ -2687,12 +2687,27 @@ async function isWorkspaceTokenRevoked(
   }
 
   const workspaceToken = await storage.apiKeys.get(workspaceTokenId);
+
+  if (!workspaceToken) {
+    // The minting workspace token's record is GONE (garbage-collected, not a
+    // soft revoke — an explicit revoke keeps the record with `revokedAt` set,
+    // which is handled below). A `relay_pa` PATH token is a standalone, durable
+    // credential handed out with its own `delegationNotAfter`/refresh horizon;
+    // it must NOT be silently killed just because the ephemeral workspace/box
+    // token that minted it was later cleaned up — otherwise it advertises a
+    // 90-day refresh while dying early (the "misleading" refresh failure). So a
+    // path token survives an absent parent. Every OTHER derived class stays
+    // fail-closed: an absent parent is treated as revoked.
+    return !isPathClaims(claims);
+  }
+
   const expectedWorkspaceId = normalizeOptionalString(
-    workspaceToken?.workspaceId,
+    workspaceToken.workspaceId,
   );
   return (
-    !workspaceToken ||
     workspaceToken.kind !== "workspace_token" ||
+    // An EXPLICIT revoke (soft-delete: record kept, `revokedAt` stamped) still
+    // cascades to every derived token, path tokens included.
     Boolean(normalizeOptionalString(workspaceToken.revokedAt ?? undefined)) ||
     Boolean(expectedWorkspaceId && expectedWorkspaceId !== claims.wks)
   );

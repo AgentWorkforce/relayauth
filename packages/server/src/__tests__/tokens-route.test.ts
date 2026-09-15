@@ -1688,6 +1688,115 @@ test("POST /v1/tokens/path", async (t) => {
       });
     },
   );
+
+  await t.test(
+    "keeps a relay_pa refresh working after the minting workspace token is garbage-collected",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
+        scopes: [
+          "relayauth:token:create:*",
+          "relayfile:fs:read:*",
+          "relayfile:fs:write:*",
+        ],
+      });
+      const minted = await assertJsonResponse<PathTokenPair>(
+        await requestRoute(app, "POST", "/v1/tokens/path", {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "cloud-orchestrator",
+            paths: ["/linear/issues/**"],
+          },
+          headers: { Authorization: `Bearer ${workspaceToken.key}` },
+        }),
+        201,
+      );
+
+      // Simulate the ephemeral workspace/box token being garbage-collected: its
+      // api-key record is GONE (not soft-revoked — get() returns null).
+      const gcId = workspaceToken.workspaceToken.id;
+      const realGet = app.storage.apiKeys.get.bind(app.storage.apiKeys);
+      app.storage.apiKeys.get = (async (id: string) =>
+        id === gcId ? null : realGet(id)) as typeof app.storage.apiKeys.get;
+
+      const refreshResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/refresh",
+        { body: { refreshToken: minted.refreshToken } },
+      );
+      // The durable relay_pa credential survives its parent's GC.
+      const refreshed = await assertJsonResponse<TokenPair>(
+        refreshResponse,
+        200,
+      );
+      const refreshedClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        refreshed.accessToken,
+        1,
+      );
+      assert.equal(refreshedClaims.meta?.tokenClass, "path");
+    },
+  );
+
+  await t.test(
+    "still cascades an explicit workspace-token revoke to its relay_pa refresh",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: [
+            "relayauth:api-key:manage:*",
+            "relayauth:token:create:*",
+            "relayfile:fs:read:*",
+            "relayfile:fs:write:*",
+          ],
+        },
+      });
+      const workspaceToken = await issueWorkspaceToken(app, authHeaders, {
+        scopes: [
+          "relayauth:token:create:*",
+          "relayfile:fs:read:*",
+          "relayfile:fs:write:*",
+        ],
+      });
+      const minted = await assertJsonResponse<PathTokenPair>(
+        await requestRoute(app, "POST", "/v1/tokens/path", {
+          body: {
+            workspaceId: "ws_tokens_route",
+            agentName: "cloud-orchestrator",
+            paths: ["/linear/issues/**"],
+          },
+          headers: { Authorization: `Bearer ${workspaceToken.key}` },
+        }),
+        201,
+      );
+
+      // An EXPLICIT revoke keeps the record with `revokedAt` set — this must
+      // still cascade-revoke the derived relay_pa refresh (unlike GC above).
+      await app.storage.apiKeys.revoke(
+        workspaceToken.workspaceToken.id,
+        new Date().toISOString(),
+      );
+
+      const refreshResponse = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/refresh",
+        { body: { refreshToken: minted.refreshToken } },
+      );
+      await assertJsonResponse<ErrorBody>(refreshResponse, 401, (body) => {
+        assert.equal(body.code, "workspace_token_revoked");
+      });
+    },
+  );
 });
 
 test("POST /v1/tokens/workspace-path", async (t) => {
