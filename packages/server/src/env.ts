@@ -13,6 +13,28 @@ export type AppConfig = {
   RELAYAUTH_ENV_STAGE?: string;
   /** JSON object keyed by org id. See SponsorFederationConfig. */
   RELAYAUTH_SPONSOR_FEDERATIONS?: string;
+  /**
+   * Identity-create ceiling, as a canonical positive integer string.
+   *
+   * Lets a deployment retune `POST /v1/identities` throttling without a
+   * release. Bounded and clamped in server.ts — a malformed or oversized
+   * value falls back to the protective default rather than disabling the
+   * limiter. Defaults to 60.
+   */
+  RELAYAUTH_IDENTITY_CREATE_RATE_LIMIT?: string;
+  /** Identity-create window in ms, as a canonical positive integer string. Defaults to 60000. */
+  RELAYAUTH_IDENTITY_CREATE_RATE_WINDOW_MS?: string;
+  /**
+   * Revocation-check ceiling, as a canonical positive integer string.
+   *
+   * `/v1/tokens/revocation` is bucketed per client IP, and shared egress
+   * addresses make that ceiling collapse across unrelated verifiers. The
+   * endpoint fails closed, so exhausting it rejects live tokens — this binding
+   * exists so the ceiling can be raised without a release. Defaults to 600.
+   */
+  RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT?: string;
+  /** Revocation-check window in ms, as a canonical positive integer string. Defaults to 60000. */
+  RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS?: string;
 };
 
 export type AppEnv = {

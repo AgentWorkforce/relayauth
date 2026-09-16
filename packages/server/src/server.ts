@@ -65,22 +65,156 @@ const REVOCATION_CHECK_RATE_WINDOW_MS = 60_000;
 // collision noise and can neither exhaust memory nor starve legitimate keys.
 const IDENTITY_CREATE_RATE_LIMIT = 60;
 const IDENTITY_CREATE_RATE_WINDOW_MS = 60_000;
+// Upper bounds on the operator-tunable ceiling below. The bindings exist so a
+// deployment can raise the limit without a release; they are NOT an escape
+// hatch from abuse protection. A fat-fingered or overly optimistic binding is
+// clamped here rather than allowed to switch identity-create throttling off.
+const IDENTITY_CREATE_RATE_LIMIT_MAX = 6_000;
+const IDENTITY_CREATE_RATE_WINDOW_MS_MAX = 3_600_000;
+// Only a handful of distinct (limit, window) pairs can exist in one isolate —
+// in practice exactly one. The cap is hygiene against a pathological caller
+// constructing apps with endlessly varying config, not an abuse boundary.
+const IDENTITY_CREATE_LIMITER_CACHE_MAX = 16;
+
+const CANONICAL_POSITIVE_INT = /^[1-9][0-9]*$/;
+
+/**
+ * Parse an operator-supplied rate-limit binding.
+ *
+ * Fails SAFE, not closed: an absent, empty, malformed, or out-of-range value
+ * falls back to (or clamps to) a protective default instead of throwing. A bad
+ * binding must never be able to take the identity-create route offline, nor to
+ * remove its ceiling.
+ */
+function parseRateLimitSetting(
+  value: string | undefined,
+  fallback: number,
+  max: number,
+  name: string,
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return fallback;
+  }
+  if (!CANONICAL_POSITIVE_INT.test(trimmed)) {
+    console.warn(
+      `${name} must be a canonical positive integer; falling back to ${fallback}`,
+      { received: trimmed },
+    );
+    return fallback;
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    console.warn(
+      `${name} is out of safe integer range; falling back to ${fallback}`,
+      { received: trimmed },
+    );
+    return fallback;
+  }
+  if (parsed > max) {
+    console.warn(`${name} exceeds the supported maximum; clamping to ${max}`, {
+      received: parsed,
+    });
+    return max;
+  }
+
+  return parsed;
+}
+
+type IdentityCreateLimiters = {
+  preAuth: RequestRateLimiter;
+  postAuth: RequestRateLimiter;
+};
 
 // The cloud entrypoint intentionally constructs an app per request. Keeping
-// the default limiter at module scope preserves a per-isolate bucket across
+// the default limiters at module scope preserves a per-isolate bucket across
 // those app instances, while Node consumers can inject their own limiter.
-const sharedIdentityCreateRateLimiter = new FixedWindowRateLimiter(
-  IDENTITY_CREATE_RATE_LIMIT,
-  IDENTITY_CREATE_RATE_WINDOW_MS,
-);
-const sharedIdentityCreatePreAuthRateLimiter = new FixedWindowSketchRateLimiter(
-  IDENTITY_CREATE_RATE_LIMIT,
-  IDENTITY_CREATE_RATE_WINDOW_MS,
-);
-const sharedRevocationCheckRateLimiter = new FixedWindowSketchRateLimiter(
-  REVOCATION_CHECK_RATE_LIMIT,
-  REVOCATION_CHECK_RATE_WINDOW_MS,
-);
+//
+// This is a cache, not a plain constant, because the ceiling is now sized from
+// bindings. Building a limiter inside createApp() would hand every request a
+// brand-new zeroed bucket — which reads as "configurable" but silently removes
+// the limit entirely. Memoizing on (limit, window) keeps one bucket per isolate
+// per configuration, exactly as the module-scope constants used to.
+const identityCreateLimiterCache = new Map<string, IdentityCreateLimiters>();
+
+function resolveSharedIdentityCreateLimiters(
+  config: Partial<AppConfig>,
+): IdentityCreateLimiters {
+  const limit = parseRateLimitSetting(
+    config.RELAYAUTH_IDENTITY_CREATE_RATE_LIMIT,
+    IDENTITY_CREATE_RATE_LIMIT,
+    IDENTITY_CREATE_RATE_LIMIT_MAX,
+    "RELAYAUTH_IDENTITY_CREATE_RATE_LIMIT",
+  );
+  const windowMs = parseRateLimitSetting(
+    config.RELAYAUTH_IDENTITY_CREATE_RATE_WINDOW_MS,
+    IDENTITY_CREATE_RATE_WINDOW_MS,
+    IDENTITY_CREATE_RATE_WINDOW_MS_MAX,
+    "RELAYAUTH_IDENTITY_CREATE_RATE_WINDOW_MS",
+  );
+
+  const cacheKey = `${limit}:${windowMs}`;
+  const cached = identityCreateLimiterCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const limiters: IdentityCreateLimiters = {
+    postAuth: new FixedWindowRateLimiter(limit, windowMs),
+    preAuth: new FixedWindowSketchRateLimiter(limit, windowMs),
+  };
+  if (identityCreateLimiterCache.size < IDENTITY_CREATE_LIMITER_CACHE_MAX) {
+    identityCreateLimiterCache.set(cacheKey, limiters);
+  }
+  return limiters;
+}
+// The revocation-check ceiling is the one most likely to need retuning in
+// production: the key below is a client IP, and Cloudflare Workers egress from
+// shared addresses, so unrelated service-to-service verifiers collapse into a
+// handful of buckets. No single caller has to be abusive to exhaust one. The
+// binding lets that be corrected without a release.
+const REVOCATION_CHECK_RATE_LIMIT_MAX = 120_000;
+const REVOCATION_CHECK_RATE_WINDOW_MS_MAX = 3_600_000;
+
+const revocationCheckLimiterCache = new Map<string, RequestRateLimiter>();
+
+function resolveSharedRevocationCheckRateLimiter(
+  config: Partial<AppConfig>,
+): RequestRateLimiter {
+  const limit = parseRateLimitSetting(
+    config.RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT,
+    REVOCATION_CHECK_RATE_LIMIT,
+    REVOCATION_CHECK_RATE_LIMIT_MAX,
+    "RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT",
+  );
+  const windowMs = parseRateLimitSetting(
+    config.RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS,
+    REVOCATION_CHECK_RATE_WINDOW_MS,
+    REVOCATION_CHECK_RATE_WINDOW_MS_MAX,
+    "RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS",
+  );
+
+  const cacheKey = `${limit}:${windowMs}`;
+  const cached = revocationCheckLimiterCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  // Count-min sketch, not a Map: the key is a caller-supplied forwarding
+  // header, so unique-key cardinality is unbounded. See the note above
+  // IDENTITY_CREATE_RATE_LIMIT.
+  const limiter = new FixedWindowSketchRateLimiter(limit, windowMs);
+  if (revocationCheckLimiterCache.size < IDENTITY_CREATE_LIMITER_CACHE_MAX) {
+    revocationCheckLimiterCache.set(cacheKey, limiter);
+  }
+  return limiter;
+}
+
 const sharedSponsorOidcService = new SponsorOidcService();
 
 export type CreateAppOptions = {
@@ -126,13 +260,17 @@ function getClientIp(forwardedFor: string | undefined, realIp: string | undefine
 export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const bridgeRateMap = new Map<string, { count: number; resetAt: number }>();
-  const revocationCheckRateLimiter =
-    options.revocationCheckRateLimiter ?? sharedRevocationCheckRateLimiter;
-  const identityCreatePreAuthRateLimiter =
-    options.identityCreatePreAuthRateLimiter ?? sharedIdentityCreatePreAuthRateLimiter;
-  const identityCreateRateLimiter =
-    options.identityCreateRateLimiter ?? sharedIdentityCreateRateLimiter;
   const config = normalizeConfig(options);
+  const revocationCheckRateLimiter =
+    options.revocationCheckRateLimiter ?? resolveSharedRevocationCheckRateLimiter(config);
+  // Sized from bindings so a deployment can retune the ceiling without a code
+  // change, and memoized so per-request app construction still shares one
+  // bucket per isolate. See resolveSharedIdentityCreateLimiters().
+  const sharedIdentityCreateLimiters = resolveSharedIdentityCreateLimiters(config);
+  const identityCreatePreAuthRateLimiter =
+    options.identityCreatePreAuthRateLimiter ?? sharedIdentityCreateLimiters.preAuth;
+  const identityCreateRateLimiter =
+    options.identityCreateRateLimiter ?? sharedIdentityCreateLimiters.postAuth;
   const sponsorOidcService = options.sponsorOidcService ?? sharedSponsorOidcService;
 
   app.onError((error, c) => {
@@ -345,6 +483,18 @@ export async function startServer(options: StartServerOptions = {}) {
     RELAYAUTH_ENV_STAGE: options.config?.RELAYAUTH_ENV_STAGE ?? process.env.RELAYAUTH_ENV_STAGE,
     RELAYAUTH_SPONSOR_FEDERATIONS:
       options.config?.RELAYAUTH_SPONSOR_FEDERATIONS ?? process.env.RELAYAUTH_SPONSOR_FEDERATIONS,
+    RELAYAUTH_IDENTITY_CREATE_RATE_LIMIT:
+      options.config?.RELAYAUTH_IDENTITY_CREATE_RATE_LIMIT
+      ?? process.env.RELAYAUTH_IDENTITY_CREATE_RATE_LIMIT,
+    RELAYAUTH_IDENTITY_CREATE_RATE_WINDOW_MS:
+      options.config?.RELAYAUTH_IDENTITY_CREATE_RATE_WINDOW_MS
+      ?? process.env.RELAYAUTH_IDENTITY_CREATE_RATE_WINDOW_MS,
+    RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT:
+      options.config?.RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT
+      ?? process.env.RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT,
+    RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS:
+      options.config?.RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS
+      ?? process.env.RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS,
   };
 
   const app = createApp({
