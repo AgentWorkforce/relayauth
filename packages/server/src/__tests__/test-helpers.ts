@@ -27,6 +27,10 @@ type TestBindings = Pick<
   AppEnv["Bindings"],
   "INTERNAL_SECRET" | "RELAYAUTH_SIGNING_KEY_PEM" | "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC"
   | "RELAYAUTH_SPONSOR_FEDERATIONS"
+  | "RELAYAUTH_IDENTITY_CREATE_RATE_LIMIT"
+  | "RELAYAUTH_IDENTITY_CREATE_RATE_WINDOW_MS"
+  | "RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT"
+  | "RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS"
 >;
 
 type TestStorage = AuthStorage & Partial<ReturnType<typeof createSqliteStorage>>;
@@ -37,6 +41,21 @@ type TestAppOptions = {
   identityCreatePreAuthRateLimiter?: RequestRateLimiter;
   identityCreateRateLimiter?: RequestRateLimiter;
   revocationCheckRateLimiter?: RequestRateLimiter;
+  /**
+   * Let createApp() size the identity-create limiters from bindings instead of
+   * injecting fresh per-test limiters.
+   *
+   * The helper normally injects its own limiters, which would mask the
+   * binding-driven path entirely. Tests that exercise the configurable ceiling
+   * — or the module-scope memoization that keeps one bucket per isolate across
+   * per-request app construction — must opt in here.
+   */
+  useBindingIdentityCreateRateLimiters?: boolean;
+  /**
+   * Let createApp() size the revocation-check limiter from bindings instead of
+   * the helper's deliberately generous per-test limiter.
+   */
+  useBindingRevocationCheckRateLimiter?: boolean;
 };
 
 type TestApp = Hono<AppEnv> & {
@@ -231,22 +250,58 @@ export function createTestApp(
     ...(bindingsOverrides.RELAYAUTH_SPONSOR_FEDERATIONS !== undefined
       ? { RELAYAUTH_SPONSOR_FEDERATIONS: bindingsOverrides.RELAYAUTH_SPONSOR_FEDERATIONS }
       : {}),
+    ...(bindingsOverrides.RELAYAUTH_IDENTITY_CREATE_RATE_LIMIT !== undefined
+      ? {
+        RELAYAUTH_IDENTITY_CREATE_RATE_LIMIT:
+          bindingsOverrides.RELAYAUTH_IDENTITY_CREATE_RATE_LIMIT,
+      }
+      : {}),
+    ...(bindingsOverrides.RELAYAUTH_IDENTITY_CREATE_RATE_WINDOW_MS !== undefined
+      ? {
+        RELAYAUTH_IDENTITY_CREATE_RATE_WINDOW_MS:
+          bindingsOverrides.RELAYAUTH_IDENTITY_CREATE_RATE_WINDOW_MS,
+      }
+      : {}),
+    ...(bindingsOverrides.RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT !== undefined
+      ? {
+        RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT:
+          bindingsOverrides.RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT,
+      }
+      : {}),
+    ...(bindingsOverrides.RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS !== undefined
+      ? {
+        RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS:
+          bindingsOverrides.RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS,
+      }
+      : {}),
   };
 
   storage.INTERNAL_SECRET = bindings.INTERNAL_SECRET;
+
+  // Omitting these lets createApp() resolve binding-sized, module-scope
+  // memoized limiters — the code path production actually runs.
+  const bindingSizedLimiters = options.useBindingIdentityCreateRateLimiters === true;
+  const identityCreatePreAuthRateLimiter =
+    options.identityCreatePreAuthRateLimiter
+    ?? (bindingSizedLimiters ? undefined : new FixedWindowSketchRateLimiter(60, 60_000));
+  const identityCreateRateLimiter =
+    options.identityCreateRateLimiter
+    ?? (bindingSizedLimiters ? undefined : new FixedWindowRateLimiter(60, 60_000));
+  // Fresh per-app limiter so revocation-check calls in one test never spill
+  // into another; generous default keeps unrelated suites unthrottled.
+  const revocationCheckRateLimiter =
+    options.revocationCheckRateLimiter
+    ?? (options.useBindingRevocationCheckRateLimiter === true
+      ? undefined
+      : new FixedWindowRateLimiter(100_000, 60_000));
 
   const app = createApp({
     storage,
     defaultBindings: bindings,
     deferTask: options.deferTask,
-    identityCreatePreAuthRateLimiter:
-      options.identityCreatePreAuthRateLimiter ?? new FixedWindowSketchRateLimiter(60, 60_000),
-    identityCreateRateLimiter:
-      options.identityCreateRateLimiter ?? new FixedWindowRateLimiter(60, 60_000),
-    // Fresh per-app limiter so revocation-check calls in one test never spill
-    // into another; generous default keeps unrelated suites unthrottled.
-    revocationCheckRateLimiter:
-      options.revocationCheckRateLimiter ?? new FixedWindowRateLimiter(100_000, 60_000),
+    ...(identityCreatePreAuthRateLimiter ? { identityCreatePreAuthRateLimiter } : {}),
+    ...(identityCreateRateLimiter ? { identityCreateRateLimiter } : {}),
+    ...(revocationCheckRateLimiter ? { revocationCheckRateLimiter } : {}),
   });
 
   const testApp = app as TestApp;
