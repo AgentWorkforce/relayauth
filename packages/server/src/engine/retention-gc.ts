@@ -154,17 +154,31 @@ const MAX_IDENTITY_RETENTION_DAYS = 3_650;
  * exists. Liveness of the CURRENT token is therefore not a sufficient guard;
  * "issued a token within the retention window" is.
  *
- * That recency is read from `token_lineages` as well as `tokens`, and the
- * lineage row is the one that matters: `pruneExpiredTokensWindow` DELETES a
- * token row once it expires, so pinning on `tokens` alone would be undone by
- * the sibling sweep — run the token sweep first and the reused identity goes
- * back to matching every clause, which is the exact failure this pin exists to
- * prevent. `token_lineages` is never swept (0008 created it as a permanent
- * historical record, which is also why identity deletion does not break
- * revoke-by-{workspace,agentName}), so it still carries the evidence. The
- * `tokens` clause is kept as belt-and-braces for any mint path that writes a
- * token without a lineage row. `idx_token_lineages_identity_created` already
- * covers the lookup.
+ * Recency is read from `tokens` AND `token_lineages`, but READ THE LIMITS
+ * BELOW before relying on either — neither is a guarantee, and an earlier
+ * revision of this comment claimed one that production does not support.
+ *
+ *   - `tokens`: `pruneExpiredTokensWindow` deletes a token row once it EXPIRES
+ *     (`expires_at < cutoff`), not on a retention window. Relayfile mints are
+ *     short-lived, so this evidence is typically gone within hours.
+ *   - `token_lineages`: never swept (0008 created it as a permanent historical
+ *     record, which is also why identity deletion does not break
+ *     revoke-by-{workspace,agentName}) — but it held ZERO rows in production
+ *     when this was written. `insertTokenLineage` returns early unless the
+ *     token carries a lineage, and the Relayfile mint path sets none. So for
+ *     precisely the identities this GC drains, the lineage clause never fires.
+ *
+ * Both clauses are correct and cost nothing where the data exists
+ * (`idx_token_lineages_identity_created` covers the lookup), so both stay. But
+ * the honest summary is that this server CANNOT reliably tell that an old,
+ * reused identity is still in service: `last_active_at` is written only by
+ * PATCH and is NULL on essentially every row.
+ *
+ * The durable protection therefore lives with the CALLER, not here: a caller
+ * that keeps a long-lived reference to an identity id must treat it as
+ * invalidatable and re-resolve when the mint returns 404 `identity_not_found`
+ * (AgentWorkforce/cloud#3819 does this). Do not weaken that on the assumption
+ * that this clause protects a reused identity — as of today it usually cannot.
  */
 const IDENTITY_RETENTION_ELIGIBLE_SQL = `
   EXISTS (

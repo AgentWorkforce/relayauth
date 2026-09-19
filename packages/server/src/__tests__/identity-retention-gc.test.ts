@@ -795,9 +795,13 @@ test("a recently issued but already expired token pins an aged identity", async 
  *
  * The recency pin is worthless if it reads only a table the sibling sweep
  * empties. `pruneExpiredTokensWindow` deletes a token row once it expires, so
- * running the token sweep first would strip the evidence and hand the reused
- * identity straight back to the collector. `token_lineages` is never swept, so
- * the pin has to survive on that alone.
+ * running the token sweep first strips that evidence.
+ *
+ * These two tests pin the lineage clause's BEHAVIOUR where lineage rows exist.
+ * They do NOT demonstrate that a reused identity is protected in production:
+ * `token_lineages` was empty there when this was written, because the Relayfile
+ * mint path sets no lineage. See the eligibility comment in retention-gc.ts —
+ * the durable protection is the caller re-resolving on 404, not this clause.
  */
 test("the reuse pin survives the sibling token sweep, which deletes the token row", async (t) => {
   const { storage, db } = createStorage(t);
