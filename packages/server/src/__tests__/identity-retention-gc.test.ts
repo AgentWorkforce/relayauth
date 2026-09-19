@@ -119,6 +119,25 @@ async function insertToken(
     .run();
 }
 
+async function insertLineage(
+  storage: SqliteStorage,
+  tokenId: string,
+  identityId: string,
+  createdAt: string,
+): Promise<void> {
+  await storage.DB.prepare(
+    `
+      INSERT INTO token_lineages (
+        token_id, issued_token_id, identity_id, org_id, workspace_id,
+        sponsor_id, token_type, created_at
+      )
+      VALUES (?, ?, ?, 'org_sprawl', 'ws_sprawl', 'sponsor', 'access', ?)
+    `,
+  )
+    .bind(tokenId, tokenId, identityId, createdAt)
+    .run();
+}
+
 async function enableRetention(
   storage: SqliteStorage,
   orgId: string,
@@ -769,4 +788,47 @@ test("a recently issued but already expired token pins an aged identity", async 
   const swept = await sweepOnce(db);
   assert.equal(swept.deletedCount, 1);
   assert.deepEqual(await readIdentityIds(storage), ["agent_reused"]);
+});
+
+/**
+ * Cursor Bugbot, PR #93: "Token GC defeats reuse pin".
+ *
+ * The recency pin is worthless if it reads only a table the sibling sweep
+ * empties. `pruneExpiredTokensWindow` deletes a token row once it expires, so
+ * running the token sweep first would strip the evidence and hand the reused
+ * identity straight back to the collector. `token_lineages` is never swept, so
+ * the pin has to survive on that alone.
+ */
+test("the reuse pin survives the sibling token sweep, which deletes the token row", async (t) => {
+  const { storage, db } = createStorage(t);
+  await enableRetention(storage, "org_sprawl", 7);
+
+  await insertIdentity(storage, { id: "agent_reused" });
+  await insertLineage(storage, "tok_swept", "agent_reused", NOW.toISOString());
+
+  // Exactly the post-token-sweep state: the lineage row remains, its token
+  // row is gone.
+  assert.deepEqual(await countStaleIdentitiesBatch(db, { now: NOW }), {
+    expiredCount: 0,
+  });
+
+  const swept = await sweepOnce(db);
+  assert.equal(swept.deletedCount, 0);
+  assert.deepEqual(await readIdentityIds(storage), ["agent_reused"]);
+});
+
+test("an identity whose lineage is older than the window is still collectable", async (t) => {
+  const { storage, db } = createStorage(t);
+  await enableRetention(storage, "org_sprawl", 7);
+
+  await insertIdentity(storage, { id: "agent_abandoned" });
+  await insertLineage(storage, "tok_ancient", "agent_abandoned", AGED_TOKEN_CREATED_AT);
+
+  assert.deepEqual(await countStaleIdentitiesBatch(db, { now: NOW }), {
+    expiredCount: 1,
+  });
+
+  const swept = await sweepOnce(db);
+  assert.equal(swept.deletedCount, 1);
+  assert.deepEqual(await readIdentityIds(storage), []);
 });

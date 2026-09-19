@@ -153,6 +153,18 @@ const MAX_IDENTITY_RETENTION_DAYS = 3_650;
  * leaves the caller's durable mapping pointing at an identity that no longer
  * exists. Liveness of the CURRENT token is therefore not a sufficient guard;
  * "issued a token within the retention window" is.
+ *
+ * That recency is read from `token_lineages` as well as `tokens`, and the
+ * lineage row is the one that matters: `pruneExpiredTokensWindow` DELETES a
+ * token row once it expires, so pinning on `tokens` alone would be undone by
+ * the sibling sweep — run the token sweep first and the reused identity goes
+ * back to matching every clause, which is the exact failure this pin exists to
+ * prevent. `token_lineages` is never swept (0008 created it as a permanent
+ * historical record, which is also why identity deletion does not break
+ * revoke-by-{workspace,agentName}), so it still carries the evidence. The
+ * `tokens` clause is kept as belt-and-braces for any mint path that writes a
+ * token without a lineage row. `idx_token_lineages_identity_created` already
+ * covers the lookup.
  */
 const IDENTITY_RETENTION_ELIGIBLE_SQL = `
   EXISTS (
@@ -172,6 +184,12 @@ const IDENTITY_RETENTION_ELIGIBLE_SQL = `
         FROM tokens
         WHERE tokens.identity_id = identities.id
           AND tokens.created_at >= date(?, printf('-%d days', config.retention_days))
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM token_lineages
+        WHERE token_lineages.identity_id = identities.id
+          AND token_lineages.created_at >= date(?, printf('-%d days', config.retention_days))
       )
   )
   AND NOT EXISTS (
@@ -670,7 +688,7 @@ export {
 /** Bound parameters for {@link IDENTITY_RETENTION_ELIGIBLE_SQL}, in order. */
 function identityEligibilityParams(
   options: Pick<IdentityGcWindowOptions, "now" | "tokenGraceSeconds">,
-): [number, number, string, string, string, number] {
+): [number, number, string, string, string, string, number] {
   const now = normalizeNow(options.now);
   const nowIso = now.toISOString();
   return [
@@ -680,6 +698,9 @@ function identityEligibilityParams(
     nowIso,
     // `tokens.created_at` cutoff: a token issued inside the retention window
     // pins its identity even when that token has since expired.
+    nowIso,
+    // `token_lineages.created_at` cutoff: the same signal, on the table the
+    // token sweep never deletes.
     nowIso,
     createTokenCutoff(now, options.tokenGraceSeconds),
   ];
