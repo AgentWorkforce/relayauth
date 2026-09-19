@@ -23,3 +23,6 @@ tsconfig.tsbuildinfo
 *.tsbuildinfo
 packages/sdk/typescript/tsconfig.tsbuildinfo
 packages/observer/.next/
+
+# Agent orchestration briefings (local scaffolding, not source)
+.agent-briefings/

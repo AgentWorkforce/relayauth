@@ -35,6 +35,30 @@ export type AppConfig = {
   RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT?: string;
   /** Revocation-check window in ms, as a canonical positive integer string. Defaults to 60000. */
   RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS?: string;
+  /**
+   * Hard storage ceiling in bytes, as a canonical positive integer string.
+   *
+   * Unset leaves the capacity guardrail entirely off: nothing is graded, no
+   * `relayauth.storage.capacity` line is emitted, and `/v1/stats/storage`
+   * reports the observed size without a level. Set it to the backend's real
+   * per-database cap so approaching that cap becomes an early signal rather
+   * than a run failure.
+   */
+  RELAYAUTH_STORAGE_CAPACITY_BYTES?: string;
+  /** Ratio of capacity at which the guardrail warns. In (0, 1]. Defaults to 0.70. */
+  RELAYAUTH_STORAGE_CAPACITY_WARN_RATIO?: string;
+  /** Ratio of capacity at which the guardrail escalates. In (0, 1]. Defaults to 0.85. */
+  RELAYAUTH_STORAGE_CAPACITY_CRITICAL_RATIO?: string;
+  /**
+   * Ratio at which `POST /v1/identities` sheds load with the retryable
+   * storage-capacity envelope, measured net of reclaimable freelist space.
+   *
+   * Unset means never shed, which is the default. Setting it trades some
+   * identity creates for a typed, retryable 503 instead of the hard write
+   * failure that arrives when the ceiling is actually reached. Shedding also
+   * requires a fresh capacity sample; without one it stays off.
+   */
+  RELAYAUTH_STORAGE_CAPACITY_SHED_RATIO?: string;
 };
 
 export type AppEnv = {
