@@ -1,6 +1,15 @@
 import { Hono } from "hono";
 
 import type { AppEnv } from "../env.js";
+import {
+  asStorageCapacitySqlExecutor,
+  collectTableFootprint,
+  evaluateStorageCapacity,
+  logStorageCapacity,
+  readStorageCapacitySample,
+  resolveStorageCapacitySettings,
+  resolveStorageSizeSample,
+} from "../engine/storage-capacity.js";
 import { requireScope } from "../middleware/scope.js";
 import {
   decodeAuditCursor,
@@ -151,6 +160,104 @@ dashboardStats.get("/", async (c) => {
   };
 
   return c.json(response, 200);
+});
+
+// Tables worth naming in a capacity alert: the ones whose row counts have
+// actually driven growth. Ordered by row count in the response, so the alert
+// says what is filling the database rather than only that it is filling.
+const CAPACITY_FOOTPRINT_TABLES = [
+  "identities",
+  "identity_lineages",
+  "identity_lineage_members",
+  "tokens",
+  "token_lineages",
+  "token_lineage_members",
+  "audit_logs",
+] as const;
+
+/**
+ * Reports storage headroom.
+ *
+ * Deliberately org-agnostic: the database is shared, and the ceiling that
+ * matters is the whole file's. It is mounted behind the same
+ * `relayauth:stats:read` scope as the rest of this router.
+ *
+ * The size comes from whichever source the deployment has. A recorded sample
+ * (written by whatever sweep observes the backend's own reported size) wins; a
+ * pragma probe fills in for stores that expose one. When neither answers, the
+ * endpoint says so rather than reporting a fabricated zero.
+ */
+dashboardStats.get("/storage", async (c) => {
+  const settings = resolveStorageCapacitySettings(c.env);
+  const db = asStorageCapacitySqlExecutor(
+    (c.get("storage") as unknown as { DB?: unknown }).DB,
+  );
+
+  const persisted = db ? await readStorageCapacitySample(db).catch(() => null) : null;
+  const sample = await resolveStorageSizeSample(db, {
+    ...(persisted ? { sizeBytes: persisted.sizeBytes } : {}),
+    ...(persisted?.freelistBytes === undefined
+      ? {}
+      : { freelistBytes: persisted.freelistBytes }),
+  });
+
+  if (sample.sizeBytes === null) {
+    return c.json(
+      {
+        sizeBytes: null,
+        source: sample.source,
+        capacityConfigured: settings.capacityBytes !== undefined,
+        sheddingEnabled: settings.shedRatio !== undefined,
+      },
+      200,
+    );
+  }
+
+  const capacityBytes = settings.capacityBytes ?? persisted?.capacityBytes;
+  const assessment = capacityBytes
+    ? evaluateStorageCapacity({
+        sizeBytes: sample.sizeBytes,
+        capacityBytes,
+        warnRatio: settings.warnRatio,
+        criticalRatio: settings.criticalRatio,
+        ...(sample.freelistBytes === undefined
+          ? {}
+          : { freelistBytes: sample.freelistBytes }),
+      })
+    : null;
+
+  if (assessment) {
+    logStorageCapacity(assessment, { requestId: c.get("requestId"), via: "stats" });
+  }
+
+  return c.json(
+    {
+      sizeBytes: sample.sizeBytes,
+      source: sample.source,
+      ...(sample.freelistBytes === undefined
+        ? {}
+        : { freelistBytes: sample.freelistBytes }),
+      ...(persisted ? { observedAt: persisted.observedAt } : {}),
+      capacityConfigured: capacityBytes !== undefined,
+      sheddingEnabled: settings.shedRatio !== undefined,
+      ...(assessment
+        ? {
+            level: assessment.level,
+            capacityBytes: assessment.capacityBytes,
+            usedRatio: assessment.usedRatio,
+            effectiveUsedRatio: assessment.effectiveUsedRatio,
+            headroomBytes: assessment.headroomBytes,
+            reclaimableBytes: assessment.reclaimableBytes,
+            warnRatio: assessment.warnRatio,
+            criticalRatio: assessment.criticalRatio,
+          }
+        : {}),
+      ...(db
+        ? { tables: await collectTableFootprint(db, CAPACITY_FOOTPRINT_TABLES) }
+        : {}),
+    },
+    200,
+  );
 });
 
 function parseDashboardStatsQuery(

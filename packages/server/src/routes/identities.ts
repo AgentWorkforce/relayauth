@@ -22,10 +22,19 @@ import {
   isStorageCapacityExhausted,
   isTransientStorageOverload,
   isStorageOverloadedError,
+  StorageCapacityExhaustedError,
+  storageCapacityResponse,
   StorageOverloadedError,
   storageOverloadResponse,
   withStorageRetry,
 } from "../lib/storage-retry.js";
+import {
+  asStorageCapacitySqlExecutor,
+  resolveStorageCapacitySettings,
+  sharedStorageCapacityGauge,
+  shouldShedForStorageCapacity,
+  type StorageCapacityAssessment,
+} from "../engine/storage-capacity.js";
 import type { IdentityBudget, StoredIdentity } from "../storage/identity-types.js";
 import { isStorageError, type AuthStorage } from "../storage/index.js";
 
@@ -485,6 +494,26 @@ identities.post("/", async (c) => {
   }
 
   const storage = c.get("storage");
+
+  // Capacity shedding, default OFF. Only a deployment that sets
+  // RELAYAUTH_STORAGE_CAPACITY_SHED_RATIO reaches past this guard, and even
+  // then it needs a fresh capacity sample; anything unknown fails open. The
+  // point is to convert the hard write-failure cliff into the same typed,
+  // retryable envelope callers already handle, early enough to be actionable.
+  const shedDecision = await evaluateIdentityCreateShedding(c);
+  if (shedDecision.shed) {
+    console.warn("RelayAuth identity create shed for storage capacity", {
+      requestId: c.get("requestId"),
+      orgId: auth.claims.org,
+      usedRatio: shedDecision.assessment?.usedRatio,
+      effectiveUsedRatio: shedDecision.assessment?.effectiveUsedRatio,
+    });
+    return storageCapacityResponse(
+      c,
+      new StorageCapacityExhaustedError("identities.create"),
+    );
+  }
+
   try {
     const federation = c.get("sponsorOidcService").resolveConfig(c.env, auth.claims.org);
     let sponsorBinding: SponsorBinding = { mode: "legacy" };
@@ -645,6 +674,37 @@ identities.post("/", async (c) => {
     return c.json({ error: "Failed to create identity", code: "identity_create_failed", requestId }, 500);
   }
 });
+
+/**
+ * Decides whether this identity create should shed load for storage capacity.
+ *
+ * Costs nothing until a deployment opts in: the binding is read first, and the
+ * capacity sample is only fetched once shedding is actually configured. The
+ * gauge caches that read per isolate, so the opt-in adds a couple of reads per
+ * minute rather than one per request.
+ */
+async function evaluateIdentityCreateShedding(
+  c: Context<AppEnv>,
+): Promise<{ shed: boolean; assessment?: StorageCapacityAssessment }> {
+  const settings = resolveStorageCapacitySettings(c.env);
+  if (settings.shedRatio === undefined) {
+    return { shed: false };
+  }
+
+  const db = asStorageCapacitySqlExecutor(
+    (c.get("storage") as unknown as { DB?: unknown }).DB,
+  );
+  if (!db) {
+    return { shed: false };
+  }
+
+  const sample = await sharedStorageCapacityGauge.read(db);
+  const decision = shouldShedForStorageCapacity({ sample, settings });
+  return {
+    shed: decision.shed,
+    ...(decision.assessment ? { assessment: decision.assessment } : {}),
+  };
+}
 
 async function authenticateBearerOrApiKeyAndAuthorize(
   c: Context<AppEnv>,

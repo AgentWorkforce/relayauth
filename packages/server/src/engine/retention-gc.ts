@@ -39,6 +39,15 @@ export type TokenGcWindowOptions = RetentionGcWindowOptions & {
   expiryGraceSeconds?: number;
 };
 
+export type IdentityGcWindowOptions = RetentionGcWindowOptions & {
+  /**
+   * Treat a token that expired this recently as still live. Defaults to the
+   * verifier's accepted clock skew, so an identity is never swept while one of
+   * its tokens can still be considered valid.
+   */
+  tokenGraceSeconds?: number;
+};
+
 export type RetentionGcWindow = {
   cursorBefore: number;
   cursorAfter: number;
@@ -89,6 +98,122 @@ const DEFAULT_GC_BATCH_SIZE = 1_000;
 const MAX_GC_BATCH_SIZE = 50_000;
 const MAX_GC_WINDOW_SIZE = 1_000;
 const DEFAULT_TOKEN_EXPIRY_GRACE_SECONDS = 60;
+
+// Bounds on a per-organization identity retention window. A config row outside
+// these bounds is ignored entirely rather than clamped: identity deletion is
+// irreversible, so a malformed window must retain rather than guess.
+const MIN_IDENTITY_RETENTION_DAYS = 1;
+const MAX_IDENTITY_RETENTION_DAYS = 3_650;
+
+/**
+ * Every condition an identity row must satisfy before retention may delete it.
+ *
+ * One fragment, reused verbatim by the scan projection, the count, and the
+ * DELETE, so the evidence a sweep gathers and the predicate its mutation
+ * re-asserts can never drift apart. Bound parameters, in order:
+ *
+ *   1. minimum retention days      4. `now` (activity cutoff)
+ *   2. maximum retention days      5. token liveness cutoff, Unix seconds
+ *   3. `now` (creation cutoff)
+ *
+ * The conditions, in order:
+ *
+ * - The organization has an explicitly enabled config row with a sane window.
+ *   No row, `enabled = 0`, or a malformed `retention_days` means never sweep;
+ *   there is deliberately no implicit default.
+ * - The row predates the window, compared against a `YYYY-MM-DD` cutoff the
+ *   same conservative way audit retention does — a row on the boundary day is
+ *   kept up to a day longer rather than deleted early.
+ * - `last_active_at` is unset or equally stale.
+ * - No live token references it. A token counts as live while it is `active`
+ *   and either has no expiry at all (legacy rows whose liveness storage cannot
+ *   settle, so they fail safe) or expires at or after the grace cutoff. The
+ *   indefinite durable token class (#90) needs no special case: its far-future
+ *   expiry satisfies the same comparison.
+ * - It sponsors no surviving identity in its own organization, so a sweep can
+ *   never orphan a live sponsor chain. Scoped by `org_id` so the lookup rides
+ *   `idx_identities_org_sponsor`, and self-referential rows cannot pin
+ *   themselves forever.
+ * - It is not pinned by `metadata.retention = 'keep'`. Metadata that does not
+ *   parse retains the row: an unreadable opt-out is indistinguishable from an
+ *   opt-out that is present. The extraction sits inside a `CASE` because SQLite
+ *   does not promise a preceding `json_valid` is evaluated first, and
+ *   `json_extract` raises rather than returning NULL on malformed input.
+ *
+ * Status is deliberately absent. The identities this drains stay `active`
+ * forever because nothing retires them, so age plus the absence of live tokens
+ * is what makes a row collectable.
+ */
+const IDENTITY_RETENTION_ELIGIBLE_SQL = `
+  EXISTS (
+    SELECT 1
+    FROM identity_retention_config AS config
+    WHERE config.org_id = identities.org_id
+      AND config.enabled = 1
+      AND typeof(config.retention_days) = 'integer'
+      AND config.retention_days BETWEEN ? AND ?
+      AND identities.created_at < date(?, printf('-%d days', config.retention_days))
+      AND (
+        identities.last_active_at IS NULL
+        OR identities.last_active_at < date(?, printf('-%d days', config.retention_days))
+      )
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM tokens
+    WHERE tokens.identity_id = identities.id
+      AND tokens.status = 'active'
+      AND (tokens.expires_at IS NULL OR tokens.expires_at >= ?)
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM identities AS child
+    WHERE child.org_id = identities.org_id
+      AND child.sponsor_id = identities.id
+      AND child.id <> identities.id
+  )
+  AND (
+    CASE
+      WHEN json_valid(identities.metadata_json)
+        THEN json_extract(identities.metadata_json, '$.retention')
+      ELSE 'keep'
+    END
+  ) IS NOT 'keep'
+`;
+
+const IDENTITY_RETENTION_WINDOW_SCAN_SQL = `
+  SELECT
+    identities.rowid AS rowid,
+    identities.id AS id,
+    CASE WHEN ${IDENTITY_RETENTION_ELIGIBLE_SQL} THEN 1 ELSE 0 END AS expired
+  FROM identities
+  WHERE identities.rowid > ?
+  ORDER BY identities.rowid
+  LIMIT ?
+`;
+
+const IDENTITY_RETENTION_WINDOW_DELETE_SQL = `
+  DELETE FROM identities
+  WHERE id IN (
+      SELECT value
+      FROM json_each(?)
+      WHERE type = 'text'
+    )
+    AND ${IDENTITY_RETENTION_ELIGIBLE_SQL}
+`;
+
+const IDENTITY_RETENTION_WINDOW_COUNT_SQL = `
+  SELECT COUNT(*) AS count
+  FROM (
+    SELECT
+      CASE WHEN ${IDENTITY_RETENTION_ELIGIBLE_SQL} THEN 1 ELSE 0 END AS expired
+    FROM identities
+    WHERE identities.rowid > ?
+    ORDER BY identities.rowid
+    LIMIT ?
+  )
+  WHERE expired = 1
+`;
 
 const AUDIT_RETENTION_WINDOW_SCAN_SQL = `
   SELECT
@@ -308,6 +433,87 @@ export async function purgeExpiredAuditEntriesWindow(
 }
 
 /**
+ * Examines the next bounded set of identity rows in intrinsic rowid order and
+ * carries the stable IDs of retention-eligible rows into the mutation.
+ *
+ * Eligibility is projected onto the same LIMITed rows the sweep scanned, so a
+ * 1.09M-row table costs exactly one bounded window per call regardless of how
+ * many rows happen to be collectable. Organizations that have not explicitly
+ * enabled retention simply project as not-eligible, which is what keeps this
+ * inert on every deployment that has not opted in.
+ */
+export async function scanStaleIdentitiesWindow(
+  db: RetentionGcCursorSqlExecutor,
+  options: IdentityGcWindowOptions = {},
+): Promise<RetentionGcWindowScanResult> {
+  const cursorBefore = normalizeCursor(options.cursor);
+  const limit = normalizeWindowSize(options.limit);
+  const result = await db
+    .prepare(IDENTITY_RETENTION_WINDOW_SCAN_SQL)
+    .bind(...identityEligibilityParams(options), cursorBefore, limit)
+    .all<RetentionGcCandidateRow>();
+
+  return buildCandidateWindow(result, cursorBefore, limit);
+}
+
+/**
+ * Deletes only the stable identity candidates carried by a prior bounded scan.
+ *
+ * The full eligibility predicate is re-asserted inside the DELETE. A row that
+ * gained a live token, gained a sponsored child, or was pinned between the scan
+ * and this mutation therefore survives, and a rowid reused by an unrelated row
+ * is never swept on evidence gathered before that row existed.
+ *
+ * Nothing here revokes: the predicate has already established that no active,
+ * unexpired token references the row. Lineage is intentionally untouched —
+ * migration 0008 records it without foreign keys precisely so it survives as
+ * the historical record of an identity that is no longer operational, and 0010
+ * persists the agent name on `token_lineages` so workspace-agent revocation
+ * keeps resolving path tokens afterwards.
+ */
+export async function pruneStaleIdentitiesWindow(
+  db: RetentionGcSqlExecutor,
+  window: RetentionGcWindow,
+  options: Pick<IdentityGcWindowOptions, "now" | "tokenGraceSeconds"> = {},
+): Promise<RetentionGcRunResult> {
+  const normalizedWindow = normalizeClosedWindow(window);
+  if (normalizedWindow.candidateIds.length === 0) {
+    return { deletedCount: 0 };
+  }
+
+  const result = await db
+    .prepare(IDENTITY_RETENTION_WINDOW_DELETE_SQL)
+    .bind(
+      JSON.stringify(normalizedWindow.candidateIds),
+      ...identityEligibilityParams(options),
+    )
+    .run();
+
+  return toGcRunResult(result);
+}
+
+/**
+ * Counts retention-eligible identities inside the next bounded rowid window.
+ *
+ * Bounded by rows scanned rather than by matches found, so a dry run costs the
+ * same as the sweep it previews and reports exactly what that sweep would
+ * delete. Deletes nothing.
+ */
+export async function countStaleIdentitiesBatch(
+  db: RetentionGcSqlExecutor,
+  options: IdentityGcWindowOptions = {},
+): Promise<{ expiredCount: number }> {
+  const cursor = normalizeCursor(options.cursor);
+  const limit = normalizeWindowSize(options.limit);
+  const row = await db
+    .prepare(IDENTITY_RETENTION_WINDOW_COUNT_SQL)
+    .bind(...identityEligibilityParams(options), cursor, limit)
+    .first<{ count?: unknown }>();
+
+  return { expiredCount: readCount(row?.count) };
+}
+
+/**
  * Deletes one bounded batch of tokens that can no longer pass verification.
  *
  * Token `expires_at` values are Unix seconds. The default 60-second grace
@@ -441,7 +647,24 @@ export {
   DEFAULT_TOKEN_EXPIRY_GRACE_SECONDS,
   MAX_GC_BATCH_SIZE,
   MAX_GC_WINDOW_SIZE,
+  MAX_IDENTITY_RETENTION_DAYS,
+  MIN_IDENTITY_RETENTION_DAYS,
 };
+
+/** Bound parameters for {@link IDENTITY_RETENTION_ELIGIBLE_SQL}, in order. */
+function identityEligibilityParams(
+  options: Pick<IdentityGcWindowOptions, "now" | "tokenGraceSeconds">,
+): [number, number, string, string, number] {
+  const now = normalizeNow(options.now);
+  const nowIso = now.toISOString();
+  return [
+    MIN_IDENTITY_RETENTION_DAYS,
+    MAX_IDENTITY_RETENTION_DAYS,
+    nowIso,
+    nowIso,
+    createTokenCutoff(now, options.tokenGraceSeconds),
+  ];
+}
 
 type RetentionGcCandidateRow = {
   rowid?: unknown;

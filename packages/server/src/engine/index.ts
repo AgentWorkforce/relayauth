@@ -7,3 +7,4 @@ export * from "./retention-gc.js";
 export * from "./role-assignments.js";
 export * from "./roles.js";
 export * from "./scope-inheritance.js";
+export * from "./storage-capacity.js";

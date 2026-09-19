@@ -31,7 +31,21 @@ type TestBindings = Pick<
   | "RELAYAUTH_IDENTITY_CREATE_RATE_WINDOW_MS"
   | "RELAYAUTH_REVOCATION_CHECK_RATE_LIMIT"
   | "RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS"
+  | "RELAYAUTH_STORAGE_CAPACITY_BYTES"
+  | "RELAYAUTH_STORAGE_CAPACITY_WARN_RATIO"
+  | "RELAYAUTH_STORAGE_CAPACITY_CRITICAL_RATIO"
+  | "RELAYAUTH_STORAGE_CAPACITY_SHED_RATIO"
 >;
+
+// Bindings that are simply forwarded when present. Unlike the signing/secret
+// bindings above they have no test default: an absent binding is the behaviour
+// under test (each of these leaves its feature off).
+const PASS_THROUGH_TEST_BINDINGS = [
+  "RELAYAUTH_STORAGE_CAPACITY_BYTES",
+  "RELAYAUTH_STORAGE_CAPACITY_WARN_RATIO",
+  "RELAYAUTH_STORAGE_CAPACITY_CRITICAL_RATIO",
+  "RELAYAUTH_STORAGE_CAPACITY_SHED_RATIO",
+] as const satisfies readonly (keyof TestBindings)[];
 
 type TestStorage = AuthStorage & Partial<ReturnType<typeof createSqliteStorage>>;
 
@@ -274,6 +288,11 @@ export function createTestApp(
           bindingsOverrides.RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS,
       }
       : {}),
+    ...Object.fromEntries(
+      PASS_THROUGH_TEST_BINDINGS.filter(
+        (key) => bindingsOverrides[key] !== undefined,
+      ).map((key) => [key, bindingsOverrides[key]]),
+    ),
   };
 
   storage.INTERNAL_SECRET = bindings.INTERNAL_SECRET;
