@@ -103,6 +103,28 @@ test("GET /v1/stats/storage reports size without a level until a ceiling is set"
   assert.equal(body.capacityConfigured, false);
   assert.equal(body.sheddingEnabled, false);
   assert.equal(body.level, undefined, "no ceiling means nothing to grade against");
+  assert.equal(
+    body.tables,
+    undefined,
+    "per-table COUNT(*) is opt-in: the default probe must not scan the store it is watching",
+  );
+});
+
+test("GET /v1/stats/storage returns the table footprint only when asked", async (t) => {
+  const app = createApp(t);
+
+  const response = await app.request(
+    createTestRequest(
+      "GET",
+      "/v1/stats/storage?tables=1",
+      undefined,
+      authorize(["relayauth:stats:read"]),
+    ),
+    undefined,
+    app.bindings,
+  );
+  const body = await assertJsonResponse<StorageStatsResponse>(response, 200);
+
   assert.ok(body.tables?.some((entry) => entry.table === "identities"));
 });
 

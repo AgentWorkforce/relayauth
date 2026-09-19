@@ -390,9 +390,18 @@ export async function readStorageCapacitySample(
  * per isolate and nothing at all while shedding is off.
  */
 export class StorageCapacityGauge {
-  #cached: PersistedStorageCapacitySample | null = null;
-  #readAtMs = 0;
-  #hasRead = false;
+  /**
+   * Keyed BY EXECUTOR, not a single slot. `sharedStorageCapacityGauge` is a
+   * module-level singleton and `createApp` accepts injected storage, so two
+   * apps backed by DIFFERENT databases can share one gauge within a process. A
+   * single slot would hand app B the sample app A took, and a 95%-full database
+   * would start shedding creates on an empty one. A WeakMap also lets a
+   * retired executor's sample be collected with it.
+   */
+  #cache = new WeakMap<
+    StorageCapacitySqlExecutor,
+    { sample: PersistedStorageCapacitySample | null; readAtMs: number }
+  >();
 
   constructor(readonly ttlMs: number = DEFAULT_STORAGE_CAPACITY_GAUGE_TTL_MS) {}
 
@@ -401,32 +410,45 @@ export class StorageCapacityGauge {
     options: { now?: Date } = {},
   ): Promise<PersistedStorageCapacitySample | null> {
     const nowMs = normalizeNow(options.now).getTime();
-    if (this.#hasRead && nowMs - this.#readAtMs < this.ttlMs) {
-      return this.#cached;
+    const entry = this.#cache.get(db);
+    if (entry && nowMs - entry.readAtMs < this.ttlMs) {
+      return entry.sample;
     }
 
+    let sample: PersistedStorageCapacitySample | null;
     try {
-      this.#cached = await readStorageCapacitySample(db);
+      sample = await readStorageCapacitySample(db);
     } catch {
       // A store that cannot answer must not fail the request it is guarding.
-      this.#cached = null;
+      sample = null;
     }
-    this.#hasRead = true;
-    this.#readAtMs = nowMs;
-    return this.#cached;
+    this.#cache.set(db, { sample, readAtMs: nowMs });
+    return sample;
   }
 
-  /** Seeds the cache from a sample this isolate just took. */
-  record(sample: PersistedStorageCapacitySample, options: { now?: Date } = {}): void {
-    this.#cached = sample;
-    this.#hasRead = true;
-    this.#readAtMs = normalizeNow(options.now).getTime();
+  /** Seeds the cache from a sample this isolate just took for `db`. */
+  record(
+    db: StorageCapacitySqlExecutor,
+    sample: PersistedStorageCapacitySample,
+    options: { now?: Date } = {},
+  ): void {
+    this.#cache.set(db, {
+      sample,
+      readAtMs: normalizeNow(options.now).getTime(),
+    });
   }
 
-  reset(): void {
-    this.#cached = null;
-    this.#hasRead = false;
-    this.#readAtMs = 0;
+  /**
+   * Drops one executor's cached sample, or every sample when called with no
+   * executor. A WeakMap cannot be enumerated, so the whole-gauge reset swaps in
+   * a fresh map rather than clearing in place.
+   */
+  reset(db?: StorageCapacitySqlExecutor): void {
+    if (db) {
+      this.#cache.delete(db);
+      return;
+    }
+    this.#cache = new WeakMap();
   }
 }
 
@@ -455,7 +477,13 @@ export function shouldShedForStorageCapacity(input: {
     return { shed: false, reason: "shedding_disabled" };
   }
 
-  const capacityBytes = settings.capacityBytes ?? sample?.capacityBytes;
+  // The CONFIGURED ceiling is the sole runtime authority. Falling back to
+  // `sample.capacityBytes` would keep shedding against a ceiling an operator
+  // has just removed: persisted samples carry the old value, so unsetting
+  // RELAYAUTH_STORAGE_CAPACITY_BYTES while a shed ratio remains set would go on
+  // rejecting creates until a later sample happened to overwrite it. Removing
+  // the binding must disable shedding immediately.
+  const capacityBytes = settings.capacityBytes;
   if (capacityBytes === undefined || capacityBytes <= 0) {
     return { shed: false, reason: "capacity_unset" };
   }

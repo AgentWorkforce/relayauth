@@ -90,12 +90,24 @@ async function insertIdentity(
     .run();
 }
 
+/**
+ * `createdAt` defaults to OUTSIDE the retention window. A token issued inside
+ * the window pins its identity on its own (see the recently-issued clause in
+ * retention-gc.ts), which would mask what most of these tests are actually
+ * about: whether the token is LIVE. Tests that mean to exercise recency pass an
+ * explicit recent `createdAt`.
+ */
+const AGED_TOKEN_CREATED_AT = new Date(
+  NOW.getTime() - 90 * 24 * 60 * 60 * 1000,
+).toISOString();
+
 async function insertToken(
   storage: SqliteStorage,
   id: string,
   identityId: string,
   expiresAt: number | null,
   status = "active",
+  createdAt: string = AGED_TOKEN_CREATED_AT,
 ): Promise<void> {
   await storage.DB.prepare(
     `
@@ -103,7 +115,7 @@ async function insertToken(
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `,
   )
-    .bind(id, id, id, identityId, expiresAt, status, NOW.toISOString())
+    .bind(id, id, id, identityId, expiresAt, status, createdAt)
     .run();
 }
 
@@ -714,4 +726,47 @@ test("identity retention sweeps use rowid seeks and exact stable-id lookups", as
 
   const prunePlan = await explain(captured[1].sql, captured[1].params);
   assert.match(prunePlan, /identities USING INDEX sqlite_autoindex_identities_1/);
+});
+
+/**
+ * Regression guard for the caller-reuse interaction (AgentWorkforce/cloud#3819).
+ *
+ * Once one identity is REUSED across mints it is old, its `last_active_at` is
+ * NULL (only PATCH ever writes it), and between token expiries it has no live
+ * token — matching every other eligibility clause while in daily use. Sweeping
+ * it would leave the caller's durable mapping pointing at an identity that no
+ * longer exists, and the caller has no way to notice.
+ */
+test("a recently issued but already expired token pins an aged identity", async (t) => {
+  const { storage, db } = createStorage(t);
+  await enableRetention(storage, "org_sprawl", 7);
+
+  await insertIdentity(storage, { id: "agent_reused" });
+  await insertIdentity(storage, { id: "agent_abandoned" });
+
+  // Reused identity: its newest token has already expired, but it was issued
+  // inside the retention window, so the identity is plainly still in service.
+  await insertToken(
+    storage,
+    "tok_recent_expired",
+    "agent_reused",
+    NOW_SECONDS - 60,
+    "active",
+    NOW.toISOString(),
+  );
+  // Genuinely abandoned: last token both expired AND issued long ago.
+  await insertToken(
+    storage,
+    "tok_old_expired",
+    "agent_abandoned",
+    NOW_SECONDS - 3_600,
+  );
+
+  assert.deepEqual(await countStaleIdentitiesBatch(db, { now: NOW }), {
+    expiredCount: 1,
+  });
+
+  const swept = await sweepOnce(db);
+  assert.equal(swept.deletedCount, 1);
+  assert.deepEqual(await readIdentityIds(storage), ["agent_reused"]);
 });

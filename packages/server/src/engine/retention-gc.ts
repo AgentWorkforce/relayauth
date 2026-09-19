@@ -143,6 +143,16 @@ const MAX_IDENTITY_RETENTION_DAYS = 3_650;
  * Status is deliberately absent. The identities this drains stay `active`
  * forever because nothing retires them, so age plus the absence of live tokens
  * is what makes a row collectable.
+ *
+ * RECENTLY-ISSUED TOKENS ALSO PIN A ROW, and that clause is load-bearing rather
+ * than belt-and-braces. `last_active_at` is only ever written by PATCH, so it is
+ * NULL on virtually every row and cannot signal use. Once a caller REUSES one
+ * identity across mints (AgentWorkforce/cloud#3819) the reused identity is old,
+ * has a NULL `last_active_at`, and is momentarily token-less between expiries —
+ * matching every remaining clause while in active daily use. Collecting it
+ * leaves the caller's durable mapping pointing at an identity that no longer
+ * exists. Liveness of the CURRENT token is therefore not a sufficient guard;
+ * "issued a token within the retention window" is.
  */
 const IDENTITY_RETENTION_ELIGIBLE_SQL = `
   EXISTS (
@@ -156,6 +166,12 @@ const IDENTITY_RETENTION_ELIGIBLE_SQL = `
       AND (
         identities.last_active_at IS NULL
         OR identities.last_active_at < date(?, printf('-%d days', config.retention_days))
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM tokens
+        WHERE tokens.identity_id = identities.id
+          AND tokens.created_at >= date(?, printf('-%d days', config.retention_days))
       )
   )
   AND NOT EXISTS (
@@ -654,13 +670,16 @@ export {
 /** Bound parameters for {@link IDENTITY_RETENTION_ELIGIBLE_SQL}, in order. */
 function identityEligibilityParams(
   options: Pick<IdentityGcWindowOptions, "now" | "tokenGraceSeconds">,
-): [number, number, string, string, number] {
+): [number, number, string, string, string, number] {
   const now = normalizeNow(options.now);
   const nowIso = now.toISOString();
   return [
     MIN_IDENTITY_RETENTION_DAYS,
     MAX_IDENTITY_RETENTION_DAYS,
     nowIso,
+    nowIso,
+    // `tokens.created_at` cutoff: a token issued inside the retention window
+    // pins its identity even when that token has since expired.
     nowIso,
     createTokenCutoff(now, options.tokenGraceSeconds),
   ];

@@ -189,6 +189,10 @@ const CAPACITY_FOOTPRINT_TABLES = [
  */
 dashboardStats.get("/storage", async (c) => {
   const settings = resolveStorageCapacitySettings(c.env);
+  // Per-table COUNT(*) is opt-in; see the `tables` branch below for why.
+  const includeTables = /^(1|true|yes)$/i.test(
+    (c.req.query("tables") ?? "").trim(),
+  );
   const db = asStorageCapacitySqlExecutor(
     (c.get("storage") as unknown as { DB?: unknown }).DB,
   );
@@ -213,7 +217,10 @@ dashboardStats.get("/storage", async (c) => {
     );
   }
 
-  const capacityBytes = settings.capacityBytes ?? persisted?.capacityBytes;
+  // Same rule as shouldShedForStorageCapacity: the configured ceiling is the
+  // sole authority, so grading does not keep scoring against a ceiling the
+  // operator has removed (a persisted sample still carries the old value).
+  const capacityBytes = settings.capacityBytes;
   const assessment = capacityBytes
     ? evaluateStorageCapacity({
         sizeBytes: sample.sizeBytes,
@@ -252,7 +259,13 @@ dashboardStats.get("/storage", async (c) => {
             criticalRatio: assessment.criticalRatio,
           }
         : {}),
-      ...(db
+      // OPT-IN ONLY (`?tables=1`). collectTableFootprint runs one COUNT(*) per
+      // table, which is a full scan on SQLite/D1 — seven of them, serially, over
+      // the largest tables in the store. This endpoint exists to be polled while
+      // the database is already write-bound, so making that the default turns
+      // the capacity probe into a contributor to the pressure it reports. Same
+      // failure shape as the identity-recovery list scan this work removed.
+      ...(db && includeTables
         ? { tables: await collectTableFootprint(db, CAPACITY_FOOTPRINT_TABLES) }
         : {}),
     },
