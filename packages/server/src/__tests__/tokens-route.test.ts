@@ -821,6 +821,70 @@ test("POST /v1/tokens/workspace", async (t) => {
 });
 
 test("POST /v1/tokens/agent", async (t) => {
+  await t.test("defaults to 15m access and keeps a fixed 12h refresh horizon", async () => {
+    const { app, identity, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
+      },
+      identity: createStoredIdentity({
+        id: "agent_default_ttl",
+        orgId: "org_tokens_route",
+        workspaceId: "ws_tokens_route",
+        scopes: ["relayauth:role:read:*"],
+      }),
+    });
+    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+    const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+      body: { agentId: identity.id },
+      headers: { "x-api-key": workspaceToken.key },
+    });
+    const issued = await assertJsonResponse<AgentTokenPair>(response, 201);
+    const accessClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(issued.accessToken, 1);
+    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(issued.refreshToken, 1);
+    assert.equal(accessClaims.exp - accessClaims.iat, 15 * 60);
+    assert.equal(refreshClaims.exp - refreshClaims.iat, 12 * 60 * 60);
+
+    // Advancing issuance time distinguishes a fixed session horizon from a
+    // fresh 12h lease granted by each successful rotation.
+    const originalNow = Date.now;
+    Date.now = () => originalNow() + 10 * 60 * 1_000;
+    try {
+      const refreshResponse = await requestRoute(app, "POST", "/v1/tokens/refresh", {
+        body: { refreshToken: issued.refreshToken },
+      });
+      const rotated = await assertJsonResponse<TokenPair>(refreshResponse, 200);
+      const rotatedRefreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        rotated.refreshToken,
+        1,
+      );
+      assert.equal(rotatedRefreshClaims.exp, refreshClaims.exp);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  await t.test("caps requested agent refresh lifetime at 12h", async () => {
+    const { app, identity, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", "relayauth:token:create:*", "relayauth:role:read:*"],
+      },
+      identity: createStoredIdentity({
+        id: "agent_refresh_ttl_cap",
+        orgId: "org_tokens_route",
+        workspaceId: "ws_tokens_route",
+        scopes: ["relayauth:role:read:*"],
+      }),
+    });
+    const workspaceToken = await issueWorkspaceToken(app, authHeaders);
+    const response = await requestRoute(app, "POST", "/v1/tokens/agent", {
+      body: { agentId: identity.id, refreshTokenTtlSeconds: 24 * 60 * 60 },
+      headers: { "x-api-key": workspaceToken.key },
+    });
+    const issued = await assertJsonResponse<AgentTokenPair>(response, 201);
+    const refreshClaims = decodeJwtJsonSegment<RelayAuthTokenClaims>(issued.refreshToken, 1);
+    assert.equal(refreshClaims.exp - refreshClaims.iat, 12 * 60 * 60);
+  });
+
   await t.test(
     "exchanges a workspace token for a prefixed agent token pair",
     async () => {
@@ -4582,7 +4646,7 @@ test("POST /v1/tokens refreshTokenTtlSeconds", async (t) => {
   );
 
   await t.test(
-    "workspace-path mint: 90d TTL lands in token meta and survives /v1/tokens/refresh",
+    "workspace-path mint caps a 90d request at the 12h session horizon",
     async () => {
       const { app, authHeaders } = await createHarness({
         authClaims: {
@@ -4599,6 +4663,7 @@ test("POST /v1/tokens refreshTokenTtlSeconds", async (t) => {
         "relayfile:fs:write:*",
       ]);
       const NINETY_DAYS = 90 * 24 * 3600;
+      const RUN_MAX = 12 * 3600;
 
       const mintResponse = await requestRoute(
         app,
@@ -4628,16 +4693,16 @@ test("POST /v1/tokens refreshTokenTtlSeconds", async (t) => {
       const mintedRefreshTtl =
         mintedRefreshClaims.exp - mintedRefreshClaims.iat;
       assert.ok(
-        mintedRefreshTtl >= NINETY_DAYS - 5,
-        `minted refresh TTL should be ~90d, got ${mintedRefreshTtl}`,
+        mintedRefreshTtl >= RUN_MAX - 5,
+        `minted refresh TTL should be ~12h, got ${mintedRefreshTtl}`,
       );
       assert.ok(
-        mintedRefreshTtl <= NINETY_DAYS + 5,
-        `minted refresh TTL should be ~90d, got ${mintedRefreshTtl}`,
+        mintedRefreshTtl <= RUN_MAX + 5,
+        `minted refresh TTL should be ~12h, got ${mintedRefreshTtl}`,
       );
       assert.equal(
         mintedRefreshClaims.meta?.refreshTokenTtl,
-        String(NINETY_DAYS),
+        String(RUN_MAX),
       );
 
       const refreshResponse = await requestRoute(
@@ -4657,16 +4722,16 @@ test("POST /v1/tokens refreshTokenTtlSeconds", async (t) => {
       const rotatedRefreshTtl =
         rotatedRefreshClaims.exp - rotatedRefreshClaims.iat;
       assert.ok(
-        rotatedRefreshTtl >= NINETY_DAYS - 5,
-        `rotated refresh TTL should be ~90d, got ${rotatedRefreshTtl}`,
+        rotatedRefreshTtl >= RUN_MAX - 5,
+        `rotated refresh TTL should be ~12h, got ${rotatedRefreshTtl}`,
       );
       assert.ok(
-        rotatedRefreshTtl <= NINETY_DAYS + 5,
-        `rotated refresh TTL should be ~90d, got ${rotatedRefreshTtl}`,
+        rotatedRefreshTtl <= RUN_MAX + 5,
+        `rotated refresh TTL should be ~12h, got ${rotatedRefreshTtl}`,
       );
       assert.equal(
         rotatedRefreshClaims.meta?.refreshTokenTtl,
-        String(NINETY_DAYS),
+        String(RUN_MAX),
       );
       assert.match(
         rotated.accessToken,
