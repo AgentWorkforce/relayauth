@@ -2516,6 +2516,14 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
     "",
     42,
     null,
+    "https://history.example.com/.",
+    "https://history.example.com/%2e",
+    "https://history.example.com\\",
+    "https:history.example.com",
+    "https://hist%6Fry.example.com",
+    "https://history.example.com.",
+    "http://localhost.:8787",
+    "https://history.example.com:443:443",
   ]) {
     await t.test(
       `refuses a non-origin historyOrigin (${JSON.stringify(historyOrigin)})`,
@@ -2524,6 +2532,32 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
         await assertJsonResponse<ErrorBody>(response, 400, (body) => {
           assert.equal(body.code, "invalid_history_origin");
         });
+      },
+    );
+  }
+
+  for (const [historyOrigin, expected] of [
+    ["https://history.example.com:443", "https://history.example.com"],
+    ["https://history.example.com:443/", "https://history.example.com"],
+    ["http://localhost:80", "http://localhost"],
+    ["http://[0:0:0:0:0:0:0:1]:8787", "http://[::1]:8787"],
+    ["https://bücher.example", "https://xn--bcher-kva.example"],
+    ["https://xn--bcher-kva.example", "https://xn--bcher-kva.example"],
+  ]) {
+    await t.test(
+      `canonicalizes an equivalent bare origin (${historyOrigin})`,
+      async () => {
+        const response = await mintForOrigin(historyOrigin);
+        const body = await assertJsonResponse<RelayhistoryAssertionResponse>(
+          response,
+          201,
+        );
+        const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+          body.accessToken,
+          1,
+        );
+        assert.deepEqual(claims.aud, [expected]);
+        assert.equal(claims.meta?.historyOrigin, expected);
       },
     );
   }

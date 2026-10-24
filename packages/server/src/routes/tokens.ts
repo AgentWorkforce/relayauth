@@ -2017,9 +2017,21 @@ function normalizeRelayhistoryAssertionRequest(
 }
 
 /**
+ * Raw shape of a bare origin: `scheme://authority` with at most one trailing
+ * slash. The authority may not contain userinfo (`@`), percent escapes, a
+ * backslash or whitespace, so nothing the URL parser would silently rewrite
+ * into a different host, path, query or fragment gets through. Unicode
+ * hosts and explicit ports are allowed; `URL#origin` canonicalises them.
+ */
+const BARE_ORIGIN_SHAPE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s/?#@%\\]+\/?$/u;
+
+/**
  * Accepts only a bare origin (`scheme://host[:port]`), https except for
  * loopback development hosts, and returns it in the canonical form
- * `URL#origin` produces so verifiers can compare it byte for byte.
+ * `URL#origin` produces so verifiers can compare it byte for byte. An
+ * explicit default port (`:443`, or `:80` for http loopback) and Unicode
+ * hostnames are accepted and canonicalised. A trailing DNS dot is refused
+ * rather than guessed at, since `host.` and `host` are distinct origins.
  */
 function normalizeRelayhistoryAssertionOrigin(
   value: unknown,
@@ -2041,9 +2053,13 @@ function normalizeRelayhistoryAssertionOrigin(
   if (typeof value !== "string" || !value.trim()) {
     return invalid;
   }
+  const raw = value.trim();
+  if (!BARE_ORIGIN_SHAPE.test(raw)) {
+    return invalid;
+  }
   let url: URL;
   try {
-    url = new URL(value.trim());
+    url = new URL(raw);
   } catch {
     return invalid;
   }
@@ -2058,7 +2074,8 @@ function normalizeRelayhistoryAssertionOrigin(
     url.pathname !== "/" ||
     url.search ||
     url.hash ||
-    value.trim().replace(/\/$/, "").length !== url.origin.length
+    !url.hostname ||
+    url.hostname.endsWith(".")
   ) {
     return invalid;
   }
