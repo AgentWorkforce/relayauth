@@ -2515,6 +2515,7 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
     "relayhistory",
     "",
     42,
+    null,
   ]) {
     await t.test(
       `refuses a non-origin historyOrigin (${JSON.stringify(historyOrigin)})`,

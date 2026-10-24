@@ -2026,7 +2026,9 @@ function normalizeRelayhistoryAssertionOrigin(
 ):
   | { ok: true; origin?: string }
   | { ok: false; error: string; code: string; status: 400 } {
-  if (value === undefined || value === null) {
+  // Only an omitted field selects the shared audience. An explicit null is
+  // a malformed origin, not a request for the legacy assertion.
+  if (value === undefined) {
     return { ok: true };
   }
   const invalid = {
