@@ -94,6 +94,13 @@ type RelayhistoryAssertionRequest = {
   sponsorId?: unknown;
   scopes?: unknown;
   expiresIn?: unknown;
+  /**
+   * The one RelayHistory origin (e.g. `https://history.example.com`) that may
+   * accept this assertion. When present it becomes the token's only audience,
+   * so a History that receives the assertion cannot replay it at another
+   * History. Omitted: the legacy shared `relayhistory` audience.
+   */
+  historyOrigin?: unknown;
 };
 
 type RevokeTokenRequest = {
@@ -758,6 +765,7 @@ tokens.post("/relayhistory-assertion", async (c) => {
     sponsorId: request.sponsorId,
     scopes: request.scopes,
     expiresIn: request.expiresIn,
+    historyOrigin: request.historyOrigin,
     actorId: auth.claims.sub,
     actorOrgId: auth.claims.org,
   });
@@ -1374,6 +1382,7 @@ async function issueRelayhistoryAssertion(
     sponsorId: string;
     scopes: string[];
     expiresIn: number;
+    historyOrigin?: string;
     actorId: string;
     actorOrgId: string;
   },
@@ -1389,7 +1398,10 @@ async function issueRelayhistoryAssertion(
     sponsorChain: [options.sponsorId, "agent_relayhistory_assertion"],
     token_type: "access",
     iss: EXPECTED_ISSUER,
-    aud: [RELAYHISTORY_ASSERTION_AUDIENCE],
+    // An origin-bound assertion drops the shared audience entirely: a History
+    // that only checks `relayhistory` refuses it rather than accepting a token
+    // meant for some other History.
+    aud: [options.historyOrigin ?? RELAYHISTORY_ASSERTION_AUDIENCE],
     exp: issuedAtSeconds + options.expiresIn,
     iat: issuedAtSeconds,
     jti: createTokenId(),
@@ -1401,6 +1413,9 @@ async function issueRelayhistoryAssertion(
       requestedOrgId: options.orgId,
       workspaceId: options.workspaceId,
       grantedScopes: JSON.stringify(options.scopes),
+      ...(options.historyOrigin
+        ? { historyOrigin: options.historyOrigin }
+        : {}),
     },
   };
 
@@ -1925,6 +1940,7 @@ function normalizeRelayhistoryAssertionRequest(
       sponsorId: string;
       scopes: string[];
       expiresIn: number;
+      historyOrigin?: string;
     }
   | { ok: false; error: string; code: string; status: 400 } {
   const orgId = normalizeOptionalString(value.orgId);
@@ -1977,6 +1993,18 @@ function normalizeRelayhistoryAssertionRequest(
     };
   }
 
+  const historyOrigin = normalizeRelayhistoryAssertionOrigin(
+    value.historyOrigin,
+  );
+  if (!historyOrigin.ok) {
+    return {
+      ok: false,
+      error: historyOrigin.error,
+      code: historyOrigin.code,
+      status: historyOrigin.status,
+    };
+  }
+
   return {
     ok: true,
     orgId,
@@ -1984,7 +2012,74 @@ function normalizeRelayhistoryAssertionRequest(
     sponsorId,
     scopes: scopes.scopes,
     expiresIn: expiresIn.expiresIn,
+    ...(historyOrigin.origin ? { historyOrigin: historyOrigin.origin } : {}),
   };
+}
+
+/**
+ * Raw shape of a bare origin: `scheme://authority` with at most one trailing
+ * slash. The authority may not contain userinfo (`@`), percent escapes, a
+ * backslash or whitespace, so nothing the URL parser would silently rewrite
+ * into a different host, path, query or fragment gets through. Unicode
+ * hosts and explicit ports are allowed; `URL#origin` canonicalises them.
+ */
+const BARE_ORIGIN_SHAPE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s/?#@%\\]+\/?$/u;
+
+/**
+ * Accepts only a bare origin (`scheme://host[:port]`), https except for
+ * loopback development hosts, and returns it in the canonical form
+ * `URL#origin` produces so verifiers can compare it byte for byte. An
+ * explicit default port (`:443`, or `:80` for http loopback) and Unicode
+ * hostnames are accepted and canonicalised. A trailing DNS dot is refused
+ * rather than guessed at, since `host.` and `host` are distinct origins.
+ */
+function normalizeRelayhistoryAssertionOrigin(
+  value: unknown,
+):
+  | { ok: true; origin?: string }
+  | { ok: false; error: string; code: string; status: 400 } {
+  // Only an omitted field selects the shared audience. An explicit null is
+  // a malformed origin, not a request for the legacy assertion.
+  if (value === undefined) {
+    return { ok: true };
+  }
+  const invalid = {
+    ok: false as const,
+    error:
+      "historyOrigin must be an https origin with no path, query, fragment or credentials",
+    code: "invalid_history_origin",
+    status: 400 as const,
+  };
+  if (typeof value !== "string" || !value.trim()) {
+    return invalid;
+  }
+  const raw = value.trim();
+  if (!BARE_ORIGIN_SHAPE.test(raw)) {
+    return invalid;
+  }
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return invalid;
+  }
+  const loopback =
+    url.hostname === "localhost" ||
+    url.hostname === "127.0.0.1" ||
+    url.hostname === "[::1]";
+  if (
+    (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash ||
+    !url.hostname ||
+    url.hostname.endsWith(".")
+  ) {
+    return invalid;
+  }
+  return { ok: true, origin: url.origin };
 }
 
 function normalizeRelayhistoryAssertionScopes(

@@ -2467,6 +2467,113 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
       });
     },
   );
+
+  async function mintForOrigin(historyOrigin: unknown) {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: assertionKeyIssuerScopes,
+      },
+    });
+    const assertionKey = await issueAssertionKey(app, authHeaders);
+    return requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
+      body: {
+        orgId: "org_relayhistory_target",
+        workspaceId: "ws_relayhistory_target",
+        sponsorId: "user_cloud_login",
+        scopes: ["rth:read"],
+        historyOrigin,
+      },
+      headers: {
+        "x-api-key": assertionKey.key,
+      },
+    });
+  }
+
+  await t.test(
+    "binds the assertion to one History origin instead of the shared audience",
+    async () => {
+      const response = await mintForOrigin("https://History.Example.com/");
+      const body = await assertJsonResponse<RelayhistoryAssertionResponse>(
+        response,
+        201,
+      );
+      const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      assert.deepEqual(claims.aud, ["https://history.example.com"]);
+      assert.equal(claims.meta?.historyOrigin, "https://history.example.com");
+    },
+  );
+
+  for (const historyOrigin of [
+    "http://history.example.com",
+    "https://history.example.com/v1",
+    "https://history.example.com?x=1",
+    "https://history.example.com#x",
+    "https://user:pw@history.example.com",
+    "relayhistory",
+    "",
+    42,
+    null,
+    "https://history.example.com/.",
+    "https://history.example.com/%2e",
+    "https://history.example.com\\",
+    "https:history.example.com",
+    "https://hist%6Fry.example.com",
+    "https://history.example.com.",
+    "http://localhost.:8787",
+    "https://history.example.com:443:443",
+  ]) {
+    await t.test(
+      `refuses a non-origin historyOrigin (${JSON.stringify(historyOrigin)})`,
+      async () => {
+        const response = await mintForOrigin(historyOrigin);
+        await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+          assert.equal(body.code, "invalid_history_origin");
+        });
+      },
+    );
+  }
+
+  for (const [historyOrigin, expected] of [
+    ["https://history.example.com:443", "https://history.example.com"],
+    ["https://history.example.com:443/", "https://history.example.com"],
+    ["http://localhost:80", "http://localhost"],
+    ["http://[0:0:0:0:0:0:0:1]:8787", "http://[::1]:8787"],
+    ["https://bücher.example", "https://xn--bcher-kva.example"],
+    ["https://xn--bcher-kva.example", "https://xn--bcher-kva.example"],
+  ]) {
+    await t.test(
+      `canonicalizes an equivalent bare origin (${historyOrigin})`,
+      async () => {
+        const response = await mintForOrigin(historyOrigin);
+        const body = await assertJsonResponse<RelayhistoryAssertionResponse>(
+          response,
+          201,
+        );
+        const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+          body.accessToken,
+          1,
+        );
+        assert.deepEqual(claims.aud, [expected]);
+        assert.equal(claims.meta?.historyOrigin, expected);
+      },
+    );
+  }
+
+  await t.test("allows http only for a loopback development History", async () => {
+    const response = await mintForOrigin("http://localhost:8787");
+    const body = await assertJsonResponse<RelayhistoryAssertionResponse>(
+      response,
+      201,
+    );
+    const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+      body.accessToken,
+      1,
+    );
+    assert.deepEqual(claims.aud, ["http://localhost:8787"]);
+  });
 });
 
 test("POST /v1/tokens/refresh", async (t) => {
