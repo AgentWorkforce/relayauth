@@ -16,14 +16,14 @@ its `_FILE` variant. `_FILE` handling lives only in the Node entrypoint
 | `PORT` | no | Listen port (image default `8787`). |
 | `RELAYAUTH_DB_PATH` | no | SQLite path (image default `/data/relayauth.db`, on the `/data` volume). |
 | `BASE_URL` | yes | Public URL of this server; used for discovery and the JWKS URL. |
-| `RELAYAUTH_ISSUER` | recommended | `iss` stamped on every token RelayAuth mints and required on tokens it verifies; also advertised as `issuer` in `/.well-known/agent-configuration` and used as the sponsor-grant issuer. Default `https://relayauth.dev` (back-compat). Verifiers (History, the control plane) must pin the same value. |
+| `RELAYAUTH_ISSUER` | recommended | `iss` stamped on every token RelayAuth mints and required on tokens it verifies; also advertised as `issuer` in `/.well-known/agent-configuration` and used as the sponsor-grant issuer. When set it is also enforced on bearer tokens presented to RelayAuth itself. Image default when unset: `https://relayauth.dev` (hosted back-compat; discovery then advertises the request origin and sponsor grants use `BASE_URL`, so set it for self-host). The Helm chart always sets it (default: `baseUrl`). Verifiers (History, the control plane) must pin the same value. |
 | `INTERNAL_SECRET` / `_FILE` | yes | Internal shared secret. |
-| `RELAYAUTH_SIGNING_KEY_PEM` / `_FILE` | yes | **Current** signing key, PKCS#8 RSA private key (3072-bit recommended, 2048 minimum). Signs every token. |
-| `RELAYAUTH_SIGNING_KEY_PEM_PUBLIC` / `_FILE` | no | SPKI public half of the current key. Derived from the private key when unset. |
-| `RELAYAUTH_SIGNING_KEY_PEM_NEXT` / `_FILE` | no | **Next** key (private or public PEM). Published in the JWKS, never signs. |
-| `RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS` / `_FILE` | no | **Previous** key (private or public PEM). Published in the JWKS, never signs. |
+| `RELAYAUTH_SIGNING_KEY_PEM` / `_FILE` | yes | **Current** signing key, unencrypted PKCS#8 RSA private key (`BEGIN PRIVATE KEY`; 3072-bit recommended, 2048 minimum). Signs every token; its public half (and `kid`) is always derived from it. PKCS#1 (`BEGIN RSA PRIVATE KEY`) and encrypted keys are refused at boot with a conversion hint. |
+| `RELAYAUTH_SIGNING_KEY_PEM_PUBLIC` / `_FILE` | no | Optional cross-check: SPKI public half of the current key. If it does not match the private key, RelayAuth refuses to start (a stale value after a rotation would otherwise advertise the wrong `kid`). Leave it unset. |
+| `RELAYAUTH_SIGNING_KEY_PEM_NEXT` / `_FILE` | no | **Next** key (PKCS#8 private or SPKI public PEM). Published in the JWKS, never signs. |
+| `RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS` / `_FILE` | no | **Previous** key (PKCS#8 private or SPKI public PEM). Published in the JWKS, never signs. |
 | `RELAYAUTH_BOOTSTRAP_API_KEY` / `_FILE` | no | Raw API key to seed at boot with scope `relayauth:assertion:create:relayhistory` (see below). |
-| `RELAYAUTH_BOOTSTRAP_API_KEY_ORG` | no | Org for a newly created bootstrap key (default `org_selfhost`). |
+| `RELAYAUTH_BOOTSTRAP_API_KEY_ORG` | no | Org for a newly created bootstrap key (default `org_selfhost`). An existing key is never moved; a warning is logged if its org differs. |
 | `ALLOWED_ORIGINS` | no | Comma-separated CORS allowlist. |
 | `RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN` | no | Exactly `true` lets History assertions bind to a plain-`http` `historyOrigin` on a private host (see below). Any other value, or unset, keeps the hosted rule. Chart: `relayhistory.allowPrivateHttpOrigin`. |
 
@@ -123,9 +123,12 @@ kubectl create secret generic relayauth \
   --from-file=signing-key.pem=./signing-key.pem \
   --from-file=bootstrap-api-key=./bootstrap-api-key
 helm install relayauth charts/relayauth \
-  --set baseUrl=https://auth.example.internal \
-  --set issuer=https://auth.example.internal
+  --set baseUrl=https://auth.example.internal
 ```
+
+`issuer` defaults to `baseUrl`, and the chart always sets `RELAYAUTH_ISSUER`,
+so minted tokens, `/.well-known/agent-configuration` and sponsor grants carry
+the same issuer. Override `issuer` only if verifiers pin a different value.
 
 `secretKeys.*` maps each role to a key name inside the Secret. Leave
 `signingKeyNext`, `signingKeyPrevious` or `signingKeyPublic` empty to omit
@@ -155,8 +158,11 @@ Steps:
    half is published). Restart. `/.well-known/jwks.json` now lists A and B.
    New tokens are still signed with A.
 2. **Wait at least *C*** so every verifier has cached a JWKS containing B.
-3. **Promote.** Set current = B (`RELAYAUTH_SIGNING_KEY_PEM`; update or remove
-   `_PUBLIC`), previous = A (`RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS`, preferably the
+3. **Promote.** Set current = B (`RELAYAUTH_SIGNING_KEY_PEM`). Remove
+   `RELAYAUTH_SIGNING_KEY_PEM_PUBLIC` / `secretKeys.signingKeyPublic` (or
+   replace it with B's public key in the same change): a stale A public key
+   no longer matches the private key and RelayAuth refuses to start rather
+   than advertise the wrong `kid`. Previous = A (`RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS`, preferably the
    public PEM only), and clear next. Restart. New tokens carry B's `kid`, and
    tokens signed by A still verify.
 4. **Wait at least *T*.** Refresh tokens signed by A keep working during this

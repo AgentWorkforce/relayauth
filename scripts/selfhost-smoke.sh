@@ -16,6 +16,8 @@
 #    invalid_history_origin), then restarts with
 #    RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true and checks it is minted
 #    and verifies with that origin as its audience.
+# 7. Boots with current=B but a stale RELAYAUTH_SIGNING_KEY_PEM_PUBLIC (A's
+#    public key) and checks the container refuses to start.
 #
 # Requires docker, curl, openssl, node (>= 20, used only for verification).
 # Env: SMOKE_PORT (default 19380), SMOKE_IMAGE, SKIP_BUILD=1, KEEP_SECRETS=1.
@@ -209,5 +211,24 @@ log "flag on: minted, verify: $out"
 status=$(post_assertion "http://history.example.com")
 [[ "$status" == "400" ]] || fail "flag on: public http origin returned HTTP $status"
 log "flag on: public http origin still refused (HTTP 400)"
+
+# --- phase 5: stale _PUBLIC after rotation is refused ------------------------------
+log "phase 5: current=B with a stale RELAYAUTH_SIGNING_KEY_PEM_PUBLIC (A) must not start"
+(umask 077 && openssl pkey -in "$SECRETS/key-a.pem" -pubout -out "$SECRETS/key-a.pub.pem" 2>/dev/null)
+docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+set +e
+docker run --name "$CONTAINER" --user "$(id -u):$(id -g)" \
+  -v "$SECRETS:/run/secrets:ro" -v "$DATA:/data" \
+  -e "BASE_URL=$BASE_URL" -e "RELAYAUTH_ISSUER=$ISSUER" \
+  -e "INTERNAL_SECRET_FILE=/run/secrets/internal-secret" \
+  -e "RELAYAUTH_SIGNING_KEY_PEM_FILE=/run/secrets/key-b.pem" \
+  -e "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC_FILE=/run/secrets/key-a.pub.pem" \
+  "$IMAGE" >"$LAB/stale.log" 2>&1
+code=$?
+set -e
+[[ "$code" != "0" ]] || fail "relayauth started with a mismatched public key"
+grep -q "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC does not match" "$LAB/stale.log" \
+  || fail "stale public key: unexpected output: $(cat "$LAB/stale.log")"
+log "stale public key refused at boot (exit $code)"
 
 log "PASS (old kid ${OLD_KID:0:12}..., new kid ${NEW_KID:0:12}...)"

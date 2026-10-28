@@ -13,18 +13,27 @@ import {
   ensureBootstrapApiKey,
 } from "../lib/bootstrap-api-key.js";
 import { DEFAULT_ISSUER, resolveIssuer, signToken } from "../lib/sign.js";
-import { resolvePublishedSigningKeys } from "../lib/signing-keys.js";
+import {
+  assertSigningKeyConfig,
+  resolvePublishedSigningKeys,
+  SigningKeyConfigError,
+} from "../lib/signing-keys.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
-import { createApp, readEnvOrFile } from "../server.js";
+import { createApp, readEnvOrFile, startServer } from "../server.js";
 import { createTestStorage } from "./test-helpers.js";
 
 type KeyPair = { privatePem: string; publicPem: string };
 
-function keyPair(): KeyPair {
+function keyPair(): KeyPair & { pkcs1Pem: string; encryptedPem: string; pkcs1PublicPem: string } {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   return {
     privatePem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
     publicPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    pkcs1Pem: privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
+    pkcs1PublicPem: publicKey.export({ type: "pkcs1", format: "pem" }).toString(),
+    encryptedPem: privateKey
+      .export({ type: "pkcs8", format: "pem", cipher: "aes-256-cbc", passphrase: "lab-only" })
+      .toString(),
   };
 }
 
@@ -249,5 +258,116 @@ test("readEnvOrFile prefers the variable, falls back to the _FILE contents", () 
     assert.throws(() => readEnvOrFile("X", { X_FILE: path.join(dir, "missing") }), /X_FILE/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a stale RELAYAUTH_SIGNING_KEY_PEM_PUBLIC is refused instead of advertising the wrong kid", async () => {
+  // Matching public half: accepted, same kid as derived from the private key.
+  const matching = await assertSigningKeyConfig({
+    RELAYAUTH_SIGNING_KEY_PEM: KEY_B.privatePem,
+    RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: KEY_B.publicPem,
+  });
+  const derived = await assertSigningKeyConfig({ RELAYAUTH_SIGNING_KEY_PEM: KEY_B.privatePem });
+  assert.equal(matching[0]?.kid, derived[0]?.kid);
+
+  // After rotating to B, _PUBLIC still holds A: every path refuses.
+  const stale = {
+    RELAYAUTH_SIGNING_KEY_PEM: KEY_B.privatePem,
+    RELAYAUTH_SIGNING_KEY_PEM_PUBLIC: KEY_A.publicPem,
+  };
+  await assert.rejects(assertSigningKeyConfig(stale), (error: unknown) => {
+    assert.ok(error instanceof SigningKeyConfigError);
+    assert.match(error.message, /RELAYAUTH_SIGNING_KEY_PEM_PUBLIC does not match/);
+    return true;
+  });
+  await assert.rejects(signToken(claims(), stale), /does not match/);
+
+  const storage = createTestStorage();
+  try {
+    await assert.rejects(
+      startServer({ storage, port: 0, config: { INTERNAL_SECRET: "s", ...stale } }),
+      /does not match/,
+    );
+  } finally {
+    await storage.close();
+  }
+});
+
+test("only unencrypted PKCS#8 / SPKI PEMs are accepted, with actionable errors", async () => {
+  await assert.rejects(
+    assertSigningKeyConfig({ RELAYAUTH_SIGNING_KEY_PEM: KEY_A.pkcs1Pem }),
+    /RELAYAUTH_SIGNING_KEY_PEM is a PKCS#1 key .*openssl pkcs8 -topk8 -nocrypt/,
+  );
+  await assert.rejects(
+    assertSigningKeyConfig({ RELAYAUTH_SIGNING_KEY_PEM: KEY_A.encryptedPem }),
+    /RELAYAUTH_SIGNING_KEY_PEM is an encrypted PKCS#8 key/,
+  );
+  await assert.rejects(
+    assertSigningKeyConfig({ RELAYAUTH_SIGNING_KEY_PEM: KEY_A.publicPem }),
+    /must be a PKCS#8 private key/,
+  );
+  await assert.rejects(
+    assertSigningKeyConfig({
+      RELAYAUTH_SIGNING_KEY_PEM: KEY_A.privatePem,
+      RELAYAUTH_SIGNING_KEY_PEM_NEXT: KEY_B.pkcs1Pem,
+    }),
+    /RELAYAUTH_SIGNING_KEY_PEM_NEXT is a PKCS#1 key/,
+  );
+  await assert.rejects(
+    assertSigningKeyConfig({
+      RELAYAUTH_SIGNING_KEY_PEM: KEY_A.privatePem,
+      RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS: KEY_C.pkcs1PublicPem,
+    }),
+    /RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS is a PKCS#1 public key/,
+  );
+  // Unlabelled PKCS#8 body (bare base64) in the signing slot keeps working.
+  const bare = KEY_A.privatePem.replace(/-----[^-]+-----/gu, "").replace(/\s+/gu, "");
+  const [fromBare] = await assertSigningKeyConfig({ RELAYAUTH_SIGNING_KEY_PEM: bare });
+  const [fromPem] = await assertSigningKeyConfig({ RELAYAUTH_SIGNING_KEY_PEM: KEY_A.privatePem });
+  assert.equal(fromBare?.kid, fromPem?.kid);
+});
+
+test("bootstrap api key: a concurrent insert of the same key resolves to exists", async () => {
+  const storage = createTestStorage();
+  try {
+    // Simulate another process winning the race between getByHash and create.
+    const realGetByHash = storage.apiKeys.getByHash.bind(storage.apiKeys);
+    const realCreate = storage.apiKeys.create.bind(storage.apiKeys);
+    let reads = 0;
+    storage.apiKeys.getByHash = async (hash) => (reads++ === 0 ? null : realGetByHash(hash));
+    storage.apiKeys.create = async (input) => {
+      await realCreate(input);
+      throw new Error("UNIQUE constraint failed: api_keys.key_hash");
+    };
+    const result = await ensureBootstrapApiKey(storage, BOOTSTRAP_KEY);
+    assert.equal(result.status, "exists");
+
+    // A create failure that is not a race still surfaces.
+    storage.apiKeys.getByHash = async () => null;
+    storage.apiKeys.create = async () => {
+      throw new Error("disk full");
+    };
+    await assert.rejects(ensureBootstrapApiKey(storage, `${BOOTSTRAP_KEY}x`), /disk full/);
+  } finally {
+    await storage.close();
+  }
+});
+
+test("bootstrap api key reports an org mismatch without moving the key", async () => {
+  const storage = createTestStorage();
+  try {
+    await ensureBootstrapApiKey(storage, BOOTSTRAP_KEY, { orgId: "org_one" });
+    const same = await ensureBootstrapApiKey(storage, BOOTSTRAP_KEY, { orgId: "org_one" });
+    assert.equal(same.status, "exists");
+    assert.equal("orgMismatch" in same, false);
+    const moved = await ensureBootstrapApiKey(storage, BOOTSTRAP_KEY, { orgId: "org_two" });
+    assert.equal(moved.status, "exists");
+    assert.deepEqual(moved.status === "exists" && moved.orgMismatch, {
+      stored: "org_one",
+      requested: "org_two",
+    });
+    assert.equal((await storage.apiKeys.getByHash(hashApiKey(BOOTSTRAP_KEY)))?.orgId, "org_one");
+  } finally {
+    await storage.close();
   }
 });

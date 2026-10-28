@@ -20,7 +20,8 @@ import {
   storageOverloadResponse,
   toStorageCapacityExhaustedError,
 } from "./lib/storage-retry.js";
-import { ensureBootstrapApiKey } from "./lib/bootstrap-api-key.js";
+import { DEFAULT_BOOTSTRAP_API_KEY_ORG, ensureBootstrapApiKey } from "./lib/bootstrap-api-key.js";
+import { assertSigningKeyConfig } from "./lib/signing-keys.js";
 import { apiKeyAuth } from "./middleware/api-key-auth.js";
 import { SponsorOidcService } from "./lib/sponsor-binding.js";
 import auditExport from "./routes/audit-export.js";
@@ -541,14 +542,26 @@ export async function startServer(options: StartServerOptions = {}) {
       ?? process.env.RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS,
   };
 
+  // Refuse to start on a bad signing-key configuration (unsupported PEM type,
+  // or an explicit public key that does not match the private key) rather
+  // than signing with one key while advertising another.
+  await assertSigningKeyConfig(config);
+
   const bootstrapApiKey = options.bootstrapApiKey ?? readEnvOrFile("RELAYAUTH_BOOTSTRAP_API_KEY");
   if (bootstrapApiKey) {
     // Never log the key or its prefix: the record id is enough to find it.
-    const result = await ensureBootstrapApiKey(storage, bootstrapApiKey, {
-      orgId: options.bootstrapApiKeyOrgId ?? process.env.RELAYAUTH_BOOTSTRAP_API_KEY_ORG,
-    });
+    const requestedOrg = (options.bootstrapApiKeyOrgId ?? process.env.RELAYAUTH_BOOTSTRAP_API_KEY_ORG)?.trim()
+      || DEFAULT_BOOTSTRAP_API_KEY_ORG;
+    const result = await ensureBootstrapApiKey(storage, bootstrapApiKey, { orgId: requestedOrg });
     if (result.status === "created" || result.status === "exists") {
       console.log(`relayauth bootstrap api key ${result.status}`, { id: result.id });
+      if (result.status === "exists" && result.orgMismatch) {
+        console.warn(
+          "relayauth bootstrap api key already exists in a different org than "
+            + "RELAYAUTH_BOOTSTRAP_API_KEY_ORG; it was left unchanged (rotate the key to move it)",
+          { id: result.id, ...result.orgMismatch },
+        );
+      }
     } else {
       console.warn(
         `relayauth bootstrap api key not usable (${result.status}); rotate RELAYAUTH_BOOTSTRAP_API_KEY_FILE to a new value`,
@@ -574,5 +587,10 @@ if (import.meta.url === new URL(process.argv[1] ?? "", "file:").href) {
   startServer({
     port: process.env.PORT ? Number.parseInt(process.env.PORT, 10) : undefined,
     dbPath: process.env.RELAYAUTH_DB_PATH ?? process.env.DB_PATH,
+  }).catch((error: unknown) => {
+    console.error(
+      `relayauth failed to start: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exit(1);
   });
 }
