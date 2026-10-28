@@ -35,6 +35,7 @@ type TestBindings = Pick<
   | "RELAYAUTH_STORAGE_CAPACITY_WARN_RATIO"
   | "RELAYAUTH_STORAGE_CAPACITY_CRITICAL_RATIO"
   | "RELAYAUTH_STORAGE_CAPACITY_SHED_RATIO"
+  | "RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN"
 >;
 
 // Bindings that are simply forwarded when present. Unlike the signing/secret
@@ -45,6 +46,7 @@ const PASS_THROUGH_TEST_BINDINGS = [
   "RELAYAUTH_STORAGE_CAPACITY_WARN_RATIO",
   "RELAYAUTH_STORAGE_CAPACITY_CRITICAL_RATIO",
   "RELAYAUTH_STORAGE_CAPACITY_SHED_RATIO",
+  "RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN",
 ] as const satisfies readonly (keyof TestBindings)[];
 
 type TestStorage = AuthStorage & Partial<ReturnType<typeof createSqliteStorage>>;

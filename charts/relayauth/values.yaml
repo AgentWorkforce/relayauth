@@ -21,6 +21,14 @@ bootstrapApiKeyOrg: org_selfhost
 # Comma-separated CORS origins (optional).
 allowedOrigins: ""
 
+relayhistory:
+  # Let History assertions bind to a plain-http origin on a private IP
+  # (10/8, 172.16/12, 192.168/16, fc00::/7) or an in-cluster/internal name
+  # (single label, *.svc, *.cluster.local, *.internal, *.local), e.g.
+  # http://relayhistory.relayhistory.svc:8080. Public names/IPs still need
+  # https. Sets RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true.
+  allowPrivateHttpOrigin: false
+
 # Pre-created Secret holding keys/secrets (never rendered by this chart).
 # Each entry under secretKeys names a key inside that Secret; set an optional
 # entry to "" to leave it unconfigured. See docs/self-hosting.md.

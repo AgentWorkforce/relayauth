@@ -323,12 +323,14 @@ async function createHarness({
   authClaims,
   identity,
   deferTask,
+  bindings,
 }: {
   authClaims?: Partial<RelayAuthTokenClaims>;
   identity?: StoredIdentity;
   deferTask?: (task: DeferredTask) => void;
+  bindings?: Parameters<typeof createTestApp>[0];
 } = {}) {
-  const app = createTestApp({}, { deferTask });
+  const app = createTestApp(bindings ?? {}, { deferTask });
   const storedIdentity =
     identity ??
     createStoredIdentity({
@@ -2468,11 +2470,15 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
     },
   );
 
-  async function mintForOrigin(historyOrigin: unknown) {
+  async function mintForOrigin(
+    historyOrigin: unknown,
+    bindings?: Parameters<typeof createTestApp>[0],
+  ) {
     const { app, authHeaders } = await createHarness({
       authClaims: {
         scopes: assertionKeyIssuerScopes,
       },
+      bindings,
     });
     const assertionKey = await issueAssertionKey(app, authHeaders);
     return requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
@@ -2573,6 +2579,130 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
       1,
     );
     assert.deepEqual(claims.aud, ["http://localhost:8787"]);
+  });
+
+  const privateHttpOn = { RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN: "true" };
+  const privateHttpOrigins: Array<[string, string]> = [
+    [
+      "http://relayhistory.relayhistory.svc:8080",
+      "http://relayhistory.relayhistory.svc:8080",
+    ],
+    [
+      "http://relayhistory.relayhistory.svc.cluster.local:8080",
+      "http://relayhistory.relayhistory.svc.cluster.local:8080",
+    ],
+    ["http://history.corp.internal", "http://history.corp.internal"],
+    ["http://history.local:8080/", "http://history.local:8080"],
+    ["http://history:8080", "http://history:8080"],
+    ["http://HISTORY:80", "http://history"],
+    ["http://10.0.0.5:8080", "http://10.0.0.5:8080"],
+    ["http://172.16.0.1", "http://172.16.0.1"],
+    ["http://172.31.255.254:8080", "http://172.31.255.254:8080"],
+    ["http://192.168.1.10:8080", "http://192.168.1.10:8080"],
+    ["http://[fd12:3456::1]:8080", "http://[fd12:3456::1]:8080"],
+    ["http://[fc00::1]", "http://[fc00::1]"],
+  ];
+
+  for (const [historyOrigin, expected] of privateHttpOrigins) {
+    await t.test(
+      `private http flag on: accepts ${historyOrigin}`,
+      async () => {
+        const response = await mintForOrigin(historyOrigin, privateHttpOn);
+        const body = await assertJsonResponse<RelayhistoryAssertionResponse>(
+          response,
+          201,
+        );
+        const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+          body.accessToken,
+          1,
+        );
+        assert.deepEqual(claims.aud, [expected]);
+        assert.equal(claims.meta?.historyOrigin, expected);
+      },
+    );
+
+    await t.test(
+      `private http flag off (default): refuses ${historyOrigin}`,
+      async () => {
+        const response = await mintForOrigin(historyOrigin);
+        await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+          assert.equal(body.code, "invalid_history_origin");
+        });
+      },
+    );
+  }
+
+  for (const value of ["1", "TRUE", "yes", "false", ""]) {
+    await t.test(
+      `private http flag only enables on exactly "true" (${JSON.stringify(value)})`,
+      async () => {
+        const response = await mintForOrigin("http://history:8080", {
+          RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN: value,
+        });
+        await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+          assert.equal(body.code, "invalid_history_origin");
+        });
+      },
+    );
+  }
+
+  for (const historyOrigin of [
+    // public DNS names and public IPs never get plain http
+    "http://history.example.com",
+    "http://history.svc.example.com",
+    "http://history.internal.example.com",
+    "http://8.8.8.8",
+    "http://8.8.8.8:8080",
+    "http://172.32.0.1",
+    "http://172.15.255.255",
+    "http://192.169.0.1",
+    "http://11.0.0.1",
+    "http://0.0.0.0",
+    "http://169.254.169.254",
+    "http://100.64.0.1",
+    "http://[2001:4860:4860::8888]",
+    "http://[fe80::1]",
+    "http://[::ffff:10.0.0.5]",
+    "http://10",
+    // still bare origins only
+    "http://history:8080/v1",
+    "http://history:8080?x=1",
+    "http://history:8080#x",
+    "http://user:pw@history:8080",
+    "http://user@10.0.0.5:8080",
+    "http://10.0.0.5:8080/api",
+    "http://relayhistory.relayhistory.svc.:8080",
+    "http://hist%6Fry:8080",
+    "ftp://history:8080",
+  ]) {
+    await t.test(
+      `private http flag on: still refuses ${JSON.stringify(historyOrigin)}`,
+      async () => {
+        const response = await mintForOrigin(historyOrigin, privateHttpOn);
+        await assertJsonResponse<ErrorBody>(response, 400, (body) => {
+          assert.equal(body.code, "invalid_history_origin");
+        });
+      },
+    );
+  }
+
+  await t.test("private http flag on: https and loopback rules unchanged", async () => {
+    for (const [historyOrigin, expected] of [
+      ["https://history.example.com", "https://history.example.com"],
+      ["https://10.0.0.5:8443", "https://10.0.0.5:8443"],
+      ["http://localhost:8787", "http://localhost:8787"],
+    ]) {
+      const response = await mintForOrigin(historyOrigin, privateHttpOn);
+      const body = await assertJsonResponse<RelayhistoryAssertionResponse>(
+        response,
+        201,
+      );
+      const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(
+        body.accessToken,
+        1,
+      );
+      assert.deepEqual(claims.aud, [expected]);
+    }
   });
 });
 

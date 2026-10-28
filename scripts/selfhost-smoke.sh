@@ -11,6 +11,11 @@
 #    checks the old token still verifies while new tokens carry B's kid
 #    (assertions live at most 60s, so the rotation happens within that window).
 # 5. Drops the previous key and checks the old token is no longer verifiable.
+# 6. Checks an assertion for the private http origin
+#    http://history.relayhistory.svc:8080 is refused by default (400
+#    invalid_history_origin), then restarts with
+#    RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true and checks it is minted
+#    and verifies with that origin as its audience.
 #
 # Requires docker, curl, openssl, node (>= 20, used only for verification).
 # Env: SMOKE_PORT (default 19380), SMOKE_IMAGE, SKIP_BUILD=1, KEEP_SECRETS=1.
@@ -23,6 +28,7 @@ CONTAINER="sp-relayauth-smoke"
 BASE_URL="http://127.0.0.1:${PORT}"
 ISSUER="${SMOKE_ISSUER:-$BASE_URL}"
 HISTORY_ORIGIN="http://127.0.0.1:18780"
+PRIVATE_HISTORY_ORIGIN="http://history.relayhistory.svc:8080"
 LAB="$ROOT/.selfhost/smoke"
 SECRETS="$LAB/secrets"
 DATA="$LAB/data"
@@ -63,6 +69,8 @@ log "generated lab secrets in ${LAB#"$ROOT"/} (0600, gitignored)"
 
 # --- helpers ------------------------------------------------------------------
 # run_relayauth <current> [next] [previous]  (key file basenames, "" to omit)
+# Extra `-e NAME=value` pairs can be passed via the EXTRA_ENV array.
+EXTRA_ENV=()
 run_relayauth() {
   local current="$1" next="${2:-}" previous="${3:-}"
   local args=(
@@ -79,6 +87,8 @@ run_relayauth() {
   )
   [[ -n "$next" ]] && args+=(-e "RELAYAUTH_SIGNING_KEY_PEM_NEXT_FILE=/run/secrets/$next.pem")
   [[ -n "$previous" ]] && args+=(-e "RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS_FILE=/run/secrets/$previous.pem")
+  local kv
+  for kv in "${EXTRA_ENV[@]}"; do args+=(-e "$kv"); done
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker run "${args[@]}" "$IMAGE" >/dev/null
   for _ in $(seq 1 60); do
@@ -91,22 +101,28 @@ run_relayauth() {
   fail "relayauth did not become healthy on $BASE_URL"
 }
 
-mint_assertion() {
-  local status
-  status=$(curl -sS -o "$LAB/mint.json" -w '%{http_code}' \
+# post_assertion <origin> -> prints HTTP status, body in $LAB/mint.json
+post_assertion() {
+  curl -sS -o "$LAB/mint.json" -w '%{http_code}' \
     -X POST "$BASE_URL/v1/tokens/relayhistory-assertion" \
     -H 'content-type: application/json' \
     -H "x-api-key: $(tr -d '\n' < "$SECRETS/bootstrap-api-key")" \
-    --data "{\"orgId\":\"org_smoke\",\"workspaceId\":\"ws_smoke\",\"sponsorId\":\"user_smoke\",\"scopes\":[\"rth:sync\",\"rth:read\"],\"expiresIn\":60,\"historyOrigin\":\"$HISTORY_ORIGIN\"}")
+    --data "{\"orgId\":\"org_smoke\",\"workspaceId\":\"ws_smoke\",\"sponsorId\":\"user_smoke\",\"scopes\":[\"rth:sync\",\"rth:read\"],\"expiresIn\":60,\"historyOrigin\":\"$1\"}"
+}
+
+# mint_assertion [origin] -> prints the access token
+mint_assertion() {
+  local status
+  status=$(post_assertion "${1:-$HISTORY_ORIGIN}")
   [[ "$status" == "201" ]] || fail "assertion mint returned HTTP $status: $(cat "$LAB/mint.json")"
   node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).accessToken)' "$LAB/mint.json"
 }
 
 # Independent verifier: node:crypto only, no RelayAuth code.
-# verify_token <token-file> -> prints "kid=<kid> iss=<iss> aud=<aud>" or exits 1
+# verify_token <token-file> [audience] -> prints "kid=<kid> iss=<iss> aud=<aud>" or exits 1
 verify_token() {
   curl -fsS "$BASE_URL/.well-known/jwks.json" > "$LAB/jwks.json"
-  node - "$1" "$LAB/jwks.json" "$ISSUER" "$HISTORY_ORIGIN" <<'NODE'
+  node - "$1" "$LAB/jwks.json" "$ISSUER" "${2:-$HISTORY_ORIGIN}" <<'NODE'
 const fs = require("node:fs");
 const crypto = require("node:crypto");
 const [tokenFile, jwksFile, issuer, audience] = process.argv.slice(2);
@@ -176,5 +192,22 @@ if out=$(verify_token "$LAB/token-old"); then
 fi
 log "old token rejected after retirement: $(verify_token "$LAB/token-old" || true)"
 verify_token "$LAB/token-new" >/dev/null || fail "new token stopped verifying"
+
+# --- phase 4: private http History origin ------------------------------------------
+log "phase 4: private http historyOrigin $PRIVATE_HISTORY_ORIGIN"
+status=$(post_assertion "$PRIVATE_HISTORY_ORIGIN")
+[[ "$status" == "400" ]] && grep -q '"invalid_history_origin"' "$LAB/mint.json" \
+  || fail "flag off: expected 400 invalid_history_origin, got HTTP $status: $(cat "$LAB/mint.json")"
+log "flag off: refused (HTTP 400 invalid_history_origin)"
+EXTRA_ENV=("RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true")
+run_relayauth key-b
+EXTRA_ENV=()
+mint_assertion "$PRIVATE_HISTORY_ORIGIN" > "$LAB/token-private"
+out=$(verify_token "$LAB/token-private" "$PRIVATE_HISTORY_ORIGIN") \
+  || fail "private-origin assertion did not verify: $out"
+log "flag on: minted, verify: $out"
+status=$(post_assertion "http://history.example.com")
+[[ "$status" == "400" ]] || fail "flag on: public http origin returned HTTP $status"
+log "flag on: public http origin still refused (HTTP 400)"
 
 log "PASS (old kid ${OLD_KID:0:12}..., new kid ${NEW_KID:0:12}...)"

@@ -25,6 +25,7 @@ its `_FILE` variant. `_FILE` handling lives only in the Node entrypoint
 | `RELAYAUTH_BOOTSTRAP_API_KEY` / `_FILE` | no | Raw API key to seed at boot with scope `relayauth:assertion:create:relayhistory` (see below). |
 | `RELAYAUTH_BOOTSTRAP_API_KEY_ORG` | no | Org for a newly created bootstrap key (default `org_selfhost`). |
 | `ALLOWED_ORIGINS` | no | Comma-separated CORS allowlist. |
+| `RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN` | no | Exactly `true` lets History assertions bind to a plain-`http` `historyOrigin` on a private host (see below). Any other value, or unset, keeps the hosted rule. Chart: `relayhistory.allowPrivateHttpOrigin`. |
 
 ### Keys and `kid`
 
@@ -59,6 +60,31 @@ boot, that an API key with exactly that value exists with scope
 - The value must be a single token of at least 32 characters, for example
   `printf 'rak_%s\n' "$(openssl rand -hex 32)"`.
 
+### History origins over private http
+
+`POST /v1/tokens/relayhistory-assertion` binds each assertion to one History
+`historyOrigin` (its `aud`). By default that origin must be `https`, or `http`
+only on loopback (`localhost`, `127.0.0.1`, `[::1]`). In-cluster History
+usually runs on plain http behind private DNS, so set
+`RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true` to also accept `http` when
+the host is:
+
+- a private IP literal: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, or
+  IPv6 unique-local `fc00::/7`;
+- a single-label hostname (`http://history:8080`, an in-namespace Service);
+- a hostname ending in `.svc`, `.svc.cluster.local`, `.cluster.local`,
+  `.internal` or `.local` (`http://relayhistory.relayhistory.svc:8080`).
+
+Suffixes match whole trailing labels, so `http://history.svc.example.com` and
+`http://history.internal.example.com` are public names and stay refused, as are
+public IPs (`http://8.8.8.8`), link-local (`169.254/16`, `fe80::/10`), CGNAT
+(`100.64/10`), `0.0.0.0` and IPv4-mapped IPv6. The origin must still be bare:
+`scheme://host[:port]` with no path, query, fragment, userinfo, percent escapes
+or trailing DNS dot; it is canonicalised (lowercase, default port dropped)
+before it becomes the `aud`. `https` rules are unchanged. The flag widens only
+which http hosts are accepted. It does not make a public http origin acceptable,
+so turn it on only where History is reached over a trusted private network.
+
 ## Docker
 
 ```sh
@@ -80,7 +106,9 @@ mount must be writable by that uid.
 `scripts/selfhost-smoke.sh` builds the image and runs an end-to-end check on
 `127.0.0.1:19380` with throwaway keys: it seeds the bootstrap key, mints a
 History assertion, verifies it against the JWKS, rotates, and checks that old
-tokens still verify while new tokens carry the new `kid`.
+tokens still verify while new tokens carry the new `kid`. It also checks that an
+assertion for `http://history.relayhistory.svc:8080` is refused with the flag
+off and minted with `RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true`.
 
 ## Helm
 
@@ -101,7 +129,9 @@ helm install relayauth charts/relayauth \
 
 `secretKeys.*` maps each role to a key name inside the Secret. Leave
 `signingKeyNext`, `signingKeyPrevious` or `signingKeyPublic` empty to omit
-them, and set `bootstrapApiKey: ""` to skip bootstrap seeding.
+them, and set `bootstrapApiKey: ""` to skip bootstrap seeding. Set
+`relayhistory.allowPrivateHttpOrigin=true` when History is reached over plain
+http on in-cluster DNS (see "History origins over private http").
 
 ## Signing-key rotation runbook
 
@@ -144,5 +174,5 @@ clients must re-authenticate.
 
 - Single replica only (SQLite). The chart refuses `replicaCount != 1`.
 - `historyOrigin` on History assertions must be `https`, or `http` on a
-  loopback host. A History reachable only over plain `http` on private DNS is
-  rejected.
+  loopback host, unless `RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true`
+  (private hosts only; see above).
