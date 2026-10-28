@@ -49,7 +49,6 @@ cleanup() {
     rm -rf "$LAB"
   fi
 }
-trap cleanup EXIT
 
 for bin in docker curl openssl node; do
   command -v "$bin" >/dev/null || fail "missing dependency: $bin"
@@ -61,8 +60,14 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
 fi
 
 # --- throwaway lab secrets ---------------------------------------------------
-[[ ! -e "$LAB" ]] || fail "lab dir already exists (reused SMOKE_RUN_ID?): ${LAB#"$ROOT"/}"
-(umask 077 && mkdir -p "$SECRETS" "$DATA")
+# Claim the run atomically (mkdir without -p fails if the dir exists) before
+# installing cleanup, so a run that reuses SMOKE_RUN_ID exits without touching
+# the other run's container or lab dir. The container name derives from the
+# same RUN_ID, so owning the lab dir means owning the container name too.
+(umask 077 && mkdir -p "$(dirname "$LAB")" && mkdir "$LAB" 2>/dev/null) \
+  || fail "lab dir already exists (reused SMOKE_RUN_ID?): ${LAB#"$ROOT"/}"
+trap cleanup EXIT
+(umask 077 && mkdir "$SECRETS" "$DATA")
 (
   umask 077
   for name in key-a key-b; do
