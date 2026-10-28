@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/.turbo
+**/.next
+**/*.tsbuildinfo
+.git
+.relay
+.selfhost
+.trajectories
+charts
+docs
+specs
+workflows
+tests

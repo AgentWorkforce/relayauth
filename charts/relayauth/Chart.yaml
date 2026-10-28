@@ -1,0 +1,7 @@
+apiVersion: v2
+name: relayauth
+description: RelayAuth identity and token service (Node server + SQLite) for self-hosting
+type: application
+version: 0.1.0
+appVersion: "0.2.32"
+home: https://github.com/AgentWorkforce/relayauth

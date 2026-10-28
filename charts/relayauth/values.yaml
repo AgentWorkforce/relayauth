@@ -1,0 +1,91 @@
+# RelayAuth is a single-writer SQLite service: run exactly one replica.
+replicaCount: 1
+
+image:
+  repository: relayauth
+  tag: local
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Public URL of this RelayAuth (discovery endpoints, JWKS URL).
+baseUrl: "http://relayauth:8787"
+# `iss` on every token RelayAuth mints and requires. Verifiers (History, the
+# control plane) must pin the same value. Empty keeps the default
+# "https://relayauth.dev".
+issuer: ""
+# Org that owns a newly created bootstrap api key.
+bootstrapApiKeyOrg: org_selfhost
+# Comma-separated CORS origins (optional).
+allowedOrigins: ""
+
+# Pre-created Secret holding keys/secrets (never rendered by this chart).
+# Each entry under secretKeys names a key inside that Secret; set an optional
+# entry to "" to leave it unconfigured. See docs/self-hosting.md.
+existingSecret: relayauth
+secretKeys:
+  internalSecret: internal-secret
+  signingKey: signing-key.pem
+  signingKeyPublic: ""
+  signingKeyNext: ""
+  signingKeyPrevious: ""
+  bootstrapApiKey: bootstrap-api-key
+
+# Extra plain environment variables, e.g. rate-limit tuning.
+extraEnv: []
+
+service:
+  type: ClusterIP
+  port: 8787
+
+persistence:
+  enabled: true
+  # Use an existing PVC instead of creating one.
+  existingClaim: ""
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+  size: 1Gi
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 20
+  timeoutSeconds: 5
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

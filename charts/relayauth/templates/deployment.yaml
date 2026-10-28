@@ -1,0 +1,131 @@
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail "replicaCount must be 1: RelayAuth stores state in a single SQLite file" }}
+{{- end }}
+{{- $secret := required "existingSecret is required" .Values.existingSecret }}
+{{- $keys := .Values.secretKeys }}
+{{- $_ := required "secretKeys.internalSecret is required" $keys.internalSecret }}
+{{- $_ := required "secretKeys.signingKey is required" $keys.signingKey }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "relayauth.fullname" . }}
+  labels:
+    {{- include "relayauth.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate, never RollingUpdate: two pods must not open the SQLite file
+  # (ReadWriteOnce volume) at the same time.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "relayauth.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "relayauth.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: relayauth
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8787
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8787"
+            - name: RELAYAUTH_DB_PATH
+              value: /data/relayauth.db
+            - name: BASE_URL
+              value: {{ .Values.baseUrl | quote }}
+            {{- with .Values.issuer }}
+            - name: RELAYAUTH_ISSUER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.allowedOrigins }}
+            - name: ALLOWED_ORIGINS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: INTERNAL_SECRET_FILE
+              value: /run/secrets/relayauth/{{ $keys.internalSecret }}
+            - name: RELAYAUTH_SIGNING_KEY_PEM_FILE
+              value: /run/secrets/relayauth/{{ $keys.signingKey }}
+            {{- with $keys.signingKeyPublic }}
+            - name: RELAYAUTH_SIGNING_KEY_PEM_PUBLIC_FILE
+              value: /run/secrets/relayauth/{{ . }}
+            {{- end }}
+            {{- with $keys.signingKeyNext }}
+            - name: RELAYAUTH_SIGNING_KEY_PEM_NEXT_FILE
+              value: /run/secrets/relayauth/{{ . }}
+            {{- end }}
+            {{- with $keys.signingKeyPrevious }}
+            - name: RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS_FILE
+              value: /run/secrets/relayauth/{{ . }}
+            {{- end }}
+            {{- with $keys.bootstrapApiKey }}
+            - name: RELAYAUTH_BOOTSTRAP_API_KEY_FILE
+              value: /run/secrets/relayauth/{{ . }}
+            - name: RELAYAUTH_BOOTSTRAP_API_KEY_ORG
+              value: {{ $.Values.bootstrapApiKeyOrg | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: secrets
+              mountPath: /run/secrets/relayauth
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "relayauth.claimName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: secrets
+          secret:
+            secretName: {{ $secret }}
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

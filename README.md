@@ -266,6 +266,13 @@ acl:
       - role:support
 ```
 
+## Self-hosting
+
+A Node container image (`docker/Dockerfile`), a Helm chart (`charts/relayauth`),
+and the signing-key rotation runbook are documented in
+[docs/self-hosting.md](docs/self-hosting.md). `scripts/selfhost-smoke.sh` runs
+an end-to-end check of the image.
+
 ## Cloud
 
 **[Relayfile Cloud](https://relayfile.dev/pricing)** manages token issuance, agent permissions, and scope enforcement. No self-hosting required.
