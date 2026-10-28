@@ -4,7 +4,7 @@ import type { AppConfig } from "../env.js";
 import { unwrapRelayToken } from "./jwt.js";
 import { resolvePublishedSigningKeys, type SigningKeyEnv } from "./signing-keys.js";
 
-type VerifierEnv = Pick<AppConfig, "BASE_URL"> & SigningKeyEnv;
+type VerifierEnv = Pick<AppConfig, "BASE_URL" | "RELAYAUTH_ISSUER"> & SigningKeyEnv;
 type VerifyTokenOptions = Omit<VerifyOptions, "jwksUrl">;
 
 export async function verifyRs256Token(
@@ -12,6 +12,11 @@ export async function verifyRs256Token(
   env: VerifierEnv,
   options: VerifyTokenOptions = {},
 ): Promise<RelayAuthTokenClaims> {
+  // When an operator sets RELAYAUTH_ISSUER, every RelayAuth-signed bearer must
+  // carry it (bearer auth, scope middleware, audit), matching what refresh and
+  // introspection already require. Unset keeps the historical behaviour of not
+  // pinning `iss` on these paths, so hosted deployments see no change.
+  const explicitIssuer = env.RELAYAUTH_ISSUER?.trim();
   const verifier = new TokenVerifier({
     // The relayauth server enforces revocation itself on every request via its
     // own fail-closed denylist (authenticateFromContext -> isBearerTokenInactive,
@@ -20,6 +25,7 @@ export async function verifyRs256Token(
     // here to avoid a spurious `revocation_required` on the issuer's own path.
     // External resource servers using the SDK verifier keep the forced check.
     revocationHandledExternally: true,
+    ...(explicitIssuer ? { issuer: explicitIssuer } : {}),
     ...options,
     jwksUrl: await resolveJwksUrl(env),
   });

@@ -30,3 +30,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "relayauth.claimName" -}}
 {{- default (printf "%s-data" (include "relayauth.fullname" .)) .Values.persistence.existingClaim }}
 {{- end }}
+
+{{- define "relayauth.issuer" -}}
+{{- default .Values.baseUrl .Values.issuer }}
+{{- end }}

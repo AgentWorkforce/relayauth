@@ -5,6 +5,7 @@
 {{- $keys := .Values.secretKeys }}
 {{- $_ := required "secretKeys.internalSecret is required" $keys.internalSecret }}
 {{- $_ := required "secretKeys.signingKey is required" $keys.signingKey }}
+{{- $baseUrl := required "baseUrl is required" .Values.baseUrl }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -55,11 +56,10 @@ spec:
             - name: RELAYAUTH_DB_PATH
               value: /data/relayauth.db
             - name: BASE_URL
-              value: {{ .Values.baseUrl | quote }}
-            {{- with .Values.issuer }}
+              value: {{ $baseUrl | quote }}
+            # Always set: tokens, discovery and sponsor grants share one issuer.
             - name: RELAYAUTH_ISSUER
-              value: {{ . | quote }}
-            {{- end }}
+              value: {{ include "relayauth.issuer" . | quote }}
             {{- if (.Values.relayhistory).allowPrivateHttpOrigin }}
             - name: RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN
               value: "true"
