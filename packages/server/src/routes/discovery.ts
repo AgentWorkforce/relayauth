@@ -135,7 +135,7 @@ const SCOPE_DEFINITIONS: ScopeDefinition[] = [
 
 discovery.get("/agent-configuration", (c) => {
   const origin = resolveOrigin(c);
-  const configuration = buildAgentConfiguration(origin);
+  const configuration = buildAgentConfiguration(origin, c.env?.RELAYAUTH_ISSUER?.trim() || undefined);
 
   c.header("Cache-Control", CACHE_CONTROL_HEADER);
   return c.json(configuration, 200);
@@ -143,7 +143,7 @@ discovery.get("/agent-configuration", (c) => {
 
 apiDiscovery.get("/agent-card", (c) => {
   const origin = resolveOrigin(c);
-  const configuration = buildAgentConfiguration(origin);
+  const configuration = buildAgentConfiguration(origin, c.env?.RELAYAUTH_ISSUER?.trim() || undefined);
   const card = configurationToAgentCard(configuration, SERVICE_NAME);
 
   c.header("Cache-Control", CACHE_CONTROL_HEADER);
@@ -176,13 +176,15 @@ apiDiscovery.post("/bridge", requireScope("relayauth:identity:read"), async (c) 
   }
 });
 
-function buildAgentConfiguration(origin: string): AgentConfiguration {
+function buildAgentConfiguration(origin: string, issuer?: string): AgentConfiguration {
   const endpoints = buildEndpoints(origin);
 
   return {
     schema_version: SCHEMA_VERSION,
     service_name: SERVICE_NAME,
-    issuer: origin,
+    // An explicit RELAYAUTH_ISSUER is the `iss` tokens carry; advertise it so
+    // verifiers discovering this server pin the same value.
+    issuer: issuer ?? origin,
     server_version: SERVER_VERSION,
     jwks_uri: absoluteUrl(origin, "/.well-known/jwks.json"),
     token_endpoint: absoluteUrl(origin, "/v1/tokens"),

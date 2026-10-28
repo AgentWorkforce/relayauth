@@ -24,7 +24,7 @@ import {
   RELAY_PATH_TOKEN_PREFIX,
   wrapRelayToken,
 } from "../lib/jwt.js";
-import { signToken } from "../lib/sign.js";
+import { resolveIssuer, signToken } from "../lib/sign.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { StoredApiKey } from "../storage/api-key-types.js";
@@ -182,7 +182,6 @@ const MAX_OPERATOR_REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 3600;
 const REFRESH_TOKEN_TTL_META_KEY = "refreshTokenTtl";
 const CLOCK_SKEW_SECONDS = 60;
 const MAX_SPONSOR_CHAIN_DEPTH = 10;
-const EXPECTED_ISSUER = "https://relayauth.dev";
 const REFRESH_AUDIENCE = "relayauth";
 const MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS = 3600;
 // A durable, read-only, workspace-scoped access token may live far longer than
@@ -1269,7 +1268,7 @@ async function issueTokenPair(
     sponsorId: identity.sponsorId,
     sponsorChain: [...identity.sponsorChain],
     token_type: "access",
-    iss: EXPECTED_ISSUER,
+    iss: resolveIssuer(env),
     aud: options.accessAudience,
     exp: accessExpiresAt,
     iat: issuedAtSeconds,
@@ -1287,7 +1286,7 @@ async function issueTokenPair(
     sponsorId: identity.sponsorId,
     sponsorChain: [...identity.sponsorChain],
     token_type: "refresh",
-    iss: EXPECTED_ISSUER,
+    iss: resolveIssuer(env),
     aud: [REFRESH_AUDIENCE],
     exp: refreshExpiresAt,
     iat: issuedAtSeconds,
@@ -1397,7 +1396,7 @@ async function issueRelayhistoryAssertion(
     sponsorId: options.sponsorId,
     sponsorChain: [options.sponsorId, "agent_relayhistory_assertion"],
     token_type: "access",
-    iss: EXPECTED_ISSUER,
+    iss: resolveIssuer(env),
     // An origin-bound assertion drops the shared audience entirely: a History
     // that only checks `relayhistory` refuses it rather than accepting a token
     // meant for some other History.
@@ -1793,7 +1792,7 @@ async function verifyToken(
   let claims: RelayAuthTokenClaims;
   try {
     claims = await verifyRs256Token(token, env, {
-      issuer: EXPECTED_ISSUER,
+      issuer: resolveIssuer(env),
       ...options,
     });
   } catch (error) {
@@ -1810,7 +1809,7 @@ async function verifyToken(
 
   // Per specs/token-format.md:130-133, verifiers must enforce iss, aud, and
   // temporal claims with a 60 second clock-skew allowance.
-  if (claims.iss !== EXPECTED_ISSUER) {
+  if (claims.iss !== resolveIssuer(env)) {
     return { ok: false, error: "Invalid token" };
   }
 

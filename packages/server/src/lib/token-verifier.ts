@@ -1,11 +1,10 @@
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 import { TokenVerifier, type VerifyOptions } from "@relayauth/sdk";
 import type { AppConfig } from "../env.js";
-import { rsaPublicJwkFromPem } from "./jwk.js";
 import { unwrapRelayToken } from "./jwt.js";
-import { keyIdFromPublicJwk } from "./sign-rs256.js";
+import { resolvePublishedSigningKeys, type SigningKeyEnv } from "./signing-keys.js";
 
-type VerifierEnv = Pick<AppConfig, "BASE_URL" | "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC">;
+type VerifierEnv = Pick<AppConfig, "BASE_URL"> & SigningKeyEnv;
 type VerifyTokenOptions = Omit<VerifyOptions, "jwksUrl">;
 
 export async function verifyRs256Token(
@@ -36,18 +35,11 @@ async function resolveJwksUrl(env: VerifierEnv): Promise<string> {
   // throws "Failed to fetch JWKS", breaking ALL RS256 bearer verification
   // (e.g. the admin-bearer api-key mint -> 401 invalid_token). Only fall back to
   // a network fetch when no public key is bound (e.g. local/dev).
-  const publicKeyPem = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
-  if (publicKeyPem) {
-    const keyWithPlaceholderKid = await rsaPublicJwkFromPem(publicKeyPem, "");
-    const jwks = {
-      keys: [
-        {
-          ...keyWithPlaceholderKid,
-          kid: await keyIdFromPublicJwk(keyWithPlaceholderKid),
-        },
-      ],
-    };
-
+  // All published keys (current, next, previous) are accepted, so tokens
+  // signed before a rotation keep verifying while the previous key is bound.
+  const published = await resolvePublishedSigningKeys(env);
+  if (published.length > 0) {
+    const jwks = { keys: published.map((key) => key.jwk) };
     return `data:application/json,${encodeURIComponent(JSON.stringify(jwks))}`;
   }
 

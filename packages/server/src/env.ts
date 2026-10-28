@@ -10,6 +10,21 @@ export type AppConfig = {
   ALLOWED_ORIGINS?: string;
   RELAYAUTH_SIGNING_KEY_PEM?: string;
   RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?: string;
+  /**
+   * Upcoming signing key (PKCS#8 private or SPKI public PEM). Published in the
+   * JWKS so verifiers cache it before a rotation promotes it; never signs.
+   */
+  RELAYAUTH_SIGNING_KEY_PEM_NEXT?: string;
+  /**
+   * Retired signing key (PKCS#8 private or SPKI public PEM). Stays published in
+   * the JWKS so tokens it signed keep verifying until they expire; never signs.
+   */
+  RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS?: string;
+  /**
+   * `iss` stamped on and required of RelayAuth-issued tokens, and advertised
+   * by discovery. Defaults to "https://relayauth.dev" for back-compat.
+   */
+  RELAYAUTH_ISSUER?: string;
   RELAYAUTH_ENV_STAGE?: string;
   /** JSON object keyed by org id. See SponsorFederationConfig. */
   RELAYAUTH_SPONSOR_FEDERATIONS?: string;
