@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Self-host smoke test for the RelayAuth Node image (docker/Dockerfile).
 #
-# 1. Builds the image and generates throwaway lab secrets under .selfhost/smoke
-#    (gitignored, mode 0600; never printed).
+# 1. Builds the image and generates throwaway lab secrets under
+#    .selfhost/smoke-<run id> (gitignored, mode 0600; never printed).
 # 2. Boots relayauth with key A current + key B next, seeding a bootstrap
 #    api key from RELAYAUTH_BOOTSTRAP_API_KEY_FILE.
 # 3. Mints a History assertion (historyOrigin http://127.0.0.1:18780) with the
@@ -20,23 +20,28 @@
 #    public key) and checks the container refuses to start.
 #
 # Requires docker, curl, openssl, node (>= 20, used only for verification).
-# Env: SMOKE_PORT (default 19380), SMOKE_IMAGE, SKIP_BUILD=1, KEEP_SECRETS=1.
+# Env: SMOKE_PORT (default 19380), SMOKE_IMAGE, SKIP_BUILD=1, KEEP_SECRETS=1,
+#      SMOKE_RUN_ID (default <pid>-<random>; names the container and lab dir so
+#      concurrent runs never touch each other's resources).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${SMOKE_PORT:-19380}"
 IMAGE="${SMOKE_IMAGE:-sp-relayauth:smoke}"
-CONTAINER="sp-relayauth-smoke"
+RUN_ID="${SMOKE_RUN_ID:-$$-$RANDOM}"
+CONTAINER="sp-relayauth-smoke-${RUN_ID}"
 BASE_URL="http://127.0.0.1:${PORT}"
 ISSUER="${SMOKE_ISSUER:-$BASE_URL}"
 HISTORY_ORIGIN="http://127.0.0.1:18780"
 PRIVATE_HISTORY_ORIGIN="http://history.relayhistory.svc:8080"
-LAB="$ROOT/.selfhost/smoke"
+LAB="$ROOT/.selfhost/smoke-${RUN_ID}"
 SECRETS="$LAB/secrets"
 DATA="$LAB/data"
 
 log() { printf '[smoke] %s\n' "$*"; }
 fail() { printf '[smoke] FAIL: %s\n' "$*" >&2; exit 1; }
+# Every request is bounded so a stalled server fails the run instead of hanging.
+http() { curl --connect-timeout 2 --max-time 10 "$@"; }
 
 cleanup() {
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
@@ -56,8 +61,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
 fi
 
 # --- throwaway lab secrets ---------------------------------------------------
-docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-rm -rf "$LAB"
+[[ ! -e "$LAB" ]] || fail "lab dir already exists (reused SMOKE_RUN_ID?): ${LAB#"$ROOT"/}"
 (umask 077 && mkdir -p "$SECRETS" "$DATA")
 (
   umask 077
@@ -94,7 +98,7 @@ run_relayauth() {
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker run "${args[@]}" "$IMAGE" >/dev/null
   for _ in $(seq 1 60); do
-    if curl -fsS "$BASE_URL/health" >/dev/null 2>&1; then
+    if http -fsS "$BASE_URL/health" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.5
@@ -105,7 +109,7 @@ run_relayauth() {
 
 # post_assertion <origin> -> prints HTTP status, body in $LAB/mint.json
 post_assertion() {
-  curl -sS -o "$LAB/mint.json" -w '%{http_code}' \
+  http -sS -o "$LAB/mint.json" -w '%{http_code}' \
     -X POST "$BASE_URL/v1/tokens/relayhistory-assertion" \
     -H 'content-type: application/json' \
     -H "x-api-key: $(tr -d '\n' < "$SECRETS/bootstrap-api-key")" \
@@ -123,7 +127,7 @@ mint_assertion() {
 # Independent verifier: node:crypto only, no RelayAuth code.
 # verify_token <token-file> [audience] -> prints "kid=<kid> iss=<iss> aud=<aud>" or exits 1
 verify_token() {
-  curl -fsS "$BASE_URL/.well-known/jwks.json" > "$LAB/jwks.json"
+  http -fsS "$BASE_URL/.well-known/jwks.json" > "$LAB/jwks.json"
   node - "$1" "$LAB/jwks.json" "$ISSUER" "${2:-$HISTORY_ORIGIN}" <<'NODE'
 const fs = require("node:fs");
 const crypto = require("node:crypto");
@@ -148,7 +152,7 @@ NODE
 }
 
 jwks_kids() {
-  curl -fsS "$BASE_URL/.well-known/jwks.json" \
+  http -fsS "$BASE_URL/.well-known/jwks.json" \
     | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).keys.map(k=>k.kid).join(" ")))'
 }
 

@@ -12,3 +12,12 @@ docs
 specs
 workflows
 tests
+# Local secrets (docs/self-hosting.md creates these next to the checkout);
+# never let them reach the COPY . . layer.
+**/*.pem
+**/*.key
+**/.env
+**/.env.*
+**/secrets
+**/internal-secret
+**/bootstrap-api-key
