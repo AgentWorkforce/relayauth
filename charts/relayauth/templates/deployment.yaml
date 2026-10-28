@@ -5,7 +5,7 @@
 {{- $keys := .Values.secretKeys }}
 {{- $_ := required "secretKeys.internalSecret is required" $keys.internalSecret }}
 {{- $_ := required "secretKeys.signingKey is required" $keys.signingKey }}
-{{- $baseUrl := required "baseUrl is required" .Values.baseUrl }}
+{{- $baseUrl := include "relayauth.baseUrl" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

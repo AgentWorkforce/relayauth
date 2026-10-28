@@ -31,6 +31,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default (printf "%s-data" (include "relayauth.fullname" .)) .Values.persistence.existingClaim }}
 {{- end }}
 
+{{- /*
+Public URL of this RelayAuth. Defaults to the release's own Service in-cluster
+(http://<fullname>.<namespace>.svc:<service.port>) so any release name resolves.
+*/}}
+{{- define "relayauth.baseUrl" -}}
+{{- if .Values.baseUrl }}
+{{- .Values.baseUrl }}
+{{- else }}
+{{- printf "http://%s.%s.svc:%v" (include "relayauth.fullname" .) .Release.Namespace .Values.service.port }}
+{{- end }}
+{{- end }}
+
 {{- define "relayauth.issuer" -}}
-{{- default .Values.baseUrl .Values.issuer }}
+{{- default (include "relayauth.baseUrl" .) .Values.issuer }}
 {{- end }}

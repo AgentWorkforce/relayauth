@@ -126,6 +126,14 @@ helm install relayauth charts/relayauth \
   --set baseUrl=https://auth.example.internal
 ```
 
+`baseUrl` defaults to this release's in-cluster Service,
+`http://<fullname>.<namespace>.svc:<service.port>` (release `relayauth` in
+namespace `auth` gives `http://relayauth.auth.svc:8787`; release `myrel` gives
+`http://myrel-relayauth.auth.svc:8787`), so the advertised JWKS URL resolves for
+any release name. Set it explicitly when verifiers reach RelayAuth through
+another name (ingress, external DNS); because it is also the default issuer,
+changing it later invalidates tokens for verifiers pinned to the old value.
+
 `issuer` defaults to `baseUrl`, and the chart always sets `RELAYAUTH_ISSUER`,
 so minted tokens, `/.well-known/agent-configuration` and sponsor grants carry
 the same issuer. Override `issuer` only if verifiers pin a different value.
@@ -148,8 +156,16 @@ Timing inputs:
   `kid`. Call the longest verifier cache *C* (1 hour if you honour the header).
 - **Longest-lived token signed by the old key, *T*:** access tokens default to
   1 hour, refresh tokens to 24 hours (operator-configurable up to 90 days),
-  durable read-only tokens up to 90 days, and History assertions at most 60
-  seconds.
+  bounded durable read-only tokens up to 90 days, and History assertions at
+  most 60 seconds.
+- **Indefinite tokens have no *T*.** Durable tokens minted with
+  `indefinite: true` carry a fixed `exp` in the year 2100 and no refresh
+  token, so waiting never drains them. Every indefinite token signed by A
+  stops verifying when A is retired (step 5). Before retiring A, reissue each
+  one (it is then signed by B), hand the new token to its holder, and revoke
+  the old one; their issuance is flagged `indefinite: "true"` in the
+  issued-token audit metadata. RelayAuth does not record which key signed a
+  token and does not block step 5, so this is on the operator.
 
 Steps:
 
@@ -165,16 +181,29 @@ Steps:
    than advertise the wrong `kid`. Previous = A (`RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS`, preferably the
    public PEM only), and clear next. Restart. New tokens carry B's `kid`, and
    tokens signed by A still verify.
-4. **Wait at least *T*.** Refresh tokens signed by A keep working during this
-   window. Removing A earlier forces those sessions to log in again.
-5. **Retire.** Remove `RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS` and restart. Tokens
-   signed by A are now rejected everywhere. Archive A's public key if you need
+4. **Wait at least *T*, and reissue indefinite tokens.** Refresh tokens
+   signed by A keep working during this window. Removing A earlier forces
+   those sessions to log in again. Reissue every `indefinite: true` token
+   signed by A (see above) before going on.
+5. **Retire.** Remove `RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS` and restart.
+   RelayAuth rejects tokens signed by A at once. External verifiers drop A
+   only when their cached JWKS expires: up to 5 minutes for the SDK default,
+   up to 1 hour for caches that honour `max-age` (*C*). Archive A's public key if you need
    to verify old sponsor-binding ledger signatures (they record the signing
    `kid`).
 
 Emergency rotation (key compromise): run steps 1 and 3 back to back, skip the
-waits, and retire A immediately. All tokens signed by A become invalid, so
-clients must re-authenticate.
+waits, and retire A immediately. RelayAuth itself rejects tokens signed by A
+as soon as it restarts, but external verifiers keep accepting them until their
+cached JWKS expires. The SDK verifier (`packages/sdk/typescript/src/verify.ts`,
+`DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000`) serves its cached keys for 5 minutes
+unless `cacheTtlMs` is set, and refetches early only when a token's `kid` is
+missing from the cache, so a token signed by A still verifies there until
+expiry. Verifiers or proxies that honour the JWKS `Cache-Control:
+max-age=3600` can keep A for up to 1 hour. For immediate rejection, restart
+(or clear the JWKS cache of) every verifier after retiring A. Clients whose
+tokens were signed by A, including indefinite tokens, must re-authenticate or
+be reissued tokens.
 
 ## Limitations
 
