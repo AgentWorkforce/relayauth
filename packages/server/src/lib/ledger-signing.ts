@@ -1,11 +1,11 @@
-import type { AppConfig } from "../env.js";
-import { rsaPublicJwkFromPem } from "./jwk.js";
-import { importRsaPrivateKey, keyIdFromPublicJwk, signCanonicalRs256 } from "./sign-rs256.js";
+import { importRsaPrivateKey, signCanonicalRs256 } from "./sign-rs256.js";
+import {
+  resolveCurrentPrivateKeyPem,
+  resolveCurrentPublicJwk,
+  type SigningKeyEnv,
+} from "./signing-keys.js";
 
-type LedgerSigningEnv = Pick<
-  AppConfig,
-  "RELAYAUTH_SIGNING_KEY_PEM" | "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC"
->;
+type LedgerSigningEnv = SigningKeyEnv;
 
 export type LedgerSigningMaterial = { privateKey: CryptoKey; kid: string };
 
@@ -13,27 +13,24 @@ export type LedgerSigningMaterial = { privateKey: CryptoKey; kid: string };
  * Resolves the ledger signing key and kid once so a caller can reuse it
  * across many entries in one request instead of re-parsing the public PEM
  * into a JWK and re-importing the private key per entry.
+ *
+ * The kid is the RFC 7638 thumbprint of the current public key (explicit, or
+ * derived from the private key), which is always published in the JWKS — so
+ * an append-only ledger row never carries a kid verifiers cannot resolve.
  */
 export async function resolveLedgerSigningMaterial(
   env: LedgerSigningEnv,
 ): Promise<LedgerSigningMaterial> {
-  const privateKeyPem = env.RELAYAUTH_SIGNING_KEY_PEM?.trim();
+  const privateKeyPem = resolveCurrentPrivateKeyPem(env);
   if (!privateKeyPem) {
     throw new Error("RELAYAUTH_SIGNING_KEY_PEM must be set");
   }
-  const publicKeyPem = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
-  if (!publicKeyPem) {
-    // Fail closed: /.well-known/jwks.json only ever publishes a key when this
-    // is set (see routes/jwks.ts). Without it, a ledger entry would sign with
-    // a fixed "rs256-key" kid that never appears in the JWKS — permanently
-    // unverifiable, since ledger rows are append-only and can't be re-signed.
-    throw new Error(
-      "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC must be set to sign ledger entries",
-    );
+  const publicJwk = await resolveCurrentPublicJwk(env);
+  if (!publicJwk) {
+    throw new Error("RELAYAUTH_SIGNING_KEY_PEM must be set");
   }
-  const kid = await keyIdFromPublicJwk(await rsaPublicJwkFromPem(publicKeyPem, ""));
   const privateKey = await importRsaPrivateKey(privateKeyPem);
-  return { privateKey, kid };
+  return { privateKey, kid: publicJwk.kid };
 }
 
 /** Sign a ledger payload (canonical JSON) with previously-resolved signing material. */

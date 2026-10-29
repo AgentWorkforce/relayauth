@@ -764,3 +764,103 @@ test("OIDC-bound identity creation rolls back when the signed ledger append fail
   assert.equal(identityRow ?? null, null);
   assert.equal(ledgerRow ?? null, null);
 });
+
+test("RELAYAUTH_ISSUER is the one issuer for minted tokens, discovery and sponsor grants", async (t) => {
+  const { issuer: oidcIssuer } = await startOidcFixture(t);
+  const relayauthIssuer = "https://auth.selfhost.test";
+  const org = "org_oidc_issuer";
+  const app = createTestApp({
+    RELAYAUTH_ISSUER: relayauthIssuer,
+    // Deliberately different from the issuer: nothing may fall back to it.
+    BASE_URL: "http://127.0.0.1:19399",
+    RELAYAUTH_SPONSOR_FEDERATIONS: JSON.stringify({
+      [org]: { sponsorBinding: "oidc", issuer: oidcIssuer, clientId: "chief-fixture" },
+    }),
+  });
+  const admin = (iss: string): HeadersInit => ({
+    Authorization: `Bearer ${generateTestToken({
+      sub: "agent_admin",
+      org,
+      wks: "ws_oidc",
+      sponsorId: "user_admin",
+      sponsorChain: ["user_admin", "agent_admin"],
+      scopes: ["*"],
+      iss,
+    })}`,
+  });
+
+  // With an explicit issuer, bearer auth rejects a token carrying another iss.
+  const wrongIss = await app.request(
+    createTestRequest("POST", "/v1/api-keys", { name: "k", scopes: ["*"] }, admin("https://relayauth.dev")),
+    undefined,
+    app.bindings,
+  );
+  assert.equal(wrongIss.status, 401);
+
+  const keyResponse = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/api-keys",
+      { name: "oidc-bootstrap", scopes: ["relayauth:identity:manage:*"] },
+      admin(relayauthIssuer),
+    ),
+    undefined,
+    app.bindings,
+  );
+  const { key: apiKey } = await assertJsonResponse<ApiKeyCreateResponse>(keyResponse, 201);
+
+  const now = Math.floor(Date.now() / 1000);
+  const idToken = signIdToken({
+    iss: oidcIssuer,
+    sub: "alice",
+    aud: "chief-fixture",
+    iat: now,
+    exp: now + 300,
+  });
+  const proofResponse = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/sponsors/proof",
+      { idToken, intent: "identity.create" },
+      { "x-api-key": apiKey },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const proof = await assertJsonResponse<SponsorProof>(proofResponse, 201);
+  const grantClaims = JSON.parse(
+    Buffer.from(proof.sponsorProof.split(".")[1] ?? "", "base64url").toString("utf8"),
+  ) as { iss: string };
+
+  const discoveryResponse = await app.request(
+    "/.well-known/agent-configuration",
+    undefined,
+    app.bindings,
+  );
+  const discovery = (await discoveryResponse.json()) as { issuer: string };
+
+  const identityResponse = await app.request(
+    createTestRequest(
+      "POST",
+      "/v1/identities",
+      { name: "issuer-agent", sponsorId: proof.sponsorId, sponsorProof: proof.sponsorProof },
+      { "x-api-key": apiKey },
+    ),
+    undefined,
+    app.bindings,
+  );
+  const identity = await assertJsonResponse<CreatedIdentity>(identityResponse, 201);
+  const tokenResponse = await app.request(
+    createTestRequest("POST", "/v1/tokens", { identityId: identity.id }, admin(relayauthIssuer)),
+    undefined,
+    app.bindings,
+  );
+  const { accessToken } = await assertJsonResponse<{ accessToken: string }>(tokenResponse, 201);
+  const minted = JSON.parse(
+    Buffer.from(accessToken.split(".")[1] ?? "", "base64url").toString("utf8"),
+  ) as { iss: string };
+
+  assert.equal(minted.iss, relayauthIssuer);
+  assert.equal(grantClaims.iss, relayauthIssuer);
+  assert.equal(discovery.issuer, relayauthIssuer);
+});

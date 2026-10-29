@@ -10,6 +10,29 @@ export type AppConfig = {
   ALLOWED_ORIGINS?: string;
   RELAYAUTH_SIGNING_KEY_PEM?: string;
   RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?: string;
+  /**
+   * Upcoming signing key (PKCS#8 private or SPKI public PEM). Published in the
+   * JWKS so verifiers cache it before a rotation promotes it; never signs.
+   */
+  RELAYAUTH_SIGNING_KEY_PEM_NEXT?: string;
+  /**
+   * Retired signing key (PKCS#8 private or SPKI public PEM). Stays published in
+   * the JWKS so tokens it signed keep verifying until they expire; never signs.
+   */
+  RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS?: string;
+  /**
+   * `iss` stamped on and required of RelayAuth-issued tokens, and advertised
+   * by discovery. Defaults to "https://relayauth.dev" for back-compat.
+   */
+  RELAYAUTH_ISSUER?: string;
+  /**
+   * Self-host opt-in: exactly "true" lets `POST /v1/tokens/relayhistory-assertion`
+   * accept an http `historyOrigin` on a private IP literal (10/8, 172.16/12,
+   * 192.168/16, fc00::/7) or a private/internal hostname (single label,
+   * `*.svc`, `*.cluster.local`, `*.internal`, `*.local`). Unset/anything else
+   * keeps the hosted rule: https, or http only on loopback.
+   */
+  RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN?: string;
   RELAYAUTH_ENV_STAGE?: string;
   /** JSON object keyed by org id. See SponsorFederationConfig. */
   RELAYAUTH_SPONSOR_FEDERATIONS?: string;

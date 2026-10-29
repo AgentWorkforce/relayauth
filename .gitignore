@@ -26,3 +26,6 @@ packages/observer/.next/
 
 # Agent orchestration briefings (local scaffolding, not source)
 .agent-briefings/
+
+# Self-host smoke/lab secrets (scripts/selfhost-smoke.sh)
+.selfhost/

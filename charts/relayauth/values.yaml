@@ -1,0 +1,108 @@
+# RelayAuth is a single-writer SQLite service: run exactly one replica.
+replicaCount: 1
+
+image:
+  repository: relayauth
+  tag: local
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Public URL of this RelayAuth (discovery endpoints, JWKS URL). Empty means
+# this release's in-cluster Service,
+# http://<fullname>.<namespace>.svc:<service.port> (e.g. release "relayauth" in
+# namespace "auth" -> http://relayauth.auth.svc:8787). Set it explicitly when
+# verifiers reach RelayAuth through another name (ingress, external DNS).
+baseUrl: ""
+# `iss` on every token RelayAuth mints and requires; also the `issuer` that
+# discovery advertises and the sponsor-grant issuer. Verifiers (History, the
+# control plane) must pin the same value. Empty means "use baseUrl", so tokens,
+# discovery and sponsor grants always agree. (The image default with
+# RELAYAUTH_ISSUER unset is the hosted "https://relayauth.dev"; the chart never
+# leaves it unset.)
+issuer: ""
+# Org that owns a newly created bootstrap api key.
+bootstrapApiKeyOrg: org_selfhost
+# Comma-separated CORS origins (optional).
+allowedOrigins: ""
+
+relayhistory:
+  # Let History assertions bind to a plain-http origin on a private IP
+  # (10/8, 172.16/12, 192.168/16, fc00::/7) or an in-cluster/internal name
+  # (single label, *.svc, *.cluster.local, *.internal, *.local), e.g.
+  # http://relayhistory.relayhistory.svc:8080. Public names/IPs still need
+  # https. Sets RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true.
+  allowPrivateHttpOrigin: false
+
+# Pre-created Secret holding keys/secrets (never rendered by this chart).
+# Each entry under secretKeys names a key inside that Secret; set an optional
+# entry to "" to leave it unconfigured. See docs/self-hosting.md.
+existingSecret: relayauth
+secretKeys:
+  internalSecret: internal-secret
+  signingKey: signing-key.pem
+  # Optional cross-check only: the public key is always derived from
+  # signingKey. If set and it does not match, RelayAuth refuses to start.
+  signingKeyPublic: ""
+  signingKeyNext: ""
+  signingKeyPrevious: ""
+  bootstrapApiKey: bootstrap-api-key
+
+# Extra plain environment variables, e.g. rate-limit tuning.
+extraEnv: []
+
+service:
+  type: ClusterIP
+  port: 8787
+
+persistence:
+  enabled: true
+  # Use an existing PVC instead of creating one.
+  existingClaim: ""
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+  size: 1Gi
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 20
+  timeoutSeconds: 5
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

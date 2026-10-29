@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import process from "node:process";
 
 import { serve } from "@hono/node-server";
@@ -19,6 +20,8 @@ import {
   storageOverloadResponse,
   toStorageCapacityExhaustedError,
 } from "./lib/storage-retry.js";
+import { DEFAULT_BOOTSTRAP_API_KEY_ORG, ensureBootstrapApiKey } from "./lib/bootstrap-api-key.js";
+import { assertSigningKeyConfig } from "./lib/signing-keys.js";
 import { apiKeyAuth } from "./middleware/api-key-auth.js";
 import { SponsorOidcService } from "./lib/sponsor-binding.js";
 import auditExport from "./routes/audit-export.js";
@@ -236,6 +239,10 @@ export type StartServerOptions = {
   dbPath?: string;
   storage?: AuthStorage;
   config?: Partial<AppConfig>;
+  /** Raw bootstrap API key; defaults to RELAYAUTH_BOOTSTRAP_API_KEY(_FILE). */
+  bootstrapApiKey?: string;
+  /** Org for a newly created bootstrap key; defaults to RELAYAUTH_BOOTSTRAP_API_KEY_ORG or org_selfhost. */
+  bootstrapApiKeyOrgId?: string;
 };
 
 function isPublicPath(path: string): boolean {
@@ -456,6 +463,33 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   return app;
 }
 
+/**
+ * Read `name` from the environment, falling back to the contents of the file
+ * named by `${name}_FILE` (Kubernetes/Docker secret mounts). A directly set
+ * variable wins over the file. Node-only: never called from createApp().
+ */
+export function readEnvOrFile(
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const direct = env[name];
+  if (direct !== undefined && direct.trim() !== "") {
+    return direct;
+  }
+  const filePath = env[`${name}_FILE`]?.trim();
+  if (!filePath) {
+    return undefined;
+  }
+  try {
+    const contents = readFileSync(filePath, "utf8");
+    return contents.trim() === "" ? undefined : contents;
+  } catch (error) {
+    throw new Error(
+      `${name}_FILE points at an unreadable file: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 export async function startServer(options: StartServerOptions = {}) {
   const port = Number.isFinite(options.port) ? (options.port as number) : 8787;
   let storage: AuthStorage;
@@ -468,7 +502,7 @@ export async function startServer(options: StartServerOptions = {}) {
   }
   const internalSecret =
     options.config?.INTERNAL_SECRET
-    ?? process.env.INTERNAL_SECRET
+    ?? readEnvOrFile("INTERNAL_SECRET")
     ?? ("INTERNAL_SECRET" in storage && typeof storage.INTERNAL_SECRET === "string"
       ? storage.INTERNAL_SECRET
       : "internal-test-secret");
@@ -477,9 +511,20 @@ export async function startServer(options: StartServerOptions = {}) {
     BASE_URL: options.config?.BASE_URL ?? process.env.BASE_URL ?? `http://127.0.0.1:${port}`,
     ALLOWED_ORIGINS: options.config?.ALLOWED_ORIGINS ?? process.env.ALLOWED_ORIGINS,
     RELAYAUTH_SIGNING_KEY_PEM:
-      options.config?.RELAYAUTH_SIGNING_KEY_PEM ?? process.env.RELAYAUTH_SIGNING_KEY_PEM,
+      options.config?.RELAYAUTH_SIGNING_KEY_PEM ?? readEnvOrFile("RELAYAUTH_SIGNING_KEY_PEM"),
     RELAYAUTH_SIGNING_KEY_PEM_PUBLIC:
-      options.config?.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC ?? process.env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC,
+      options.config?.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC
+      ?? readEnvOrFile("RELAYAUTH_SIGNING_KEY_PEM_PUBLIC"),
+    RELAYAUTH_SIGNING_KEY_PEM_NEXT:
+      options.config?.RELAYAUTH_SIGNING_KEY_PEM_NEXT
+      ?? readEnvOrFile("RELAYAUTH_SIGNING_KEY_PEM_NEXT"),
+    RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS:
+      options.config?.RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS
+      ?? readEnvOrFile("RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS"),
+    RELAYAUTH_ISSUER: options.config?.RELAYAUTH_ISSUER ?? process.env.RELAYAUTH_ISSUER,
+    RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN:
+      options.config?.RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN
+      ?? process.env.RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN,
     RELAYAUTH_ENV_STAGE: options.config?.RELAYAUTH_ENV_STAGE ?? process.env.RELAYAUTH_ENV_STAGE,
     RELAYAUTH_SPONSOR_FEDERATIONS:
       options.config?.RELAYAUTH_SPONSOR_FEDERATIONS ?? process.env.RELAYAUTH_SPONSOR_FEDERATIONS,
@@ -496,6 +541,34 @@ export async function startServer(options: StartServerOptions = {}) {
       options.config?.RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS
       ?? process.env.RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS,
   };
+
+  // Refuse to start on a bad signing-key configuration (unsupported PEM type,
+  // or an explicit public key that does not match the private key) rather
+  // than signing with one key while advertising another.
+  await assertSigningKeyConfig(config);
+
+  const bootstrapApiKey = options.bootstrapApiKey ?? readEnvOrFile("RELAYAUTH_BOOTSTRAP_API_KEY");
+  if (bootstrapApiKey) {
+    // Never log the key or its prefix: the record id is enough to find it.
+    const requestedOrg = (options.bootstrapApiKeyOrgId ?? process.env.RELAYAUTH_BOOTSTRAP_API_KEY_ORG)?.trim()
+      || DEFAULT_BOOTSTRAP_API_KEY_ORG;
+    const result = await ensureBootstrapApiKey(storage, bootstrapApiKey, { orgId: requestedOrg });
+    if (result.status === "created" || result.status === "exists") {
+      console.log(`relayauth bootstrap api key ${result.status}`, { id: result.id });
+      if (result.status === "exists" && result.orgMismatch) {
+        console.warn(
+          "relayauth bootstrap api key already exists in a different org than "
+            + "RELAYAUTH_BOOTSTRAP_API_KEY_ORG; it was left unchanged (rotate the key to move it)",
+          { id: result.id, ...result.orgMismatch },
+        );
+      }
+    } else {
+      console.warn(
+        `relayauth bootstrap api key not usable (${result.status}); rotate RELAYAUTH_BOOTSTRAP_API_KEY_FILE to a new value`,
+        { id: result.id },
+      );
+    }
+  }
 
   const app = createApp({
     storage,
@@ -514,5 +587,10 @@ if (import.meta.url === new URL(process.argv[1] ?? "", "file:").href) {
   startServer({
     port: process.env.PORT ? Number.parseInt(process.env.PORT, 10) : undefined,
     dbPath: process.env.RELAYAUTH_DB_PATH ?? process.env.DB_PATH,
+  }).catch((error: unknown) => {
+    console.error(
+      `relayauth failed to start: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exit(1);
   });
 }

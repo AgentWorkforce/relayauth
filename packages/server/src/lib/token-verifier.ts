@@ -1,11 +1,10 @@
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 import { TokenVerifier, type VerifyOptions } from "@relayauth/sdk";
 import type { AppConfig } from "../env.js";
-import { rsaPublicJwkFromPem } from "./jwk.js";
 import { unwrapRelayToken } from "./jwt.js";
-import { keyIdFromPublicJwk } from "./sign-rs256.js";
+import { resolvePublishedSigningKeys, type SigningKeyEnv } from "./signing-keys.js";
 
-type VerifierEnv = Pick<AppConfig, "BASE_URL" | "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC">;
+type VerifierEnv = Pick<AppConfig, "BASE_URL" | "RELAYAUTH_ISSUER"> & SigningKeyEnv;
 type VerifyTokenOptions = Omit<VerifyOptions, "jwksUrl">;
 
 export async function verifyRs256Token(
@@ -13,6 +12,11 @@ export async function verifyRs256Token(
   env: VerifierEnv,
   options: VerifyTokenOptions = {},
 ): Promise<RelayAuthTokenClaims> {
+  // When an operator sets RELAYAUTH_ISSUER, every RelayAuth-signed bearer must
+  // carry it (bearer auth, scope middleware, audit), matching what refresh and
+  // introspection already require. Unset keeps the historical behaviour of not
+  // pinning `iss` on these paths, so hosted deployments see no change.
+  const explicitIssuer = env.RELAYAUTH_ISSUER?.trim();
   const verifier = new TokenVerifier({
     // The relayauth server enforces revocation itself on every request via its
     // own fail-closed denylist (authenticateFromContext -> isBearerTokenInactive,
@@ -21,6 +25,7 @@ export async function verifyRs256Token(
     // here to avoid a spurious `revocation_required` on the issuer's own path.
     // External resource servers using the SDK verifier keep the forced check.
     revocationHandledExternally: true,
+    ...(explicitIssuer ? { issuer: explicitIssuer } : {}),
     ...options,
     jwksUrl: await resolveJwksUrl(env),
   });
@@ -36,18 +41,11 @@ async function resolveJwksUrl(env: VerifierEnv): Promise<string> {
   // throws "Failed to fetch JWKS", breaking ALL RS256 bearer verification
   // (e.g. the admin-bearer api-key mint -> 401 invalid_token). Only fall back to
   // a network fetch when no public key is bound (e.g. local/dev).
-  const publicKeyPem = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
-  if (publicKeyPem) {
-    const keyWithPlaceholderKid = await rsaPublicJwkFromPem(publicKeyPem, "");
-    const jwks = {
-      keys: [
-        {
-          ...keyWithPlaceholderKid,
-          kid: await keyIdFromPublicJwk(keyWithPlaceholderKid),
-        },
-      ],
-    };
-
+  // All published keys (current, next, previous) are accepted, so tokens
+  // signed before a rotation keep verifying while the previous key is bound.
+  const published = await resolvePublishedSigningKeys(env);
+  if (published.length > 0) {
+    const jwks = { keys: published.map((key) => key.jwk) };
     return `data:application/json,${encodeURIComponent(JSON.stringify(jwks))}`;
   }
 

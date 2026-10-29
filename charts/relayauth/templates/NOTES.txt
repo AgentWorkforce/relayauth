@@ -1,0 +1,12 @@
+RelayAuth is running as {{ include "relayauth.fullname" . }} (1 replica, Recreate).
+
+  JWKS:      {{ include "relayauth.baseUrl" . }}/.well-known/jwks.json
+  Issuer:    {{ include "relayauth.issuer" . }}
+  Secret:    {{ .Values.existingSecret }}
+
+Signing keys and the bootstrap api key are read at boot. After changing the
+Secret (key rotation), restart the pod:
+
+  kubectl rollout restart deployment/{{ include "relayauth.fullname" . }}
+
+See docs/self-hosting.md for the rotation runbook.

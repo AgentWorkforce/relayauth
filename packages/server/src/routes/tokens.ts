@@ -24,7 +24,7 @@ import {
   RELAY_PATH_TOKEN_PREFIX,
   wrapRelayToken,
 } from "../lib/jwt.js";
-import { signToken } from "../lib/sign.js";
+import { resolveIssuer, signToken } from "../lib/sign.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { StoredApiKey } from "../storage/api-key-types.js";
@@ -182,7 +182,6 @@ const MAX_OPERATOR_REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 3600;
 const REFRESH_TOKEN_TTL_META_KEY = "refreshTokenTtl";
 const CLOCK_SKEW_SECONDS = 60;
 const MAX_SPONSOR_CHAIN_DEPTH = 10;
-const EXPECTED_ISSUER = "https://relayauth.dev";
 const REFRESH_AUDIENCE = "relayauth";
 const MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS = 3600;
 // A durable, read-only, workspace-scoped access token may live far longer than
@@ -753,7 +752,10 @@ tokens.post("/relayhistory-assertion", async (c) => {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
-  const request = normalizeRelayhistoryAssertionRequest(body);
+  const request = normalizeRelayhistoryAssertionRequest(body, {
+    allowPrivateHttpOrigin:
+      c.env.RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN === "true",
+  });
   if (!request.ok) {
     return c.json({ error: request.error, code: request.code }, request.status);
   }
@@ -1269,7 +1271,7 @@ async function issueTokenPair(
     sponsorId: identity.sponsorId,
     sponsorChain: [...identity.sponsorChain],
     token_type: "access",
-    iss: EXPECTED_ISSUER,
+    iss: resolveIssuer(env),
     aud: options.accessAudience,
     exp: accessExpiresAt,
     iat: issuedAtSeconds,
@@ -1287,7 +1289,7 @@ async function issueTokenPair(
     sponsorId: identity.sponsorId,
     sponsorChain: [...identity.sponsorChain],
     token_type: "refresh",
-    iss: EXPECTED_ISSUER,
+    iss: resolveIssuer(env),
     aud: [REFRESH_AUDIENCE],
     exp: refreshExpiresAt,
     iat: issuedAtSeconds,
@@ -1397,7 +1399,7 @@ async function issueRelayhistoryAssertion(
     sponsorId: options.sponsorId,
     sponsorChain: [options.sponsorId, "agent_relayhistory_assertion"],
     token_type: "access",
-    iss: EXPECTED_ISSUER,
+    iss: resolveIssuer(env),
     // An origin-bound assertion drops the shared audience entirely: a History
     // that only checks `relayhistory` refuses it rather than accepting a token
     // meant for some other History.
@@ -1793,7 +1795,7 @@ async function verifyToken(
   let claims: RelayAuthTokenClaims;
   try {
     claims = await verifyRs256Token(token, env, {
-      issuer: EXPECTED_ISSUER,
+      issuer: resolveIssuer(env),
       ...options,
     });
   } catch (error) {
@@ -1810,7 +1812,7 @@ async function verifyToken(
 
   // Per specs/token-format.md:130-133, verifiers must enforce iss, aud, and
   // temporal claims with a 60 second clock-skew allowance.
-  if (claims.iss !== EXPECTED_ISSUER) {
+  if (claims.iss !== resolveIssuer(env)) {
     return { ok: false, error: "Invalid token" };
   }
 
@@ -1932,6 +1934,7 @@ function normalizeExpiresIn(value: unknown): number {
 
 function normalizeRelayhistoryAssertionRequest(
   value: RelayhistoryAssertionRequest,
+  originPolicy: RelayhistoryOriginPolicy = {},
 ):
   | {
       ok: true;
@@ -1995,6 +1998,7 @@ function normalizeRelayhistoryAssertionRequest(
 
   const historyOrigin = normalizeRelayhistoryAssertionOrigin(
     value.historyOrigin,
+    originPolicy,
   );
   if (!historyOrigin.ok) {
     return {
@@ -2025,16 +2029,87 @@ function normalizeRelayhistoryAssertionRequest(
  */
 const BARE_ORIGIN_SHAPE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s/?#@%\\]+\/?$/u;
 
+type RelayhistoryOriginPolicy = {
+  /**
+   * Self-host opt-in (RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true): also
+   * accept plain http when the host is a private IP literal or a
+   * private/internal hostname. Never a public name or public IP.
+   */
+  allowPrivateHttpOrigin?: boolean;
+};
+
+/**
+ * DNS suffixes that only resolve inside a cluster or private network. Matched
+ * on whole trailing labels, so `history.svc.example.com` (a public name that
+ * merely contains `svc`) is not private.
+ */
+const PRIVATE_HOSTNAME_SUFFIXES = [
+  ".svc",
+  ".svc.cluster.local",
+  ".cluster.local",
+  ".internal",
+  ".local",
+] as const;
+
+/** RFC 1918 private IPv4 literal (10/8, 172.16/12, 192.168/16). */
+function isPrivateIpv4(hostname: string): boolean {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u.exec(hostname);
+  if (!match) {
+    return false;
+  }
+  const [a, b] = [Number(match[1]), Number(match[2])];
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+
+/** Unique local IPv6 literal (fc00::/7), as `URL#hostname` renders it. */
+function isPrivateIpv6(hostname: string): boolean {
+  const match = /^\[([0-9a-f]{1,4}):[0-9a-f:]*\]$/u.exec(hostname);
+  if (!match) {
+    return false;
+  }
+  return (Number.parseInt(match[1]!, 16) & 0xfe00) === 0xfc00;
+}
+
+/**
+ * Private/internal hostname: a single DNS label (in-namespace service name)
+ * or a cluster/private suffix. `URL#hostname` has already lowercased and
+ * punycoded it, and an IPv4 literal never reaches here as a single label
+ * because the URL parser rewrites numeric hosts into dotted-quad form.
+ */
+function isPrivateHostname(hostname: string): boolean {
+  if (hostname.startsWith("[") || /^[\d.]+$/u.test(hostname)) {
+    return false;
+  }
+  if (!hostname.includes(".")) {
+    return true;
+  }
+  return PRIVATE_HOSTNAME_SUFFIXES.some(
+    (suffix) => hostname.endsWith(suffix) && hostname.length > suffix.length,
+  );
+}
+
+function isPrivateHttpHost(hostname: string): boolean {
+  return (
+    isPrivateIpv4(hostname) ||
+    isPrivateIpv6(hostname) ||
+    isPrivateHostname(hostname)
+  );
+}
+
 /**
  * Accepts only a bare origin (`scheme://host[:port]`), https except for
  * loopback development hosts, and returns it in the canonical form
  * `URL#origin` produces so verifiers can compare it byte for byte. An
- * explicit default port (`:443`, or `:80` for http loopback) and Unicode
- * hostnames are accepted and canonicalised. A trailing DNS dot is refused
- * rather than guessed at, since `host.` and `host` are distinct origins.
+ * explicit default port (`:443`, or `:80` for http) and Unicode hostnames
+ * are accepted and canonicalised. A trailing DNS dot is refused rather than
+ * guessed at, since `host.` and `host` are distinct origins.
+ *
+ * With `allowPrivateHttpOrigin` (self-host), http is also accepted for a
+ * private IP literal or a private/internal hostname; see isPrivateHttpHost.
  */
 function normalizeRelayhistoryAssertionOrigin(
   value: unknown,
+  { allowPrivateHttpOrigin = false }: RelayhistoryOriginPolicy = {},
 ):
   | { ok: true; origin?: string }
   | { ok: false; error: string; code: string; status: 400 } {
@@ -2045,8 +2120,9 @@ function normalizeRelayhistoryAssertionOrigin(
   }
   const invalid = {
     ok: false as const,
-    error:
-      "historyOrigin must be an https origin with no path, query, fragment or credentials",
+    error: allowPrivateHttpOrigin
+      ? "historyOrigin must be an https origin, or an http origin on a private or internal host, with no path, query, fragment or credentials"
+      : "historyOrigin must be an https origin with no path, query, fragment or credentials",
     code: "invalid_history_origin",
     status: 400 as const,
   };
@@ -2067,8 +2143,10 @@ function normalizeRelayhistoryAssertionOrigin(
     url.hostname === "localhost" ||
     url.hostname === "127.0.0.1" ||
     url.hostname === "[::1]";
+  const httpAllowed =
+    loopback || (allowPrivateHttpOrigin && isPrivateHttpHost(url.hostname));
   if (
-    (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) ||
+    (url.protocol !== "https:" && !(url.protocol === "http:" && httpAllowed)) ||
     url.username ||
     url.password ||
     url.pathname !== "/" ||

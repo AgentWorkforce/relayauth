@@ -1,11 +1,14 @@
 import type { SponsorBinding, SponsorProofIntent } from "@relayauth/types";
-import { rsaPublicJwkFromPem } from "./jwk.js";
 import {
   encodeBytesAsBase64Url,
-  keyIdFromPublicJwk,
   signCanonicalRs256,
   signRs256,
 } from "./sign-rs256.js";
+import {
+  resolveCurrentPrivateKeyPem,
+  resolveCurrentPublicJwk,
+  resolvePublishedSigningKeys,
+} from "./signing-keys.js";
 import {
   decodeBase64UrlJson,
   decodeBase64UrlToBytes,
@@ -53,6 +56,9 @@ export type SponsorBindingEnv = {
   BASE_URL?: string;
   RELAYAUTH_SIGNING_KEY_PEM?: string;
   RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?: string;
+  RELAYAUTH_SIGNING_KEY_PEM_NEXT?: string;
+  RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS?: string;
+  RELAYAUTH_ISSUER?: string;
   RELAYAUTH_SPONSOR_FEDERATIONS?: string;
 };
 
@@ -276,9 +282,9 @@ export class SponsorOidcService {
     intent: SponsorProofIntent,
     config: Extract<SponsorFederationConfig, { sponsorBinding: "oidc" }>,
   ): Promise<IssuedSponsorProof> {
-    const privateKey = env.RELAYAUTH_SIGNING_KEY_PEM?.trim();
-    const publicKey = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
-    if (!privateKey || !publicKey) {
+    const privateKey = resolveCurrentPrivateKeyPem(env);
+    const publicJwk = privateKey ? await resolveCurrentPublicJwk(env) : undefined;
+    if (!privateKey || !publicJwk) {
       throw configurationError("RelayAuth signing keys are required for sponsor proofs");
     }
     const normalizedIntent = normalizeSponsorProofIntent(intent);
@@ -294,8 +300,7 @@ export class SponsorOidcService {
       MAX_GRANT_TTL_SECONDS,
     );
     const exp = now + ttl;
-    const publicJwk = await rsaPublicJwkFromPem(publicKey, "");
-    const kid = await keyIdFromPublicJwk(publicJwk);
+    const kid = publicJwk.kid;
     const claims: SponsorGrantClaims = {
       iss: sponsorGrantIssuer(env),
       aud: SPONSOR_GRANT_AUDIENCE,
@@ -329,8 +334,10 @@ export class SponsorOidcService {
     expectedSponsorId: string,
     expectedIntent: SponsorProofIntent,
   ): Promise<Extract<SponsorBinding, { mode: "oidc" }>> {
-    const publicKeyPem = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
-    if (!publicKeyPem) {
+    // Any published key (current, next, previous) verifies, so a proof minted
+    // just before a key rotation still completes after it.
+    const publishedKeys = await resolvePublishedSigningKeys(env);
+    if (publishedKeys.length === 0) {
       throw configurationError("RelayAuth public signing key is required for sponsor proofs");
     }
 
@@ -341,12 +348,11 @@ export class SponsorOidcService {
     const [encodedHeader, encodedClaims, encodedSignature] = parts;
     const header = decodeBase64UrlJson<JwtHeader>(encodedHeader);
     const claims = decodeBase64UrlJson<SponsorGrantClaims>(encodedClaims);
-    const publicJwk = await rsaPublicJwkFromPem(publicKeyPem, "");
-    const expectedKid = await keyIdFromPublicJwk(publicJwk);
+    const publicJwk = publishedKeys.find((key) => key.kid === header?.kid)?.jwk;
     if (
       !header
       || header.alg !== "RS256"
-      || header.kid !== expectedKid
+      || !publicJwk
       || (header.typ !== undefined && header.typ !== "JWT")
       || header.crit !== undefined
       || !claims
@@ -394,15 +400,13 @@ export class SponsorOidcService {
     env: SponsorBindingEnv,
     payload: IdentityCreatedLedgerPayload,
   ): Promise<string> {
-    const privateKey = env.RELAYAUTH_SIGNING_KEY_PEM?.trim();
-    const publicKey = env.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC?.trim();
-    if (!privateKey || !publicKey) {
+    const privateKey = resolveCurrentPrivateKeyPem(env);
+    const publicJwk = privateKey ? await resolveCurrentPublicJwk(env) : undefined;
+    if (!privateKey || !publicJwk) {
       throw configurationError("RelayAuth signing keys are required for sponsor binding ledger entries");
     }
 
-    const publicJwk = await rsaPublicJwkFromPem(publicKey, "");
-    const kid = await keyIdFromPublicJwk(publicJwk);
-    return signCanonicalRs256(payload, privateKey, kid);
+    return signCanonicalRs256(payload, privateKey, publicJwk.kid);
   }
 
   async #resolveJwks(
@@ -653,7 +657,9 @@ function validateJwks(value: unknown): JsonWebKeySet {
 }
 
 function sponsorGrantIssuer(env: SponsorBindingEnv): string {
-  return env.BASE_URL?.trim() || "relayauth";
+  // An explicit RELAYAUTH_ISSUER wins; otherwise keep the historical BASE_URL
+  // derived value so existing deployments see no change.
+  return env.RELAYAUTH_ISSUER?.trim() || env.BASE_URL?.trim() || "relayauth";
 }
 
 function assertSecureProviderUrl(value: string, field: string): void {
