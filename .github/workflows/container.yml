@@ -63,6 +63,17 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify the source commit is reviewed on main
+        run: |
+          git fetch --no-tags origin main
+          source_commit=$(git rev-parse "${GITHUB_SHA}^{commit}")
+          if ! git merge-base --is-ancestor "$source_commit" origin/main; then
+            echo "Refusing to publish $source_commit because it is not on main" >&2
+            exit 1
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -113,13 +124,10 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
-      - name: Keep the OSS image public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          gh api --method PATCH
-          /orgs/${{ github.repository_owner }}/packages/container/relayauth
-          -f visibility=public
-
       - name: Record immutable image reference
         run: echo "Published \`${IMAGE}@${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the OSS image is anonymously pullable
+        run: |
+          docker logout ghcr.io
+          docker buildx imagetools inspect "${IMAGE}@${{ steps.build.outputs.digest }}"

@@ -97,6 +97,11 @@ docker pull ghcr.io/agentworkforce/relayauth@sha256:<manifest-digest>
 
 Version and `latest` tags are discovery conveniences only; the standalone Helm
 chart requires a digest so a later tag update cannot change deployed code.
+The package must be public in its GitHub package settings; the release workflow
+removes its registry credentials and verifies an anonymous digest pull before it
+reports success. GitHub creates a new container package as private, so an
+organization owner must make the package public after the first push and rerun
+the initially failing workflow once.
 
 ```sh
 docker build -f docker/Dockerfile -t relayauth:local .
