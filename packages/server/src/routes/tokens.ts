@@ -177,9 +177,12 @@ type RelayhistoryAssertionResponse = {
 const tokens = new Hono<AppEnv>();
 
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 3600;
+const DEFAULT_AGENT_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 24 * 3600;
+const MAX_AGENT_REFRESH_SESSION_TTL_SECONDS = 12 * 3600;
 const MAX_OPERATOR_REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 3600;
 const REFRESH_TOKEN_TTL_META_KEY = "refreshTokenTtl";
+const REFRESH_SESSION_NOT_AFTER_META_KEY = "refreshSessionNotAfter";
 const CLOCK_SKEW_SECONDS = 60;
 const MAX_SPONSOR_CHAIN_DEPTH = 10;
 const EXPECTED_ISSUER = "https://relayauth.dev";
@@ -406,7 +409,7 @@ tokens.post("/agent", async (c) => {
     ? normalizeDurableExpiresIn(body.expiresIn)
     : normalizeAgentExpiresIn(body.expiresIn);
 
-  const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(
+  const refreshTokenTtlSeconds = normalizeAgentRefreshTokenTtl(
     body.refreshTokenTtlSeconds,
   );
   const meta: Record<string, string> = {
@@ -533,7 +536,7 @@ tokens.post("/path", async (c) => {
   const accessExpiresIn = normalizeAgentExpiresIn(
     body.expiresIn ?? body.ttlSeconds,
   );
-  const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(
+  const refreshTokenTtlSeconds = normalizeAgentRefreshTokenTtl(
     body.refreshTokenTtlSeconds,
   );
   const delegationNotAfter = normalizeDelegationNotAfter(
@@ -658,7 +661,7 @@ tokens.post("/workspace-path", async (c) => {
   const accessExpiresIn = normalizeAgentExpiresIn(
     body.expiresIn ?? body.ttlSeconds,
   );
-  const refreshTokenTtlSeconds = normalizeRefreshTokenTtl(
+  const refreshTokenTtlSeconds = normalizeAgentRefreshTokenTtl(
     body.refreshTokenTtlSeconds,
   );
   const delegationNotAfter = normalizeDelegationNotAfter(
@@ -885,7 +888,7 @@ tokens.post("/refresh", async (c) => {
           )
         : normalizeAudience(undefined, identity.scopes),
       accessExpiresIn: isDerivedClaims(verification.claims)
-        ? MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS
+        ? DEFAULT_AGENT_ACCESS_TOKEN_TTL_SECONDS
         : DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
       refreshTokenTtlSeconds: parseMetaRefreshTokenTtl(
         verification.claims.meta,
@@ -1243,22 +1246,40 @@ async function issueTokenPair(
   const sessionId = options.sessionId ?? createSessionId();
   const refreshTtl =
     options.refreshTokenTtlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
+  const runBoundRefresh = options.issueRefreshToken !== false &&
+    (options.meta?.tokenClass === "agent" || options.meta?.tokenClass === "path");
+  // A rotating refresh token must not renew the lifetime of the agent's
+  // session. Older pairs lack this marker, so their current refresh expiry is
+  // the most permissive safe bound when they first rotate through this code.
+  const refreshSessionNotAfter = runBoundRefresh
+    ? parseRefreshSessionNotAfter(options.meta) ??
+      options.previousRefreshToken?.expiresAt ??
+      issuedAtSeconds + Math.min(refreshTtl, MAX_AGENT_REFRESH_SESSION_TTL_SECONDS)
+    : undefined;
+  const effectiveNotAfter = refreshSessionNotAfter === undefined
+    ? options.expiresNotAfter
+    : capExpiry(refreshSessionNotAfter, options.expiresNotAfter);
   // An indefinite key stamps a fixed far-future exp directly; every other token
   // uses the normal TTL computation (and delegation-horizon cap).
   const accessExpiresAt =
     options.accessExpiresAtOverride ??
-    capExpiry(issuedAtSeconds + options.accessExpiresIn, options.expiresNotAfter);
+    capExpiry(issuedAtSeconds + options.accessExpiresIn, effectiveNotAfter);
   const refreshExpiresAt = capExpiry(
     issuedAtSeconds + refreshTtl,
-    options.expiresNotAfter,
+    effectiveNotAfter,
   );
   // Embed refreshTokenTtl in meta so rotation (/tokens/refresh) can reissue
   // the same TTL without the caller needing to re-supply it each time.
   const mergedMeta: Record<string, string> | undefined =
-    options.refreshTokenTtlSeconds !== undefined
+    options.refreshTokenTtlSeconds !== undefined || runBoundRefresh
       ? {
           ...(options.meta ?? {}),
-          [REFRESH_TOKEN_TTL_META_KEY]: String(options.refreshTokenTtlSeconds),
+          ...(options.refreshTokenTtlSeconds !== undefined
+            ? { [REFRESH_TOKEN_TTL_META_KEY]: String(options.refreshTokenTtlSeconds) }
+            : {}),
+          ...(refreshSessionNotAfter !== undefined
+            ? { [REFRESH_SESSION_NOT_AFTER_META_KEY]: String(refreshSessionNotAfter) }
+            : {}),
         }
       : options.meta;
   const accessClaims: RelayAuthTokenClaims = {
@@ -2271,7 +2292,7 @@ function capExpiry(expiresAt: number, notAfter: number | undefined): number {
 
 function normalizeAgentExpiresIn(value: unknown): number {
   return Math.min(
-    normalizeExpiresIn(value),
+    normalizeExpiresIn(value ?? DEFAULT_AGENT_ACCESS_TOKEN_TTL_SECONDS),
     MAX_AGENT_ACCESS_TOKEN_TTL_SECONDS,
   );
 }
@@ -2398,6 +2419,22 @@ function normalizeRefreshTokenTtl(value: unknown): number | undefined {
   }
 
   return Math.min(Math.floor(parsed), MAX_OPERATOR_REFRESH_TOKEN_TTL_SECONDS);
+}
+
+function normalizeAgentRefreshTokenTtl(value: unknown): number {
+  return Math.min(
+    normalizeRefreshTokenTtl(value) ?? MAX_AGENT_REFRESH_SESSION_TTL_SECONDS,
+    MAX_AGENT_REFRESH_SESSION_TTL_SECONDS,
+  );
+}
+
+function parseRefreshSessionNotAfter(
+  meta: Record<string, string> | undefined,
+): number | undefined {
+  const value = meta?.[REFRESH_SESSION_NOT_AFTER_META_KEY];
+  if (!value || !/^\d+$/u.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function parseMetaRefreshTokenTtl(
