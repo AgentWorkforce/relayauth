@@ -87,6 +87,22 @@ so turn it on only where History is reached over a trusted private network.
 
 ## Docker
 
+Release images are published for Linux amd64 and arm64 at
+`ghcr.io/agentworkforce/relayauth`. Production deployments should use the
+immutable manifest digest reported by the container release workflow:
+
+```sh
+docker pull ghcr.io/agentworkforce/relayauth@sha256:<manifest-digest>
+```
+
+Version and `latest` tags are discovery conveniences only; the standalone Helm
+chart requires a digest so a later tag update cannot change deployed code.
+The package must be public in its GitHub package settings; the release workflow
+removes its registry credentials and verifies an anonymous digest pull before it
+reports success. GitHub creates a new container package as private, so an
+organization owner must make the package public after the first push and rerun
+the initially failing workflow once.
+
 ```sh
 docker build -f docker/Dockerfile -t relayauth:local .
 docker run -d --name relayauth -p 127.0.0.1:8787:8787 \
