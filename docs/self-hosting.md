@@ -85,6 +85,109 @@ before it becomes the `aud`. `https` rules are unchanged. The flag widens only
 which http hosts are accepted. It does not make a public http origin acceptable,
 so turn it on only where History is reached over a trusted private network.
 
+### Migration assertions
+
+A one-time export (for example, uploading historical sessions to an ingest
+API under each original user's identity) must not use the History assertion
+key: that key mints for any `orgId` and `sponsorId` named in the request body.
+`POST /v1/tokens/migration-assertion` is the narrow alternative. It mints only
+under a **migration grant** that an org administrator creates first.
+
+**1. Create a dedicated key.** `POST /v1/api-keys` with
+`scopes: ["relayauth:assertion:create:migration"]` and no other scope. A key
+that also carries any other scope, a wildcard such as
+`relayauth:assertion:create:*`, or a workspace token is refused as the grant's
+key.
+
+**2. Create the grant.** `POST /v1/migration-grants`, scope
+`relayauth:api-key:manage:*` (bearer or `x-api-key`):
+
+```json
+{
+  "apiKeyId": "<the dedicated key's id>",
+  "planDigest": "<sha-256 of the export plan, 64 lowercase hex>",
+  "audience": "https://ingest.example.com",
+  "allowedUserIds": ["user_a", "user_b"],
+  "notAfter": "2026-11-05T00:00:00Z"
+}
+```
+
+- The key must exist in the caller's org and be unrevoked.
+- `audience` is a bare `https` origin, canonicalised as for `historyOrigin`.
+  Plain `http` is accepted only on a private host and only with
+  `RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true`; loopback `http` is not
+  accepted without the flag.
+- `allowedUserIds` lists 1 to 1000 users. Every one must be an **active human
+  identity of the caller's org** in RelayAuth, or the grant is refused with
+  `source_user_not_found`, `source_user_org_mismatch`, `source_user_not_human`
+  or `source_user_inactive` and the offending `userId`.
+- `notAfter` is in the future and at most 7 days away.
+
+The response (201) is the grant: `grantId`, `orgId`, `apiKeyId`,
+`planDigest`, `audience`, `allowedUserIds`, `notAfter`, `createdBy`,
+`createdAt`, `revokedAt` (null). `POST /v1/migration-grants/:grantId/revoke`
+(same scope, same org) revokes it; a second revoke is a 409.
+
+**3. Mint.** `POST /v1/tokens/migration-assertion` with header `x-api-key` set
+to the dedicated key (a bearer token carrying the scope is refused):
+
+```json
+{
+  "grantId": "mgr_...",
+  "sourceUserId": "user_a",
+  "workspaceId": "ws_...",
+  "nonce": "16-128 chars of A-Za-z0-9_-",
+  "expiresIn": 60
+}
+```
+
+The grant must belong to the key's org and name this key, be unrevoked and
+before `notAfter`, and list `sourceUserId`, which must still be an active human
+identity of the grant's org. `expiresIn` is 1 to 60 seconds (default 60), and
+`exp` never passes the grant's `notAfter`. The response (201) is
+`{ accessToken, accessTokenExpiresAt, tokenType: "Bearer" }`, with no refresh
+token. The token's claims are `sub: agent_relayhistory_migration`, `org` = the
+grant's org, `wks` = `workspaceId`, `sponsorId` = `sourceUserId`,
+`sponsorChain: [sourceUserId, sub]`, `scopes: ["rth:sync"]`,
+`aud: [grant audience]`, `token_type: access`, `jti`, `sid`, and `meta` with
+`tokenClass: "migration_assertion"`, `grantId`, `planDigest`, `nonce`,
+`sourceUserId`, `actorId`, `actorOrgId` and `workspaceId`.
+
+Grant creation, revocation and every mint are written to the audit log with
+the record they produce: `migration_grant.created`, `migration_grant.revoked`,
+and `token.issued` on resource `migration-assertion`. Every refusal after the
+caller authenticates is also audited, with `result: denied` and the refusal
+code, in the caller's org.
+
+#### Threat model
+
+- **What RelayAuth guarantees.** Only the one key a grant names can mint under
+  it; never for another org; only for users the grant lists who are, at mint
+  time, active human identities of the grant's org; only for the grant's one
+  audience, with only `rth:sync`, for at most 60 seconds and never past the
+  grant's deadline. A History verifier that checks `aud` refuses a migration
+  assertion, and neither assertion key can call the other endpoint.
+- **Fail closed on users.** A user RelayAuth has no identity for cannot be
+  migrated: there is no fallback to the allow-list alone. Retiring,
+  suspending or deleting the identity after the grant stops further mints for
+  that user. Users that exist only in Cloud must be created as RelayAuth human
+  identities before they can be listed.
+- **Replay is the verifier's job.** RelayAuth does not record `jti` or `nonce`
+  consumption. The ingest service must accept each `jti` (and `nonce`) once,
+  check `aud`, `exp`, `iss` and the signature, and should check that
+  `meta.planDigest` matches the plan it expects.
+- **Revocation.** Revoking a grant or its key stops new mints. Assertions
+  already issued stay valid until they expire, 60 seconds at most.
+- **Not bound by the grant.** `workspaceId` is the caller's choice within the
+  grant's org; the verifier decides whether that user may write to that
+  workspace. A leaked dedicated key can mint for every listed user until the
+  grant expires or is revoked, so keep grants short and revoke them when the
+  export finishes.
+- **Disclosure.** The refusal codes distinguish an unknown user from one in
+  another org, so a grant administrator can learn whether an identity id
+  exists elsewhere. Identity ids are random and the caller already needs the
+  org's api-key management scope.
+
 ## Docker
 
 Release images are published for Linux amd64 and arm64 at

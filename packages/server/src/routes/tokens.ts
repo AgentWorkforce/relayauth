@@ -14,7 +14,11 @@ import {
   generateApiKey,
   WORKSPACE_TOKEN_PREFIX,
 } from "../lib/api-keys.js";
-import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
+import {
+  authenticateAndAuthorizeFromContext,
+  authenticateFromContext,
+  authorizeClaims,
+} from "../lib/auth.js";
 import {
   scheduleDeferredTask,
   type DeferredTaskScheduler,
@@ -24,6 +28,15 @@ import {
   RELAY_PATH_TOKEN_PREFIX,
   wrapRelayToken,
 } from "../lib/jwt.js";
+import {
+  auditMetadata,
+  auditValue,
+  checkMigrationSourceUser,
+  isMigrationUserId,
+  MIGRATION_ASSERTION_SCOPE,
+  MIGRATION_ASSERTION_SUBJECT,
+  writeMigrationDenialAudit,
+} from "../lib/migration-grants.js";
 import { resolveIssuer, signToken } from "../lib/sign.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
@@ -33,6 +46,7 @@ import {
   type AuditLogWriteEntry,
   type AuthStorage,
   type IssuedTokenRecord,
+  type MigrationGrant,
   type StoredTokenRecord,
 } from "../storage/index.js";
 
@@ -101,6 +115,14 @@ type RelayhistoryAssertionRequest = {
    * History. Omitted: the legacy shared `relayhistory` audience.
    */
   historyOrigin?: unknown;
+};
+
+type MigrationAssertionRequest = {
+  grantId?: unknown;
+  sourceUserId?: unknown;
+  workspaceId?: unknown;
+  nonce?: unknown;
+  expiresIn?: unknown;
 };
 
 type RevokeTokenRequest = {
@@ -174,6 +196,8 @@ type RelayhistoryAssertionResponse = {
   tokenType: "Bearer";
 };
 
+type MigrationAssertionResponse = RelayhistoryAssertionResponse;
+
 const tokens = new Hono<AppEnv>();
 
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 3600;
@@ -210,6 +234,11 @@ const RELAYHISTORY_ASSERTION_SCOPE = "relayauth:assertion:create:relayhistory";
 const RELAYHISTORY_ASSERTION_AUDIENCE = "relayhistory";
 const MAX_RELAYHISTORY_ASSERTION_TTL_SECONDS = 60;
 const RELAYHISTORY_ASSERTION_SCOPES = ["rth:read", "rth:sync"] as const;
+const MAX_MIGRATION_ASSERTION_TTL_SECONDS = 60;
+// A migration assertion uploads history and nothing else.
+const MIGRATION_ASSERTION_SCOPES = ["rth:sync"] as const;
+const MIGRATION_ASSERTION_NONCE_SHAPE = /^[A-Za-z0-9_-]{16,128}$/u;
+const MAX_MIGRATION_WORKSPACE_ID_LENGTH = 256;
 
 tokens.post("/", async (c) => {
   const auth = await authenticateAndAuthorizeFromContext(
@@ -773,6 +802,125 @@ tokens.post("/relayhistory-assertion", async (c) => {
   });
 
   return c.json<RelayhistoryAssertionResponse>(assertion, 201);
+});
+
+tokens.post("/migration-assertion", async (c) => {
+  const auth = await authenticateFromContext(c);
+  if (!auth.ok) {
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
+  }
+
+  const storage = c.get("storage");
+  const body = await parseJsonObjectBody<MigrationAssertionRequest>(c.req.raw);
+  // Every refusal past authentication is audited against the caller's org,
+  // never the grant's, so a caller cannot write into another org's log.
+  const refuse = async (
+    error: string,
+    code: string,
+    status: 400 | 403 | 404 | 501,
+  ) => {
+    await writeMigrationDenialAudit(storage, {
+      action: "token.issued",
+      identityId: auth.claims.sub,
+      orgId: auth.claims.org,
+      resource: "migration-assertion",
+      metadata: auditMetadata({
+        reason: code,
+        grantId: auditValue(body?.grantId),
+        sourceUserId: auditValue(body?.sourceUserId),
+        workspaceId: auditValue(body?.workspaceId),
+      }),
+    });
+    return c.json({ error, code }, status);
+  };
+
+  const authz = authorizeClaims(auth.claims, MIGRATION_ASSERTION_SCOPE, matchScope);
+  if (!authz.ok) {
+    return refuse(authz.error, authz.code, authz.status);
+  }
+
+  // Only an operator API key presented directly: not a bearer token carrying
+  // the scope, and not a workspace token (which also arrives via the api-key
+  // path). The key must also name the scope literally rather than through a
+  // wildcard; grants bind keys whose only scope is this one.
+  if (
+    c.get("apiKeyVia") !== "api_key" ||
+    auth.claims.meta?.apiKeyKind !== "api_key" ||
+    !auth.claims.meta?.apiKeyId ||
+    !auth.claims.scopes.includes(MIGRATION_ASSERTION_SCOPE)
+  ) {
+    return refuse(
+      "migration assertion mint requires a dedicated api key",
+      "assertion_key_required",
+      403,
+    );
+  }
+
+  if (!storage.migrationGrants) {
+    return refuse(
+      "migration grants are not supported by this storage backend",
+      "migration_grants_unsupported",
+      501,
+    );
+  }
+
+  if (!body) {
+    return refuse("Invalid JSON body", "invalid_request", 400);
+  }
+
+  const request = normalizeMigrationAssertionRequest(body);
+  if (!request.ok) {
+    return refuse(request.error, request.code, request.status);
+  }
+
+  // A grant in another org reads as absent, the same as an unknown id.
+  const grant = await storage.migrationGrants.get(request.grantId);
+  if (!grant || grant.orgId !== auth.claims.org) {
+    return refuse("migration_grant_not_found", "migration_grant_not_found", 404);
+  }
+  if (grant.apiKeyId !== auth.claims.meta.apiKeyId) {
+    return refuse(
+      "migration grant is bound to a different api key",
+      "migration_grant_key_mismatch",
+      403,
+    );
+  }
+  if (grant.revokedAt) {
+    return refuse("migration grant is revoked", "migration_grant_revoked", 403);
+  }
+  if (Date.now() >= Date.parse(grant.notAfter)) {
+    return refuse("migration grant has expired", "migration_grant_expired", 403);
+  }
+  if (!grant.allowedUserIds.includes(request.sourceUserId)) {
+    return refuse(
+      "source user is not allowed by this migration grant",
+      "source_user_not_allowed",
+      403,
+    );
+  }
+  const sourceUser = await checkMigrationSourceUser(
+    storage,
+    grant.orgId,
+    request.sourceUserId,
+  );
+  if (!sourceUser.ok) {
+    return refuse(sourceUser.error, sourceUser.code, sourceUser.status);
+  }
+
+  const assertion = await issueMigrationAssertion(storage, c.env, {
+    grant,
+    sourceUserId: request.sourceUserId,
+    workspaceId: request.workspaceId,
+    nonce: request.nonce,
+    expiresIn: request.expiresIn,
+    actorId: auth.claims.sub,
+    actorOrgId: auth.claims.org,
+  });
+  if (!assertion) {
+    return refuse("migration grant has expired", "migration_grant_expired", 403);
+  }
+
+  return c.json<MigrationAssertionResponse>(assertion, 201);
 });
 
 tokens.post("/refresh", async (c) => {
@@ -1442,6 +1590,95 @@ async function issueRelayhistoryAssertion(
   };
 }
 
+/**
+ * Returns null when the grant's deadline leaves no whole second for the
+ * assertion: its exp never outlives the grant's notAfter.
+ */
+async function issueMigrationAssertion(
+  storage: AuthStorage,
+  env: AppEnv["Bindings"],
+  options: {
+    grant: MigrationGrant;
+    sourceUserId: string;
+    workspaceId: string;
+    nonce: string;
+    expiresIn: number;
+    actorId: string;
+    actorOrgId: string;
+  },
+): Promise<MigrationAssertionResponse | null> {
+  const issuedAtSeconds = Math.floor(Date.now() / 1000);
+  const expiresAtSeconds = Math.min(
+    issuedAtSeconds + options.expiresIn,
+    Math.floor(Date.parse(options.grant.notAfter) / 1000),
+  );
+  if (expiresAtSeconds <= issuedAtSeconds) {
+    return null;
+  }
+
+  const sessionId = createSessionId();
+  const scopes = [...MIGRATION_ASSERTION_SCOPES];
+  const claims: RelayAuthTokenClaims = {
+    sub: MIGRATION_ASSERTION_SUBJECT,
+    org: options.grant.orgId,
+    wks: options.workspaceId,
+    scopes,
+    sponsorId: options.sourceUserId,
+    sponsorChain: [options.sourceUserId, MIGRATION_ASSERTION_SUBJECT],
+    token_type: "access",
+    iss: resolveIssuer(env),
+    // Only the grant's ingest origin; never the shared `relayhistory`
+    // audience, so a History verifier does not accept a migration assertion.
+    aud: [options.grant.audience],
+    exp: expiresAtSeconds,
+    iat: issuedAtSeconds,
+    jti: createTokenId(),
+    sid: sessionId,
+    meta: {
+      tokenClass: "migration_assertion",
+      grantId: options.grant.grantId,
+      planDigest: options.grant.planDigest,
+      // Single-use consumption of jti and nonce is the verifier's job.
+      nonce: options.nonce,
+      sourceUserId: options.sourceUserId,
+      actorId: options.actorId,
+      actorOrgId: options.actorOrgId,
+      workspaceId: options.workspaceId,
+    },
+  };
+
+  const accessToken = await signToken(claims, env);
+  await storage.tokens.persistIssuedWithAudit({
+    token: toIssuedTokenRecord(claims.sub, claims),
+    auditEntry: {
+      id: crypto.randomUUID(),
+      action: "token.issued",
+      identityId: options.actorId,
+      orgId: options.grant.orgId,
+      workspaceId: options.workspaceId,
+      plane: "relayauth",
+      resource: "migration-assertion",
+      result: "allowed",
+      metadata: {
+        tokenId: claims.jti,
+        actorOrgId: options.actorOrgId,
+        grantId: options.grant.grantId,
+        planDigest: options.grant.planDigest,
+        sourceUserId: options.sourceUserId,
+        nonce: options.nonce,
+        grantedScopes: JSON.stringify(scopes),
+      },
+      timestamp: new Date().toISOString(),
+    },
+  });
+
+  return {
+    accessToken,
+    accessTokenExpiresAt: new Date(claims.exp * 1000).toISOString(),
+    tokenType: "Bearer",
+  };
+}
+
 function toIssuedTokenRecord(
   identityId: string,
   claims: RelayAuthTokenClaims,
@@ -2020,6 +2257,87 @@ function normalizeRelayhistoryAssertionRequest(
   };
 }
 
+function normalizeMigrationAssertionRequest(
+  value: MigrationAssertionRequest,
+):
+  | {
+      ok: true;
+      grantId: string;
+      sourceUserId: string;
+      workspaceId: string;
+      nonce: string;
+      expiresIn: number;
+    }
+  | { ok: false; error: string; code: string; status: 400 } {
+  const grantId = normalizeOptionalString(value.grantId);
+  if (!grantId) {
+    return {
+      ok: false,
+      error: "grantId is required",
+      code: "grantId_required",
+      status: 400,
+    };
+  }
+
+  if (!isMigrationUserId(value.sourceUserId)) {
+    return {
+      ok: false,
+      error: "sourceUserId must be a user id",
+      code: "sourceUserId_required",
+      status: 400,
+    };
+  }
+
+  const workspaceId = normalizeOptionalString(value.workspaceId);
+  if (!workspaceId || workspaceId.length > MAX_MIGRATION_WORKSPACE_ID_LENGTH) {
+    return {
+      ok: false,
+      error: "workspaceId is required",
+      code: "workspaceId_required",
+      status: 400,
+    };
+  }
+
+  if (
+    typeof value.nonce !== "string" ||
+    !MIGRATION_ASSERTION_NONCE_SHAPE.test(value.nonce)
+  ) {
+    return {
+      ok: false,
+      error: "nonce must be 16 to 128 characters of A-Z, a-z, 0-9, _ or -",
+      code: "invalid_nonce",
+      status: 400,
+    };
+  }
+
+  let expiresIn = MAX_MIGRATION_ASSERTION_TTL_SECONDS;
+  if (value.expiresIn !== undefined && value.expiresIn !== null) {
+    if (
+      typeof value.expiresIn !== "number" ||
+      !Number.isInteger(value.expiresIn) ||
+      value.expiresIn <= 0 ||
+      value.expiresIn > MAX_MIGRATION_ASSERTION_TTL_SECONDS
+    ) {
+      return {
+        ok: false,
+        error: `expiresIn must be an integer between 1 and ${MAX_MIGRATION_ASSERTION_TTL_SECONDS} seconds`,
+        code: "invalid_expires_in",
+        status: 400,
+      };
+    }
+    expiresIn = value.expiresIn;
+  }
+
+  return {
+    ok: true,
+    grantId,
+    sourceUserId: value.sourceUserId,
+    workspaceId,
+    nonce: value.nonce,
+    expiresIn,
+  };
+}
+
 /**
  * Raw shape of a bare origin: `scheme://authority` with at most one trailing
  * slash. The authority may not contain userinfo (`@`), percent escapes, a
@@ -2107,7 +2425,7 @@ function isPrivateHttpHost(hostname: string): boolean {
  * With `allowPrivateHttpOrigin` (self-host), http is also accepted for a
  * private IP literal or a private/internal hostname; see isPrivateHttpHost.
  */
-function normalizeRelayhistoryAssertionOrigin(
+export function normalizeRelayhistoryAssertionOrigin(
   value: unknown,
   { allowPrivateHttpOrigin = false }: RelayhistoryOriginPolicy = {},
 ):

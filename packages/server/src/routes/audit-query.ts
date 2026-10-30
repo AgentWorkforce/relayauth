@@ -79,6 +79,8 @@ export const AUDIT_ACTIONS = new Set<AuditAction>([
   "policy.updated",
   "policy.deleted",
   "key.rotated",
+  "migration_grant.created",
+  "migration_grant.revoked",
   "budget.exceeded",
   "budget.alert",
   "scope.escalation_denied",

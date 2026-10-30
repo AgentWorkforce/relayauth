@@ -635,6 +635,52 @@ export interface AttestationStorage {
   ): Promise<AttestationLedgerEntry[]>;
 }
 
+/**
+ * Authorization record behind `POST /v1/tokens/migration-assertion`: one
+ * dedicated API key in one organization may mint short-lived assertions for
+ * the listed source users, bound to one export plan and one ingest origin,
+ * until `notAfter` or revocation, whichever comes first.
+ */
+export type MigrationGrant = {
+  grantId: string;
+  orgId: string;
+  apiKeyId: string;
+  /** SHA-256 of the export plan, 64 lowercase hex characters. */
+  planDigest: string;
+  /** The one ingest origin the assertions are minted for (their `aud`). */
+  audience: string;
+  allowedUserIds: string[];
+  notAfter: string;
+  createdBy: string;
+  createdAt: string;
+  revokedAt?: string;
+};
+
+export type CreateMigrationGrantWithAuditInput = {
+  grant: MigrationGrant;
+  auditEntry: AuditLogWriteEntry;
+};
+
+export type RevokeMigrationGrantWithAuditInput = {
+  grantId: string;
+  /** The grant is revoked only when it belongs to this organization. */
+  orgId: string;
+  revokedAt: string;
+  auditEntry: AuditLogWriteEntry;
+};
+
+export interface MigrationGrantStorage {
+  /** Persists the grant and its audit entry in one transaction. */
+  createWithAudit(input: CreateMigrationGrantWithAuditInput): Promise<MigrationGrant>;
+  get(grantId: string): Promise<MigrationGrant | null>;
+  /**
+   * Stamps revoked_at and writes the audit entry in one transaction. Throws
+   * StorageError 404 `migration_grant_not_found` when the grant does not exist
+   * in `orgId`, and 409 `migration_grant_revoked` when it is already revoked.
+   */
+  revokeWithAudit(input: RevokeMigrationGrantWithAuditInput): Promise<MigrationGrant>;
+}
+
 export interface AuthStorage {
   identities: IdentityStorage;
   tokens: TokenStorage;
@@ -646,6 +692,12 @@ export interface AuthStorage {
   contexts: ContextStorage;
   apiKeys: ApiKeyStorage;
   attestations: AttestationStorage;
+  /**
+   * Optional so external adapters can adopt it incrementally; when absent the
+   * migration-grant and migration-assertion routes refuse with 501. The
+   * Node/SQLite implementation always provides it.
+   */
+  migrationGrants?: MigrationGrantStorage;
 }
 
 export class StorageError extends Error {
