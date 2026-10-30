@@ -43,6 +43,7 @@ import type {
   AuthStorage,
   ContextStorage,
   CreateAuditWebhookInput,
+  CreateMigrationGrantWithAuditInput,
   DashboardAuditCounts,
   DashboardAuditQuery,
   DuplicateIdentityRecord,
@@ -55,9 +56,12 @@ import type {
   IssuedTokenRotationAudit,
   IssuedTokenRecord,
   ListIdentitiesOptions,
+  MigrationGrant,
+  MigrationGrantStorage,
   OrganizationContextRecord,
   PolicyStorage,
   PolicyUpdate,
+  RevokeMigrationGrantWithAuditInput,
   RevokedTokenAudit,
   RevokedTokenGroupsAudit,
   RevocationStorage,
@@ -460,6 +464,29 @@ const REDEEM_ATTESTATION_GRANT_SQL = `
   UPDATE attestation_grants
   SET redeemed_at = ?
   WHERE jti = ? AND redeemed_at IS NULL
+`;
+
+const INSERT_MIGRATION_GRANT_SQL = `
+  INSERT INTO migration_grants (
+    grant_id, org_id, api_key_id, plan_digest, audience, allowed_users_json,
+    not_after, created_by, created_at, revoked_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+const SELECT_MIGRATION_GRANT_SQL = `
+  SELECT
+    grant_id, org_id, api_key_id, plan_digest, audience, allowed_users_json,
+    not_after, created_by, created_at, revoked_at
+  FROM migration_grants
+  WHERE grant_id = ?
+  LIMIT 1
+`;
+
+const REVOKE_MIGRATION_GRANT_SQL = `
+  UPDATE migration_grants
+  SET revoked_at = ?
+  WHERE grant_id = ? AND org_id = ? AND revoked_at IS NULL
 `;
 
 const SELECT_LAST_ATTESTATION_LEDGER_ENTRY_SQL = `
@@ -878,6 +905,18 @@ type AttestationGrantRow = {
   late?: number | boolean | null;
   created_at?: string;
 };
+type MigrationGrantRow = {
+  grant_id?: string;
+  org_id?: string;
+  api_key_id?: string;
+  plan_digest?: string;
+  audience?: string;
+  allowed_users_json?: string | null;
+  not_after?: string;
+  created_by?: string;
+  created_at?: string;
+  revoked_at?: string | null;
+};
 type AttestationLedgerRow = {
   seq?: number | string | null;
   org_id?: string;
@@ -1009,6 +1048,7 @@ type MemoryState = {
   tokens: Map<string, MemoryTokenRecord>;
   revokedTokens: Map<string, RevokedTokenRecord>;
   attestations: MemoryAttestationState;
+  migrationGrants: Map<string, MigrationGrant>;
 };
 
 type BackendContext =
@@ -1038,6 +1078,7 @@ export function createSqliteStorage(
     policies: new SqlitePolicyStorage(provider),
     apiKeys: new SqliteApiKeyStorage(provider),
     attestations: new SqliteAttestationStorage(provider),
+    migrationGrants: new SqliteMigrationGrantStorage(provider),
     audit: new SqliteAuditStorage(provider),
     auditWebhooks: new SqliteAuditWebhookStorage(provider),
     contexts: new SqliteContextStorage(provider),
@@ -2924,6 +2965,106 @@ class SqliteAttestationStorage implements AttestationStorage {
   }
 }
 
+class SqliteMigrationGrantStorage implements MigrationGrantStorage {
+  constructor(private readonly provider: BackendProvider) {}
+
+  async createWithAudit(
+    input: CreateMigrationGrantWithAuditInput,
+  ): Promise<MigrationGrant> {
+    const grant = normalizeMigrationGrant(input.grant);
+    const auditEntry = normalizeAuditWriteEntry(input.auditEntry);
+    if (grant.revokedAt) {
+      throw new Error("a migration grant cannot be created revoked");
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      if (backend.state.migrationGrants.has(grant.grantId)) {
+        throw new StorageError("migration_grant_already_exists", 409, "migration_grant_already_exists");
+      }
+      backend.state.migrationGrants.set(grant.grantId, cloneMigrationGrant(grant));
+      backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return cloneMigrationGrant(grant);
+    }
+
+    beginSqliteTransaction(backend.db);
+    try {
+      backend.db
+        .prepare(INSERT_MIGRATION_GRANT_SQL)
+        .run(...toMigrationGrantParams(grant));
+      backend.db
+        .prepare(INSERT_AUDIT_LOG_SQL)
+        .run(...toAuditParams(auditEntry));
+      commitSqliteTransaction(backend.db);
+      return cloneMigrationGrant(grant);
+    } catch (error) {
+      rollbackSqliteTransaction(backend.db);
+      throw error;
+    }
+  }
+
+  async get(grantId: string): Promise<MigrationGrant | null> {
+    const normalizedGrantId = normalizeOptionalString(grantId);
+    if (!normalizedGrantId) {
+      return null;
+    }
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const grant = backend.state.migrationGrants.get(normalizedGrantId);
+      return grant ? cloneMigrationGrant(grant) : null;
+    }
+
+    return hydrateMigrationGrant(
+      backend.db
+        .prepare<MigrationGrantRow>(SELECT_MIGRATION_GRANT_SQL)
+        .get(normalizedGrantId),
+    );
+  }
+
+  async revokeWithAudit(
+    input: RevokeMigrationGrantWithAuditInput,
+  ): Promise<MigrationGrant> {
+    const grantId = requireString(input.grantId, "grantId is required");
+    const orgId = requireString(input.orgId, "orgId is required");
+    const revokedAt = normalizeTimestamp(input.revokedAt);
+    const auditEntry = normalizeAuditWriteEntry(input.auditEntry);
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const grant = backend.state.migrationGrants.get(grantId) ?? null;
+      assertMigrationGrantCanRevoke(grant, orgId);
+      const revoked = cloneMigrationGrant({ ...grant!, revokedAt });
+      backend.state.migrationGrants.set(grantId, revoked);
+      backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
+      backend.state.auditLogs.sort(compareAuditRecordDesc);
+      return cloneMigrationGrant(revoked);
+    }
+
+    beginSqliteTransaction(backend.db);
+    try {
+      const grant = hydrateMigrationGrant(
+        backend.db
+          .prepare<MigrationGrantRow>(SELECT_MIGRATION_GRANT_SQL)
+          .get(grantId),
+      );
+      assertMigrationGrantCanRevoke(grant, orgId);
+      backend.db
+        .prepare(REVOKE_MIGRATION_GRANT_SQL)
+        .run(revokedAt, grantId, orgId);
+      backend.db
+        .prepare(INSERT_AUDIT_LOG_SQL)
+        .run(...toAuditParams(auditEntry));
+      commitSqliteTransaction(backend.db);
+      return cloneMigrationGrant({ ...grant!, revokedAt });
+    } catch (error) {
+      rollbackSqliteTransaction(backend.db);
+      throw error;
+    }
+  }
+}
+
 class SqliteRoleStorage implements RoleStorage {
   constructor(private readonly provider: BackendProvider) {}
 
@@ -3790,6 +3931,85 @@ function assertFinalizeEntryMatchesGrant(
   }
 }
 
+function normalizeMigrationGrant(input: MigrationGrant): MigrationGrant {
+  const allowedUserIds = normalizeRequiredStringArray(
+    input.allowedUserIds,
+    "allowedUserIds is required",
+  );
+  const revokedAt = normalizeOptionalString(input.revokedAt);
+  return {
+    grantId: requireString(input.grantId, "grantId is required"),
+    orgId: requireString(input.orgId, "orgId is required"),
+    apiKeyId: requireString(input.apiKeyId, "apiKeyId is required"),
+    planDigest: requireString(input.planDigest, "planDigest is required"),
+    audience: requireString(input.audience, "audience is required"),
+    allowedUserIds: [...new Set(allowedUserIds)],
+    notAfter: normalizeTimestamp(input.notAfter),
+    createdBy: requireString(input.createdBy, "createdBy is required"),
+    createdAt: normalizeTimestamp(input.createdAt),
+    ...(revokedAt ? { revokedAt } : {}),
+  };
+}
+
+function hydrateMigrationGrant(row: MigrationGrantRow | undefined): MigrationGrant | null {
+  if (!row) {
+    return null;
+  }
+  try {
+    const allowedUserIds = JSON.parse(row.allowed_users_json ?? "") as unknown;
+    return normalizeMigrationGrant({
+      grantId: row.grant_id ?? "",
+      orgId: row.org_id ?? "",
+      apiKeyId: row.api_key_id ?? "",
+      planDigest: row.plan_digest ?? "",
+      audience: row.audience ?? "",
+      allowedUserIds: normalizeRequiredStringArray(allowedUserIds, "invalid allowed users"),
+      notAfter: row.not_after ?? "",
+      createdBy: row.created_by ?? "",
+      createdAt: row.created_at ?? "",
+      ...(normalizeOptionalString(row.revoked_at ?? undefined)
+        ? { revokedAt: row.revoked_at ?? undefined }
+        : {}),
+    });
+  } catch (error) {
+    // Same stance as attestation grants: a corrupted row reads as "no such
+    // grant" to the caller, which fails the mint closed, but is logged.
+    console.error("Failed to hydrate migration grant row", { grantId: row.grant_id, error });
+    return null;
+  }
+}
+
+function cloneMigrationGrant(grant: MigrationGrant): MigrationGrant {
+  return { ...grant, allowedUserIds: [...grant.allowedUserIds] };
+}
+
+function toMigrationGrantParams(grant: MigrationGrant): unknown[] {
+  return [
+    grant.grantId,
+    grant.orgId,
+    grant.apiKeyId,
+    grant.planDigest,
+    grant.audience,
+    JSON.stringify(grant.allowedUserIds),
+    grant.notAfter,
+    grant.createdBy,
+    grant.createdAt,
+    grant.revokedAt ?? null,
+  ];
+}
+
+function assertMigrationGrantCanRevoke(
+  grant: MigrationGrant | null,
+  orgId: string,
+): asserts grant is MigrationGrant {
+  if (!grant || grant.orgId !== orgId) {
+    throw new StorageError("migration_grant_not_found", 404, "migration_grant_not_found");
+  }
+  if (grant.revokedAt) {
+    throw new StorageError("migration_grant_revoked", 409, "migration_grant_revoked");
+  }
+}
+
 /**
  * Connections with a storage transaction currently open.
  *
@@ -3852,6 +4072,7 @@ function createMemoryBackend(): BackendContext {
         grants: new Map<string, AttestationGrant>(),
         ledger: [],
       },
+      migrationGrants: new Map<string, MigrationGrant>(),
     },
   };
 }

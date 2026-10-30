@@ -62,6 +62,8 @@ const AUDIT_WEBHOOK_EVENTS = new Set<AuditWebhookEvent>([
   "policy.updated",
   "policy.deleted",
   "key.rotated",
+  "migration_grant.created",
+  "migration_grant.revoked",
   "budget.exceeded",
   "budget.alert",
   "scope.escalation_denied",

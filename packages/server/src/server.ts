@@ -29,6 +29,7 @@ import auditQuery from "./routes/audit-query.js";
 import auditWebhooks from "./routes/audit-webhooks.js";
 import attestations from "./routes/attestations.js";
 import apiKeys from "./routes/api-keys.js";
+import migrationGrants from "./routes/migration-grants.js";
 import dashboardStats from "./routes/dashboard-stats.js";
 import discovery, { apiDiscovery } from "./routes/discovery.js";
 import jwks from "./routes/jwks.js";
@@ -375,6 +376,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.use("/v1/tokens/*", apiKeyAuth());
   app.use("/v1/api-keys", apiKeyAuth());
   app.use("/v1/api-keys/*", apiKeyAuth());
+  app.use("/v1/migration-grants", apiKeyAuth());
+  app.use("/v1/migration-grants/*", apiKeyAuth());
   // Finalization deliberately authenticates only with its one-time bearer
   // capability. API-key middleware belongs on grant creation alone so a
   // capability is never interpreted as an API key.
@@ -453,6 +456,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.route("/v1/identities", identityActivity);
   app.route("/v1/identities", identities);
   app.route("/v1/identities", roleAssignments);
+  app.route("/v1/migration-grants", migrationGrants);
   app.route("/v1/observer", observerApp);
   app.route("/v1/policies", policies);
   app.route("/v1/roles", roles);

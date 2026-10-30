@@ -2256,6 +2256,8 @@ components:
         - policy.updated
         - policy.deleted
         - key.rotated
+        - migration_grant.created
+        - migration_grant.revoked
     AuditResult:
       type: string
       enum: [allowed, denied, error]

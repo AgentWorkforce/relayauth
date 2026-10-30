@@ -31,6 +31,10 @@ export type AppConfig = {
    * 192.168/16, fc00::/7) or a private/internal hostname (single label,
    * `*.svc`, `*.cluster.local`, `*.internal`, `*.local`). Unset/anything else
    * keeps the hosted rule: https, or http only on loopback.
+   *
+   * The same flag lets `POST /v1/migration-grants` accept an http `audience`
+   * on a private host. Unset, a migration audience must be https; loopback
+   * http is not accepted there.
    */
   RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN?: string;
   RELAYAUTH_ENV_STAGE?: string;
