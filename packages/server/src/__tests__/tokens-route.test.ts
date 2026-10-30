@@ -2403,6 +2403,61 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
     },
   );
 
+  for (const adminScopes of [
+    ["relayauth:*:manage:*", "relayauth:*:read:*"],
+    ["*"],
+  ]) {
+    await t.test(
+      `does not let an implied grant (${adminScopes.join(" ")}) mint another org's assertion`,
+      async () => {
+        const { app, authHeaders } = await createHarness({
+          authClaims: { scopes: ["*"] },
+        });
+        // An org admin key: its grant covers the assertion scope only by
+        // implication, never by holding the broker literal.
+        const adminKey = await issueApiKey(app, authHeaders, adminScopes);
+
+        const response = await requestRoute(
+          app,
+          "POST",
+          "/v1/tokens/relayhistory-assertion",
+          {
+            body: {
+              orgId: "org_victim",
+              workspaceId: "ws_victim",
+              sponsorId: "user_attacker",
+              scopes: ["rth:read"],
+            },
+            headers: { "x-api-key": adminKey.key },
+          },
+        );
+
+        await assertJsonResponse<ErrorBody>(response, 403);
+        assert.equal(await countStoredTokens(app), 0);
+      },
+    );
+  }
+
+  await t.test(
+    "does not let an org admin delegate the broker scope onto a new api key",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: ["relayauth:*:manage:*", "relayauth:*:read:*"],
+        },
+      });
+
+      const response = await requestRoute(app, "POST", "/v1/api-keys", {
+        body: { name: "escalate-to-broker", scopes: [assertionScope] },
+        headers: authHeaders,
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+        assert.equal(body.code, "scope_escalation");
+      });
+    },
+  );
+
   await t.test(
     "strict-rejects non-relayhistory scopes instead of silently dropping them",
     async () => {

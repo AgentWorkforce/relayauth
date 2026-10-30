@@ -15,6 +15,7 @@ import {
   WORKSPACE_TOKEN_PREFIX,
 } from "../lib/api-keys.js";
 import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
+import { matchBrokerScopeExactly } from "../lib/broker-scopes.js";
 import {
   scheduleDeferredTask,
   type DeferredTaskScheduler,
@@ -726,10 +727,12 @@ tokens.post("/workspace-path", async (c) => {
 });
 
 tokens.post("/relayhistory-assertion", async (c) => {
+  // The assertion broker mints for any org, so an implied grant (`manage`,
+  // `*`) held by an ordinary org admin must not satisfy it.
   const auth = await authenticateAndAuthorizeFromContext(
     c,
     RELAYHISTORY_ASSERTION_SCOPE,
-    matchScope,
+    matchBrokerScopeExactly,
   );
   if (!auth.ok) {
     return c.json({ error: auth.error, code: auth.code }, auth.status);
