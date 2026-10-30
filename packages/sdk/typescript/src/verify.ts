@@ -499,7 +499,7 @@ function isRelayAuthTokenClaims(value: unknown): value is RelayAuthTokenClaims {
     (claims.nbf === undefined || (typeof claims.nbf === "number" && Number.isFinite(claims.nbf))) &&
     (claims.sid === undefined || typeof claims.sid === "string") &&
     (claims.parentTokenId === undefined || typeof claims.parentTokenId === "string") &&
-    isStringRecord(claims.meta) &&
+    isTokenMetadata(claims.meta) &&
     isTokenBudget(claims.budget)
   );
 }
@@ -525,7 +525,7 @@ function isOptionalNumber(value: unknown): boolean {
   return value === undefined || (typeof value === "number" && Number.isFinite(value));
 }
 
-function isStringRecord(value: unknown): value is Record<string, string> | undefined {
+function isTokenMetadata(value: unknown): boolean {
   if (value === undefined) {
     return true;
   }
@@ -534,7 +534,58 @@ function isStringRecord(value: unknown): value is Record<string, string> | undef
     return false;
   }
 
-  return Object.values(value).every((entry) => typeof entry === "string");
+  return Object.entries(value).every(
+    ([key, entry]) =>
+      typeof entry === "string" ||
+      (key === "upload" && isMigrationUploadIdentity(entry)),
+  );
+}
+
+function isMigrationUploadIdentity(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const upload = value as Record<string, unknown>;
+  const keys = Object.keys(upload).sort();
+  if (
+    keys.join(",") !==
+    "content_sha256,entry_sha256,grant_id,key,org_id,plan_digest,session,source_user_id,workspace_id"
+  ) {
+    return false;
+  }
+  const session = upload.session;
+  const sessionRecord =
+    session && typeof session === "object" && !Array.isArray(session)
+      ? (session as Record<string, unknown>)
+      : null;
+  return (
+    typeof upload.grant_id === "string" &&
+    /^mgr_[0-9a-f]{32}$/u.test(upload.grant_id) &&
+    isHexSha256(upload.plan_digest) &&
+    typeof upload.key === "string" &&
+    upload.key.length <= 1_024 &&
+    isCanonicalMigrationIdentity(upload.org_id) &&
+    isCanonicalMigrationIdentity(upload.workspace_id) &&
+    isCanonicalMigrationIdentity(upload.source_user_id) &&
+    isHexSha256(upload.content_sha256) &&
+    isHexSha256(upload.entry_sha256) &&
+    sessionRecord !== null &&
+    Object.keys(sessionRecord).sort().join(",") ===
+      "harness,machine_id,session_id,started_at" &&
+    Object.values(sessionRecord).every((entry) => typeof entry === "string")
+  );
+}
+
+function isCanonicalMigrationIdentity(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    /^[A-Za-z0-9._:-]{1,255}$/u.test(value) &&
+    !value.startsWith("relay_")
+  );
+}
+
+function isHexSha256(value: unknown): boolean {
+  return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
 }
 
 function isJwksResponse(value: unknown): value is JWKSResponse {

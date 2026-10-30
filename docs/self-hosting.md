@@ -26,6 +26,7 @@ its `_FILE` variant. `_FILE` handling lives only in the Node entrypoint
 | `RELAYAUTH_BOOTSTRAP_API_KEY_ORG` | no | Org for a newly created bootstrap key (default `org_selfhost`). An existing key is never moved; a warning is logged if its org differs. |
 | `ALLOWED_ORIGINS` | no | Comma-separated CORS allowlist. |
 | `RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN` | no | Exactly `true` lets History assertions bind to a plain-`http` `historyOrigin` on a private host (see below). Any other value, or unset, keeps the hosted rule. Chart: `relayhistory.allowPrivateHttpOrigin`. |
+| `RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS` | no | Default-off kill switch. Exactly `true` enables migration-grant creation and assertion minting. Revocation remains available when disabled. Chart: `migrationAssertions.enabled`. |
 
 ### Keys and `kid`
 
@@ -99,15 +100,42 @@ that also carries any other scope, a wildcard such as
 `relayauth:assertion:create:*`, or a workspace token is refused as the grant's
 key.
 
+Keep `RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS` unset until the export window is
+approved. Set it to exactly `true` only for grant creation and minting. This is
+a capability-specific switch; it does not enable the broader History assertion
+endpoint.
+
 **2. Create the grant.** `POST /v1/migration-grants`, scope
 `relayauth:api-key:manage:*` (bearer or `x-api-key`):
 
 ```json
 {
   "apiKeyId": "<the dedicated key's id>",
-  "planDigest": "<sha-256 of the export plan, 64 lowercase hex>",
   "audience": "https://ingest.example.com",
-  "allowedUserIds": ["user_a", "user_b"],
+  "plan": {
+    "exported_at": "2026-11-01T00:00:00.000Z",
+    "manifests": [{
+      "key": "v1/ws=ws_a/m=machine-a/h=codex/d=2026/11/01/s=session-a/manifest.json",
+      "org_id": "org_a",
+      "workspace_id": "ws_a",
+      "source_user_id": "user_a",
+      "session": {
+        "machine_id": "machine-a",
+        "harness": "codex",
+        "session_id": "session-a",
+        "started_at": "2026-11-01T00:00:00.000Z"
+      },
+      "state": "closed",
+      "chunks": [{
+        "seq": 0,
+        "epoch": 0,
+        "start_offset": 0,
+        "bytes": 512,
+        "sha256": "<64 lowercase hex>",
+        "records": 1
+      }]
+    }]
+  },
   "notAfter": "2026-11-05T00:00:00Z"
 }
 ```
@@ -117,14 +145,28 @@ key.
   Plain `http` is accepted only on a private host and only with
   `RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true`; loopback `http` is not
   accepted without the flag.
-- `allowedUserIds` lists 1 to 1000 users. Every one must be an **active human
-  identity of the caller's org** in RelayAuth, or the grant is refused with
+- RelayAuth canonicalises one leading `relay_` from org, workspace and source
+  user ids, validates each manifest path against its explicit session and
+  workspace fields, derives the content hash chain and raw byte count, sorts
+  entries by key, then stores the resulting contract-v1 plan. The caller does
+  not supply `grantId`, `planDigest`, content hashes or entry hashes.
+- The plan contains 1 to 1000 entries, at most 64 distinct source users, and
+  its canonical `plan_json` plus `allowed_pairs_json` must total at most
+  1,000,000 UTF-8 bytes. The size ceiling is intentionally half D1's
+  2,000,000-byte string/row ceiling so the legacy user list and scalar row
+  fields retain headroom. The shared #43 contract fixture is 1,695 bytes.
+  Each source user requires two alias-safe identity lookups; the 64-user cap
+  bounds Cloud creation at 128 identity Durable Object subrequests.
+  Its exact distinct
+  `(source_user_id, workspace_id)` pairs become the grant allow-list. Every
+  source user must be an **active human identity of the caller's org** in
+  RelayAuth, or the grant is refused with
   `source_user_not_found`, `source_user_org_mismatch`, `source_user_not_human`
-  or `source_user_inactive` and the offending `userId`.
+  or `source_user_inactive`.
 - `notAfter` is in the future and at most 7 days away.
 
 The response (201) is the grant: `grantId`, `orgId`, `apiKeyId`,
-`planDigest`, `audience`, `allowedUserIds`, `notAfter`, `createdBy`,
+`planDigest`, `audience`, `allowedPairs`, `planEntries`, `notAfter`, `createdBy`,
 `createdAt`, `revokedAt` (null). `POST /v1/migration-grants/:grantId/revoke`
 (same scope, same org) revokes it; a second revoke is a 409.
 
@@ -135,7 +177,10 @@ to the dedicated key (a bearer token carrying the scope is refused):
 {
   "grantId": "mgr_...",
   "sourceUserId": "user_a",
-  "workspaceId": "ws_...",
+  "workspaceId": "ws_a",
+  "upload": {
+    "key": "v1/ws=ws_a/m=machine-a/h=codex/d=2026/11/01/s=session-a/manifest.json"
+  },
   "nonce": "16-128 chars of A-Za-z0-9_-",
   "expiresIn": 60
 }
@@ -143,7 +188,11 @@ to the dedicated key (a bearer token carrying the scope is refused):
 
 The grant must belong to the key's org and name this key, be unrevoked and
 before `notAfter`, and list `sourceUserId`, which must still be an active human
-identity of the grant's org. `expiresIn` is 1 to 60 seconds (default 60), and
+identity of the grant's org. The exact source-user/workspace pair and upload
+key must occur together in the stored plan; a caller cannot cross pairs or
+choose a fresh machine, session, manifest or workspace. The request carries
+only the manifest key and cannot override a digest or signed identity.
+`expiresIn` is 1 to 60 seconds (default 60), and
 `exp` never passes the grant's `notAfter`. The response (201) is
 `{ accessToken, accessTokenExpiresAt, tokenType: "Bearer" }`, with no refresh
 token. The token's claims are `sub: agent_relayhistory_migration`, `org` = the
@@ -151,7 +200,11 @@ grant's org, `wks` = `workspaceId`, `sponsorId` = `sourceUserId`,
 `sponsorChain: [sourceUserId, sub]`, `scopes: ["rth:sync"]`,
 `aud: [grant audience]`, `token_type: access`, `jti`, `sid`, and `meta` with
 `tokenClass: "migration_assertion"`, `grantId`, `planDigest`, `nonce`,
-`sourceUserId`, `actorId`, `actorOrgId` and `workspaceId`.
+`sourceUserId`, `actorId`, `actorOrgId`, `workspaceId`, and an issuer-derived
+`upload` object. `meta.upload` binds `grant_id`, `plan_digest`, `key`, `org_id`,
+`workspace_id`, `source_user_id`, the machine/harness/session/start tuple,
+`content_sha256`, and the canonical plan-entry `entry_sha256`. The issuer never
+echoes a client-authored upload identity.
 
 Grant creation, revocation and every mint are written to the audit log with
 the record they produce: `migration_grant.created`, `migration_grant.revoked`,
@@ -162,8 +215,9 @@ code, in the caller's org.
 #### Threat model
 
 - **What RelayAuth guarantees.** Only the one key a grant names can mint under
-  it; never for another org; only for users the grant lists who are, at mint
-  time, active human identities of the grant's org; only for the grant's one
+  it; never for another org; only for exact user/workspace/upload-key tuples in
+  the stored canonical plan whose user is, at mint time, an active human
+  identity of the grant's org; only for the grant's one
   audience, with only `rth:sync`, for at most 60 seconds and never past the
   grant's deadline. A History verifier that checks `aud` refuses a migration
   assertion, and neither assertion key can call the other endpoint.
@@ -174,15 +228,38 @@ code, in the caller's org.
   identities before they can be listed.
 - **Replay is the verifier's job.** RelayAuth does not record `jti` or `nonce`
   consumption. The ingest service must accept each `jti` (and `nonce`) once,
-  check `aud`, `exp`, `iss` and the signature, and should check that
-  `meta.planDigest` matches the plan it expects.
+  check `aud`, `exp`, `iss` and the signature, and must check `meta.upload`
+  against the expected plan entry and digest.
 - **Revocation.** Revoking a grant or its key stops new mints. Assertions
-  already issued stay valid until they expire, 60 seconds at most.
-- **Not bound by the grant.** `workspaceId` is the caller's choice within the
-  grant's org; the verifier decides whether that user may write to that
-  workspace. A leaked dedicated key can mint for every listed user until the
-  grant expires or is revoked, so keep grants short and revoke them when the
-  export finishes.
+  already issued stay valid until they expire. Grant revocation is checked on
+  every mint, so its convergence window is the assertion TTL: at most 60
+  seconds. **Key-only revocation is not a sufficient emergency control in the
+  Cloud runtime:** a settled key lookup may remain cached for 60 seconds and a
+  final assertion may then live another 60 seconds, for a worst-case 120-second
+  window. Revoke the grant as the primary control and revoke the key as defense
+  in depth.
+- **Kill switch/runbook.** Before ending the export, revoke every grant, revoke
+  its dedicated key, wait at least 60 seconds from successful grant revocation,
+  then disable `RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS`. In Cloud this flag is a
+  Worker binding, so disabling it requires a verified binding deploy; changing
+  a local shell value does not affect a deployed Worker. In Helm it likewise
+  requires a successful workload rollout. If compromise is suspected, deploy
+  the disabled binding and revoke grants immediately, then revoke keys. Grant
+  revocation intentionally remains callable while the flag is off. Assertions
+  never have refresh tokens.
+- **Workspace membership remains an operator/verifier trust boundary.**
+  RelayAuth binds the exact source-user/workspace pair approved in the plan and
+  proves that the source user is an active human in the organization. It does
+  not independently query Cloud or another product for current workspace
+  membership. The grant administrator must review that association, and the
+  ingest verifier must enforce authoritative workspace membership if its
+  policy requires it.
+- **Verifier rollout surface.** The TypeScript SDK validates the exact nested
+  `meta.upload` shape. The general core and Go verifiers are not expanded by
+  this migration-only change. That is nonblocking for the dedicated Cloud
+  ingest path, which performs its own migration capability checks, but another
+  consumer must not admit migration assertions until it implements the same
+  audience, scope, upload-identity, digest and one-time-use checks.
 - **Disclosure.** The refusal codes distinguish an unknown user from one in
   another org, so a grant administrator can learn whether an identity id
   exists elsewhere. Identity ids are random and the caller already needs the

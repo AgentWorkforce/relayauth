@@ -169,6 +169,54 @@ describe("TokenVerifier", () => {
       assert.equal(claims.org, "org-1");
     });
 
+    it("accepts only the contract-v1 migration upload as nested token metadata", async () => {
+      const { privateKey, jwk } = await generateRS256KeyPair();
+      const kid = "migration-key";
+      globalThis.fetch = mockFetch([{ ...jwk, kid, use: "sig", alg: "RS256" }]);
+      const upload = {
+        grant_id: "mgr_00000000000000000000000000000000",
+        plan_digest: "a".repeat(64),
+        key: "v1/ws=ws_a/m=machine-a/h=codex/d=2026/10/30/s=session-a/manifest.json",
+        org_id: "org_a",
+        workspace_id: "ws_a",
+        source_user_id: "user_a",
+        session: {
+          machine_id: "machine-a",
+          harness: "codex",
+          session_id: "session-a",
+          started_at: "2026-10-30T00:00:00.000Z",
+        },
+        content_sha256: "b".repeat(64),
+        entry_sha256: "c".repeat(64),
+      };
+      const verifier = new TokenVerifier({
+        jwksUrl: "https://auth.test/.well-known/jwks.json",
+      });
+
+      const accepted = await signToken(
+        { alg: "RS256", typ: "JWT", kid },
+        { ...validClaims, meta: { tokenClass: "migration_assertion", upload } },
+        privateKey,
+        "RS256",
+      );
+      assert.deepEqual((await verifier.verify(accepted)).meta?.upload, upload);
+
+      for (const meta of [
+        { arbitrary: { secret: "nested" } },
+        { upload: { ...upload, source_user_id: "relay_user_a" } },
+        { upload: { ...upload, content_sha256: "not-a-digest" } },
+        { upload: { ...upload, client_field: "not-signed-contract" } },
+      ]) {
+        const rejected = await signToken(
+          { alg: "RS256", typ: "JWT", kid },
+          { ...validClaims, meta },
+          privateKey,
+          "RS256",
+        );
+        await assert.rejects(() => verifier.verify(rejected), RelayAuthError);
+      }
+    });
+
     it("rejects a token with invalid signature", async () => {
       const { jwk } = await generateRS256KeyPair();
       const { privateKey: wrongKey } = await generateRS256KeyPair();

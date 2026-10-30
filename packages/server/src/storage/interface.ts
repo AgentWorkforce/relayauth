@@ -19,6 +19,19 @@ import type {
   ListApiKeysOptions,
   StoredApiKey,
 } from "./api-key-types.js";
+import type {
+  MigrationGrantPair,
+  MigrationGrantPlan,
+} from "../lib/migration-plan.js";
+export {
+  canonicalMigrationJson,
+  normalizeMigrationGrantPairs,
+  verifyStoredMigrationGrantPlan,
+} from "../lib/migration-plan.js";
+export type {
+  MigrationGrantPair,
+  MigrationGrantPlan,
+} from "../lib/migration-plan.js";
 
 export type ExtendedAuditAction =
   | AuditAction
@@ -638,18 +651,22 @@ export interface AttestationStorage {
 /**
  * Authorization record behind `POST /v1/tokens/migration-assertion`: one
  * dedicated API key in one organization may mint short-lived assertions for
- * the listed source users, bound to one export plan and one ingest origin,
+ * the exact source-user/workspace pairs in one stored export plan and one
+ * ingest origin,
  * until `notAfter` or revocation, whichever comes first.
  */
 export type MigrationGrant = {
   grantId: string;
   orgId: string;
   apiKeyId: string;
-  /** SHA-256 of the export plan, 64 lowercase hex characters. */
+  /** SHA-256 of the canonical stored export plan. */
   planDigest: string;
+  /** Canonical issuer-owned plan; mint selectors never replace or amend it. */
+  plan: MigrationGrantPlan;
   /** The one ingest origin the assertions are minted for (their `aud`). */
   audience: string;
-  allowedUserIds: string[];
+  /** Exact canonical pairs derived from `plan`, sorted and de-duplicated. */
+  allowedPairs: MigrationGrantPair[];
   notAfter: string;
   createdBy: string;
   createdAt: string;
