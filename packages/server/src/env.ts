@@ -33,6 +33,14 @@ export type AppConfig = {
    * keeps the hosted rule: https, or http only on loopback.
    */
   RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN?: string;
+  /**
+   * Compat opt-in, default off: exactly "true" lets
+   * `POST /v1/tokens/relayhistory-assertion` mint without `machineId` (the
+   * token then has no `meta.machineId` and its audit row is flagged
+   * `machineIdMissing`). Unset/anything else requires a canonical machineId.
+   * Intended only for the rollout window before the broker sends machineId.
+   */
+  RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID?: string;
   RELAYAUTH_ENV_STAGE?: string;
   /** JSON object keyed by org id. See SponsorFederationConfig. */
   RELAYAUTH_SPONSOR_FEDERATIONS?: string;

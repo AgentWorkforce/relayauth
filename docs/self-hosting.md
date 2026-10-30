@@ -26,6 +26,7 @@ its `_FILE` variant. `_FILE` handling lives only in the Node entrypoint
 | `RELAYAUTH_BOOTSTRAP_API_KEY_ORG` | no | Org for a newly created bootstrap key (default `org_selfhost`). An existing key is never moved; a warning is logged if its org differs. |
 | `ALLOWED_ORIGINS` | no | Comma-separated CORS allowlist. |
 | `RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN` | no | Exactly `true` lets History assertions bind to a plain-`http` `historyOrigin` on a private host (see below). Any other value, or unset, keeps the hosted rule. Chart: `relayhistory.allowPrivateHttpOrigin`. |
+| `RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID` | no | Compat only. Exactly `true` lets History assertions mint without `machineId` (see "Machine binding" below). Any other value, or unset, requires it. Chart: `relayhistory.allowMissingMachineId`. |
 
 ### Keys and `kid`
 
@@ -84,6 +85,36 @@ or trailing DNS dot; it is canonicalised (lowercase, default port dropped)
 before it becomes the `aud`. `https` rules are unchanged. The flag widens only
 which http hosts are accepted. It does not make a public http origin acceptable,
 so turn it on only where History is reached over a trusted private network.
+
+### Machine binding (`meta.machineId`)
+
+Every History assertion carries the courier machine it was minted for as
+`meta.machineId`, so ingest can check that a manifest POST or status call comes
+from the machine named in the manifest key's `m=` component. The request body
+field is `machineId`:
+
+- 1 to 128 characters of `A-Za-z0-9._-`, the same form as the `m=` component;
+- no leading `.`, and no `relay_` prefix (machine ids have no RelayAuth alias);
+- exact bytes: values that would need trimming, case folding or prefix
+  stripping are refused (400 `invalid_machine_id`), never rewritten.
+
+A missing `machineId` is refused with 400 `machineId_required`. Only for the
+rollout window before the control plane sends it, set
+`RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID=true`; tokens minted
+that way have no `meta.machineId` and their audit row carries
+`machineIdMissing: "true"`. Turn it off again once the control plane sends
+`machineId`.
+
+**Who is trusted to assert it.** RelayAuth validates the form only. It cannot
+know which machine a courier runs on, so it signs the `machineId` that the
+holder of the dedicated `relayauth:assertion:create:relayhistory` API key sends
+(the control plane / Cloud's broker), exactly as it already signs that caller's
+`orgId`, `workspaceId` and `sponsorId`. That caller must establish the machine
+from its own authenticated session with the courier before asking, and must
+never pass through a value the courier chose without that check. The route
+accepts only that dedicated key over `x-api-key` (a bearer token carrying the
+scope is refused with `assertion_key_required`), so couriers and other callers
+cannot choose a `machineId`. Never hand the assertion key to a courier.
 
 ## Docker
 

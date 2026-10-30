@@ -205,6 +205,7 @@ test("bootstrap api key is seeded idempotently, hash-only, and mints History ass
         orgId: "org_a",
         workspaceId: "ws_a",
         sponsorId: "user_a",
+        machineId: "machine-a",
         scopes: ["rth:sync"],
         expiresIn: 60,
         historyOrigin: "http://127.0.0.1:18780",

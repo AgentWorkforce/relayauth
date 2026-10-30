@@ -118,7 +118,7 @@ post_assertion() {
     -X POST "$BASE_URL/v1/tokens/relayhistory-assertion" \
     -H 'content-type: application/json' \
     -H "x-api-key: $(tr -d '\n' < "$SECRETS/bootstrap-api-key")" \
-    --data "{\"orgId\":\"org_smoke\",\"workspaceId\":\"ws_smoke\",\"sponsorId\":\"user_smoke\",\"scopes\":[\"rth:sync\",\"rth:read\"],\"expiresIn\":60,\"historyOrigin\":\"$1\"}"
+    --data "{\"orgId\":\"org_smoke\",\"workspaceId\":\"ws_smoke\",\"sponsorId\":\"user_smoke\",\"machineId\":\"machine-smoke\",\"scopes\":[\"rth:sync\",\"rth:read\"],\"expiresIn\":60,\"historyOrigin\":\"$1\"}"
 }
 
 # mint_assertion [origin] -> prints the access token
