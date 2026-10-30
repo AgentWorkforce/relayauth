@@ -21,6 +21,84 @@ export function createMigrationGrantId(): string {
   return `mgr_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
+/**
+ * Request header carrying the caller-chosen key that makes grant creation
+ * retry-safe. It is required on every create.
+ */
+export const MIGRATION_GRANT_IDEMPOTENCY_HEADER = "Idempotency-Key";
+/** Header set on a response that returns an existing grant for a retry. */
+export const MIGRATION_GRANT_REPLAYED_HEADER = "Idempotent-Replayed";
+const IDEMPOTENCY_KEY_SHAPE = /^[A-Za-z0-9_-]{32,128}$/u;
+/**
+ * The shape check alone admits "aaaa...". Reject keys with too few distinct
+ * characters; any random 32-character hex, base64url or UUIDv4 value clears
+ * this by a wide margin.
+ */
+const IDEMPOTENCY_KEY_MIN_DISTINCT_CHARS = 8;
+const IDEMPOTENCY_KEY_HASH_DOMAIN = "relayauth.migration_grant.idempotency_key.v1";
+
+export type MigrationGrantIdempotencyKeyRefusal = {
+  ok: false;
+  error: string;
+  code: "idempotency_key_required" | "invalid_idempotency_key";
+  status: 400;
+};
+
+/**
+ * Validates the raw Idempotency-Key. The returned key must only ever be fed to
+ * migrationGrantIdempotencyKeyHash; it is never persisted, audited or logged,
+ * and refusals never echo it.
+ */
+export function parseMigrationGrantIdempotencyKey(
+  value: string | undefined,
+): { ok: true; key: string } | MigrationGrantIdempotencyKeyRefusal {
+  if (value === undefined || value.length === 0) {
+    return {
+      ok: false,
+      error: `${MIGRATION_GRANT_IDEMPOTENCY_HEADER} header is required`,
+      code: "idempotency_key_required",
+      status: 400,
+    };
+  }
+  if (
+    !IDEMPOTENCY_KEY_SHAPE.test(value) ||
+    new Set(value).size < IDEMPOTENCY_KEY_MIN_DISTINCT_CHARS
+  ) {
+    return {
+      ok: false,
+      error: `${MIGRATION_GRANT_IDEMPOTENCY_HEADER} must be 32 to 128 random characters of A-Za-z0-9_-`,
+      code: "invalid_idempotency_key",
+      status: 400,
+    };
+  }
+  return { ok: true, key: value };
+}
+
+/**
+ * Domain-separated SHA-256 over (org, caller, key). Binding the org and the
+ * caller into the hash means the same raw key from another org or another
+ * caller resolves to an unrelated receipt, i.e. is absent, without any
+ * existence signal. The key is caller-chosen and high entropy, so a plain hash
+ * is not invertible.
+ */
+export function migrationGrantIdempotencyKeyHash(input: {
+  orgId: string;
+  callerId: string;
+  key: string;
+}): string {
+  return crypto
+    .createHash("sha256")
+    .update(
+      JSON.stringify([
+        IDEMPOTENCY_KEY_HASH_DOMAIN,
+        input.orgId,
+        input.callerId,
+        input.key,
+      ]),
+    )
+    .digest("hex");
+}
+
 export type MigrationSourceUserRefusal = {
   ok: false;
   error: string;

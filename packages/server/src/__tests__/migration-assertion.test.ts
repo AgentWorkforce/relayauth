@@ -95,6 +95,22 @@ function adminHeaders(
   };
 }
 
+const IDEMPOTENCY_HEADER = "Idempotency-Key";
+
+function newIdempotencyKey(): string {
+  return crypto.randomBytes(24).toString("base64url");
+}
+
+function grantHeaders(
+  idempotencyKey: string = newIdempotencyKey(),
+  overrides: Partial<RelayAuthTokenClaims> = {},
+): Record<string, string> {
+  return {
+    ...(adminHeaders(overrides) as Record<string, string>),
+    [IDEMPOTENCY_HEADER]: idempotencyKey,
+  };
+}
+
 async function seedApiKey(
   app: TestApp,
   options: { orgId?: string; scopes?: string[]; kind?: ApiKeyKind } = {},
@@ -279,7 +295,7 @@ async function createGrant(
   overrides: Record<string, unknown> = {},
 ): Promise<GrantResponse> {
   return assertJsonResponse<GrantResponse>(
-    await request(app, "POST", "/v1/migration-grants", grantBody(apiKeyId, overrides), adminHeaders()),
+    await request(app, "POST", "/v1/migration-grants", grantBody(apiKeyId, overrides), grantHeaders()),
     201,
   );
 }
@@ -448,7 +464,10 @@ test("grant creation preserves dedicated-key, admin and plan safety gates", asyn
   for (const [name, apiKeyId, override, headers, status, code] of cases) {
     await t.test(name, async () => {
       await expectError(
-        await request(app, "POST", "/v1/migration-grants", grantBody(apiKeyId, override), headers),
+        await request(app, "POST", "/v1/migration-grants", grantBody(apiKeyId, override), {
+          ...(headers as Record<string, string>),
+          [IDEMPOTENCY_HEADER]: newIdempotencyKey(),
+        }),
         status,
         code,
       );
@@ -556,7 +575,7 @@ test("default-off dedicated key, revoke and no-refresh gates remain closed", asy
       RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS: flag,
     });
     await expectError(
-      await request(disabled.app, "POST", "/v1/migration-grants", grantBody(disabled.migrationKey.id), adminHeaders()),
+      await request(disabled.app, "POST", "/v1/migration-grants", grantBody(disabled.migrationKey.id), grantHeaders()),
       403,
       "migration_assertions_disabled",
     );
@@ -730,12 +749,21 @@ test("migration grant storage verifies the canonical persisted plan", async (t) 
           metadata: { grantId },
           timestamp: new Date().toISOString(),
         };
-        await storage.migrationGrants!.createWithAudit({ grant, auditEntry });
+        const idempotency = {
+          keyHash: "a".repeat(64),
+          callerId: "user_admin",
+          requestFingerprint: "b".repeat(64),
+        };
+        assert.deepEqual(
+          await storage.migrationGrants!.createWithAudit({ grant, auditEntry, idempotency }),
+          { outcome: "created", grant },
+        );
         assert.deepEqual(await storage.migrationGrants!.get(grantId), grant);
         await assert.rejects(
           storage.migrationGrants!.createWithAudit({
             grant,
             auditEntry: { ...auditEntry, id: crypto.randomUUID() },
+            idempotency: { ...idempotency, keyHash: "c".repeat(64) },
           }),
         );
       } finally {
@@ -743,4 +771,647 @@ test("migration grant storage verifies the canonical persisted plan", async (t) 
       }
     });
   }
+});
+
+// --- Idempotent grant creation -------------------------------------------
+
+type GrantCounts = {
+  grants: number;
+  receipts: number;
+  createdAudits: number;
+};
+
+async function grantCounts(app: TestApp): Promise<GrantCounts> {
+  const one = async (sql: string) =>
+    (await app.storage.DB.prepare(sql).first<{ count: number }>())?.count ?? -1;
+  return {
+    grants: await one("SELECT COUNT(*) AS count FROM migration_grants"),
+    receipts: await one(
+      "SELECT COUNT(*) AS count FROM migration_grant_idempotency_receipts",
+    ),
+    createdAudits: await one(
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'migration_grant.created' AND result = 'allowed'",
+    ),
+  };
+}
+
+async function deniedCreateAudits(
+  app: TestApp,
+  reason: string,
+): Promise<Array<Record<string, string>>> {
+  const rows = await app.storage.DB.prepare(
+    "SELECT metadata_json FROM audit_logs WHERE action = 'migration_grant.created' AND result = 'denied'",
+  ).all<{ metadata_json: string }>();
+  return (rows.results ?? [])
+    .map((row) => JSON.parse(row.metadata_json) as Record<string, string>)
+    .filter((metadata) => metadata.reason === reason);
+}
+
+async function postGrant(
+  app: TestApp,
+  body: unknown,
+  headers: HeadersInit,
+): Promise<Response> {
+  return request(app, "POST", "/v1/migration-grants", body, headers);
+}
+
+async function silenceConsoleError<T>(run: () => Promise<T>): Promise<T> {
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    return await run();
+  } finally {
+    console.error = originalError;
+  }
+}
+
+test("idempotency: a lost create response is recovered by retrying the same key", async () => {
+  const { app, migrationKey } = await createHarness();
+  const key = newIdempotencyKey();
+  const body = grantBody(migrationKey.id);
+
+  const first = await postGrant(app, body, grantHeaders(key));
+  assert.equal(first.status, 201);
+  assert.equal(first.headers.get("Idempotent-Replayed"), null);
+  // The caller never reads this response: it was lost after the commit.
+  const committed = (await first.json()) as GrantResponse;
+
+  const retry = await postGrant(app, body, grantHeaders(key));
+  assert.equal(retry.status, 201);
+  assert.equal(retry.headers.get("Idempotent-Replayed"), "true");
+  const recovered = (await retry.json()) as GrantResponse;
+  assert.deepEqual(recovered, committed, "same grantId, digest and mint state");
+
+  // Equivalent non-canonical spellings of the same request also replay.
+  const aliased = await postGrant(
+    app,
+    {
+      ...body,
+      plan: plan({ aliceUser: "relay_user_alice", aliceWorkspace: "relay_ws_alice" }),
+      // Same instant, written with an explicit offset instead of Z.
+      notAfter: body.notAfter.replace(/Z$/u, "+00:00"),
+    },
+    grantHeaders(key),
+  );
+  assert.equal(aliased.status, 201);
+  assert.deepEqual((await aliased.json()) as GrantResponse, committed);
+
+  assert.deepEqual(await grantCounts(app), {
+    grants: 1,
+    receipts: 1,
+    createdAudits: 1,
+  });
+
+  const receipt = await app.storage.DB.prepare(
+    "SELECT org_id, caller_id, grant_id FROM migration_grant_idempotency_receipts",
+  ).first<{ org_id: string; caller_id: string; grant_id: string }>();
+  assert.deepEqual({ ...receipt }, {
+    org_id: ORG,
+    caller_id: "user_admin",
+    grant_id: committed.grantId,
+  });
+
+  // The recovered grant is the live one and mints normally.
+  assert.equal(
+    (await mint(app, migrationKey.key, mintBody(recovered.grantId))).status,
+    201,
+  );
+});
+
+test("idempotency: concurrent same-key creates commit exactly one grant", async (t) => {
+  await t.test("http", async () => {
+    const { app, migrationKey } = await createHarness();
+    const key = newIdempotencyKey();
+    const body = grantBody(migrationKey.id);
+    const responses = await Promise.all(
+      Array.from({ length: 8 }, () => postGrant(app, body, grantHeaders(key))),
+    );
+    assert.deepEqual(
+      responses.map((response) => response.status),
+      Array(8).fill(201),
+    );
+    const grants = (await Promise.all(
+      responses.map((response) => response.json()),
+    )) as GrantResponse[];
+    assert.equal(new Set(grants.map((grant) => grant.grantId)).size, 1);
+    assert.equal(new Set(grants.map((grant) => grant.planDigest)).size, 1);
+    assert.equal(
+      responses.filter((response) => response.headers.get("Idempotent-Replayed") !== "true").length,
+      1,
+      "exactly one response is the original create",
+    );
+    assert.deepEqual(await grantCounts(app), {
+      grants: 1,
+      receipts: 1,
+      createdAudits: 1,
+    });
+  });
+
+  for (const forceMemory of [false, true]) {
+    await t.test(`storage race (${forceMemory ? "memory" : "sqlite"})`, async () => {
+      const storage = createSqliteStorage(":memory:", { forceMemory });
+      try {
+        const idempotency = {
+          keyHash: "d".repeat(64),
+          callerId: "user_admin",
+          requestFingerprint: "e".repeat(64),
+        };
+        const candidates = Array.from({ length: 4 }, () =>
+          storageGrantFixture(),
+        );
+        // Every request passed the pre-create lookup before any committed.
+        const results = await Promise.all(
+          candidates.map(({ grant, auditEntry }) =>
+            storage.migrationGrants!.createWithAudit({ grant, auditEntry, idempotency }),
+          ),
+        );
+        assert.deepEqual(
+          results.map((result) => result.outcome),
+          ["created", "replayed", "replayed", "replayed"],
+        );
+        const winner = candidates[0]!.grant.grantId;
+        for (const result of results) {
+          assert.ok(result.outcome !== "conflict");
+          assert.equal(result.grant.grantId, winner);
+        }
+        for (const loser of candidates.slice(1)) {
+          assert.equal(await storage.migrationGrants!.get(loser.grant.grantId), null);
+        }
+        const conflict = await storage.migrationGrants!.createWithAudit({
+          ...storageGrantFixture(),
+          idempotency: { ...idempotency, requestFingerprint: "f".repeat(64) },
+        });
+        assert.deepEqual(conflict, { outcome: "conflict" });
+        const audits = await storage.audit.query({ orgId: ORG, limit: 50 });
+        assert.equal(
+          audits.entries.filter((entry) => entry.action === "migration_grant.created").length,
+          1,
+        );
+      } finally {
+        await storage.close();
+      }
+    });
+  }
+});
+
+function storageGrantFixture(orgId = ORG) {
+  const grantId = `mgr_${crypto.randomUUID().replaceAll("-", "")}`;
+  const derived = deriveMigrationGrantPlan({ grantId, orgId, plan: plan({ orgId }) });
+  const grant: MigrationGrant = {
+    grantId,
+    orgId,
+    apiKeyId: "ak_migration",
+    planDigest: derived.planDigest,
+    plan: derived.plan,
+    audience: AUDIENCE,
+    allowedPairs: derived.allowedPairs,
+    notAfter: futureIso(3600),
+    createdBy: "user_admin",
+    createdAt: new Date().toISOString(),
+  };
+  const auditEntry = {
+    id: crypto.randomUUID(),
+    action: "migration_grant.created" as const,
+    identityId: "user_admin",
+    orgId,
+    resource: "migration-grant",
+    result: "allowed" as const,
+    metadata: { grantId },
+    timestamp: new Date().toISOString(),
+  };
+  return { grant, auditEntry };
+}
+
+test("idempotency: same key with a different request is an audited 409", async (t) => {
+  const { app, migrationKey } = await createHarness();
+  const otherKey = await seedApiKey(app);
+  const key = newIdempotencyKey();
+  const body = grantBody(migrationKey.id);
+  const original = await assertJsonResponse<GrantResponse>(
+    await postGrant(app, body, grantHeaders(key)),
+    201,
+  );
+  const receipt = await app.storage.DB.prepare(
+    "SELECT key_hash FROM migration_grant_idempotency_receipts",
+  ).first<{ key_hash: string }>();
+
+  const singleEntryPlan = { ...plan(), manifests: [plan().manifests[0]] };
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["notAfter", { notAfter: futureIso(7200) }],
+    ["audience", { audience: "https://other-ingest.96bulls.example" }],
+    ["apiKeyId", { apiKeyId: otherKey.id }],
+    ["plan entries", { plan: singleEntryPlan }],
+    ["plan exported_at", { plan: { ...plan(), exported_at: "2026-10-30T00:00:01.000Z" } }],
+  ];
+  for (const [name, override] of cases) {
+    await t.test(name, async () => {
+      await expectError(
+        await postGrant(app, { ...body, ...override }, grantHeaders(key)),
+        409,
+        "idempotency_key_conflict",
+      );
+    });
+  }
+
+  const conflicts = await deniedCreateAudits(app, "idempotency_key_conflict");
+  assert.equal(conflicts.length, cases.length);
+  for (const metadata of conflicts) {
+    assert.equal(metadata.idempotencyKeyHash, receipt?.key_hash);
+  }
+  assert.deepEqual(await grantCounts(app), {
+    grants: 1,
+    receipts: 1,
+    createdAudits: 1,
+  });
+  // The original grant is untouched and still recoverable.
+  const retry = await postGrant(app, body, grantHeaders(key));
+  assert.equal(retry.status, 201);
+  assert.deepEqual((await retry.json()) as GrantResponse, original);
+});
+
+test("idempotency: a key from another org or another caller is treated as absent", async () => {
+  const { app, migrationKey } = await createHarness();
+  const otherOrgKey = await seedApiKey(app, { orgId: "org_other" });
+  const key = newIdempotencyKey();
+  const body = grantBody(migrationKey.id);
+  const original = await assertJsonResponse<GrantResponse>(
+    await postGrant(app, body, grantHeaders(key)),
+    201,
+  );
+
+  // Another caller in the same org, same key and same request: a fresh grant.
+  const otherCallerClaims = {
+    sub: "user_admin_2",
+    sponsorId: "user_admin_2",
+    sponsorChain: ["user_admin_2"],
+  };
+  const otherCaller = await postGrant(app, body, grantHeaders(key, otherCallerClaims));
+  assert.equal(otherCaller.status, 201);
+  assert.equal(otherCaller.headers.get("Idempotent-Replayed"), null);
+  const otherCallerGrant = (await otherCaller.json()) as GrantResponse;
+  assert.notEqual(otherCallerGrant.grantId, original.grantId);
+  assert.equal(otherCallerGrant.createdBy, "user_admin_2");
+
+  // Another caller, same key, different request: not a conflict either, so the
+  // response cannot reveal that the key exists for someone else.
+  const otherCallerDifferent = await postGrant(
+    app,
+    { ...body, notAfter: futureIso(7200) },
+    grantHeaders(key, { ...otherCallerClaims, sub: "user_admin_3" }),
+  );
+  assert.equal(otherCallerDifferent.status, 201);
+  assert.equal(otherCallerDifferent.headers.get("Idempotent-Replayed"), null);
+
+  // Another org, same key: its answer is exactly what an unused key gets.
+  const otherOrgPlan = {
+    ...plan({ orgId: "org_other", aliceUser: "user_other_org" }),
+    manifests: [plan({ orgId: "org_other", aliceUser: "user_other_org" }).manifests[0]],
+  };
+  const otherOrgClaims = { org: "org_other" };
+  const otherOrgBody = grantBody(otherOrgKey.id, { plan: otherOrgPlan });
+  const otherOrg = await postGrant(app, otherOrgBody, grantHeaders(key, otherOrgClaims));
+  assert.equal(otherOrg.status, 201);
+  assert.equal(otherOrg.headers.get("Idempotent-Replayed"), null);
+  const otherOrgGrant = (await otherOrg.json()) as GrantResponse;
+  assert.equal(otherOrgGrant.orgId, "org_other");
+  assert.notEqual(otherOrgGrant.grantId, original.grantId);
+
+  // Replaying the first org's request body from the other org is judged on
+  // its own merits (cross-org plan), never as a hit on the first org's key.
+  const crossOrgReplay = await postGrant(app, body, grantHeaders(key, otherOrgClaims));
+  const freshKeyCrossOrg = await postGrant(app, body, grantHeaders(newIdempotencyKey(), otherOrgClaims));
+  assert.equal(crossOrgReplay.status, freshKeyCrossOrg.status);
+  assert.deepEqual(await crossOrgReplay.json(), await freshKeyCrossOrg.json());
+
+  assert.deepEqual(await deniedCreateAudits(app, "idempotency_key_conflict"), []);
+
+  // The receipts are disjoint and the storage lookup is caller- and org-bound.
+  const receipts = await app.storage.DB.prepare(
+    "SELECT org_id, key_hash, caller_id FROM migration_grant_idempotency_receipts ORDER BY created_at",
+  ).all<{ org_id: string; key_hash: string; caller_id: string }>();
+  const rows = receipts.results ?? [];
+  assert.equal(rows.length, 4);
+  assert.equal(new Set(rows.map((row) => row.key_hash)).size, 4);
+  const first = rows.find((row) => row.caller_id === "user_admin" && row.org_id === ORG)!;
+  assert.equal(
+    await app.storage.migrationGrants!.findByIdempotencyKey({
+      orgId: "org_other",
+      keyHash: first.key_hash,
+      callerId: "user_admin",
+    }),
+    null,
+  );
+  assert.equal(
+    await app.storage.migrationGrants!.findByIdempotencyKey({
+      orgId: ORG,
+      keyHash: first.key_hash,
+      callerId: "user_admin_2",
+    }),
+    null,
+  );
+  // The original caller's grant is still the one its key returns.
+  const retry = await postGrant(app, body, grantHeaders(key));
+  assert.deepEqual((await retry.json()) as GrantResponse, original);
+});
+
+test("idempotency: a failure mid-transaction leaves no receipt, grant or audit", async (t) => {
+  const failures: Array<[string, string]> = [
+    [
+      "receipt insert",
+      `CREATE TRIGGER fail_fixture BEFORE INSERT ON migration_grant_idempotency_receipts
+       BEGIN SELECT RAISE(ABORT, 'fixture receipt failure'); END`,
+    ],
+    [
+      "audit insert",
+      `CREATE TRIGGER fail_fixture BEFORE INSERT ON audit_logs
+       WHEN NEW.action = 'migration_grant.created' AND NEW.result = 'allowed'
+       BEGIN SELECT RAISE(ABORT, 'fixture create audit failure'); END`,
+    ],
+  ];
+  for (const [name, trigger] of failures) {
+    await t.test(name, async () => {
+      const { app, migrationKey } = await createHarness();
+      const key = newIdempotencyKey();
+      const body = grantBody(migrationKey.id);
+      await app.storage.DB.prepare(trigger).run();
+      const failed = await silenceConsoleError(() =>
+        postGrant(app, body, grantHeaders(key)),
+      );
+      assert.equal(failed.status, 500);
+      assert.deepEqual(await grantCounts(app), {
+        grants: 0,
+        receipts: 0,
+        createdAudits: 0,
+      });
+
+      // The key was never consumed: the retry creates the grant normally.
+      await app.storage.DB.prepare("DROP TRIGGER fail_fixture").run();
+      const retry = await postGrant(app, body, grantHeaders(key));
+      assert.equal(retry.status, 201);
+      assert.equal(retry.headers.get("Idempotent-Replayed"), null);
+      assert.deepEqual(await grantCounts(app), {
+        grants: 1,
+        receipts: 1,
+        createdAudits: 1,
+      });
+    });
+  }
+});
+
+test("idempotency: recovery works while disabled, expired or revoked without changing the grant", async (t) => {
+  await t.test("issuance disabled", async () => {
+    const { app, migrationKey } = await createHarness();
+    const key = newIdempotencyKey();
+    const body = grantBody(migrationKey.id);
+    const original = await assertJsonResponse<GrantResponse>(
+      await postGrant(app, body, grantHeaders(key)),
+      201,
+    );
+    for (const flag of [undefined, "false"]) {
+      const disabledApp = createTestApp(
+        { RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS: flag },
+        { storage: app.storage },
+      );
+      const recovered = await postGrant(disabledApp, body, grantHeaders(key));
+      assert.equal(recovered.status, 201);
+      assert.equal(recovered.headers.get("Idempotent-Replayed"), "true");
+      assert.deepEqual((await recovered.json()) as GrantResponse, original);
+
+      // Everything that is not a recovery stays the disabled refusal.
+      await expectError(
+        await postGrant(disabledApp, body, grantHeaders()),
+        403,
+        "migration_assertions_disabled",
+      );
+      await expectError(
+        await postGrant(disabledApp, body, adminHeaders()),
+        403,
+        "migration_assertions_disabled",
+      );
+      await expectError(
+        await postGrant(disabledApp, { ...body, plan: {} }, grantHeaders(key)),
+        403,
+        "migration_assertions_disabled",
+      );
+      // A changed request under the same key is still a conflict.
+      await expectError(
+        await postGrant(disabledApp, { ...body, notAfter: futureIso(7200) }, grantHeaders(key)),
+        409,
+        "idempotency_key_conflict",
+      );
+      // Minting stays disabled: recovery does not re-enable issuance.
+      await expectError(
+        await mint(disabledApp, migrationKey.key, mintBody(original.grantId)),
+        403,
+        "migration_assertions_disabled",
+      );
+    }
+    assert.deepEqual(await grantCounts(app), {
+      grants: 1,
+      receipts: 1,
+      createdAudits: 1,
+    });
+  });
+
+  await t.test("expired", async () => {
+    const { app, migrationKey } = await createHarness();
+    const key = newIdempotencyKey();
+    const body = grantBody(migrationKey.id, { notAfter: futureIso(60) });
+    const original = await assertJsonResponse<GrantResponse>(
+      await postGrant(app, body, grantHeaders(key)),
+      201,
+    );
+    const realNow = Date.now;
+    const later = realNow() + 2 * 3600 * 1000;
+    Date.now = () => later;
+    try {
+      // The request's own notAfter is now in the past.
+      assert.ok(Date.parse(body.notAfter) < Date.now());
+      const recovered = await postGrant(app, body, grantHeaders(key));
+      assert.equal(recovered.status, 201);
+      assert.equal(recovered.headers.get("Idempotent-Replayed"), "true");
+      assert.deepEqual((await recovered.json()) as GrantResponse, original);
+      // A fresh create with that request is refused, so recovery is the only
+      // path and it does not recreate or extend anything.
+      await expectError(
+        await postGrant(app, body, grantHeaders()),
+        400,
+        "invalid_not_after",
+      );
+      await expectError(
+        await mint(app, migrationKey.key, mintBody(original.grantId)),
+        403,
+        "migration_grant_expired",
+      );
+    } finally {
+      Date.now = realNow;
+    }
+    const stored = await app.storage.migrationGrants!.get(original.grantId);
+    assert.equal(stored?.notAfter, original.notAfter);
+    assert.deepEqual(await grantCounts(app), {
+      grants: 1,
+      receipts: 1,
+      createdAudits: 1,
+    });
+  });
+
+  await t.test("revoked", async () => {
+    const { app, migrationKey } = await createHarness();
+    const key = newIdempotencyKey();
+    const body = grantBody(migrationKey.id);
+    const original = await assertJsonResponse<GrantResponse>(
+      await postGrant(app, body, grantHeaders(key)),
+      201,
+    );
+    const revoked = await assertJsonResponse<GrantResponse>(
+      await request(app, "POST", `/v1/migration-grants/${original.grantId}/revoke`, undefined, adminHeaders()),
+      200,
+    );
+    assert.ok(revoked.revokedAt);
+    const recovered = await postGrant(app, body, grantHeaders(key));
+    assert.equal(recovered.status, 201);
+    assert.equal(recovered.headers.get("Idempotent-Replayed"), "true");
+    const recoveredGrant = (await recovered.json()) as GrantResponse;
+    assert.deepEqual(recoveredGrant, revoked, "revocation state is returned, not cleared");
+    assert.equal(recoveredGrant.grantId, original.grantId);
+    await expectError(
+      await mint(app, migrationKey.key, mintBody(original.grantId)),
+      403,
+      "migration_grant_revoked",
+    );
+    assert.deepEqual(await grantCounts(app), {
+      grants: 1,
+      receipts: 1,
+      createdAudits: 1,
+    });
+  });
+});
+
+test("idempotency: the key is required, high entropy, and refusals are audited", async (t) => {
+  const { app, migrationKey } = await createHarness();
+  const body = grantBody(migrationKey.id);
+  const cases: Array<[string, Record<string, string>, string]> = [
+    ["missing", adminHeaders() as Record<string, string>, "idempotency_key_required"],
+    ["too short", grantHeaders("abcdefghijklmnopqrstuvwxyz01234"), "invalid_idempotency_key"],
+    ["too long", grantHeaders(`${newIdempotencyKey()}${"x".repeat(100)}`), "invalid_idempotency_key"],
+    ["low entropy", grantHeaders("a".repeat(40)), "invalid_idempotency_key"],
+    ["bad characters", grantHeaders(`${newIdempotencyKey()}!`), "invalid_idempotency_key"],
+  ];
+  for (const [name, headers, code] of cases) {
+    await t.test(name, async () => {
+      const response = await postGrant(app, body, headers);
+      const text = await response.text();
+      assert.equal(response.status, 400);
+      assert.equal((JSON.parse(text) as ErrorBody).code, code);
+      const raw = headers[IDEMPOTENCY_HEADER];
+      if (raw) {
+        assert.equal(text.includes(raw), false, "refusal must not echo the key");
+      }
+      assert.equal((await deniedCreateAudits(app, code)).length > 0, true);
+    });
+  }
+  // A UUIDv4 is accepted.
+  assert.equal(
+    (await postGrant(app, body, grantHeaders(crypto.randomUUID()))).status,
+    201,
+  );
+  assert.deepEqual(await grantCounts(app), {
+    grants: 1,
+    receipts: 1,
+    createdAudits: 1,
+  });
+});
+
+test("idempotency: the raw key never appears in the database, audit, responses or logs", async () => {
+  const { app, migrationKey } = await createHarness();
+  const key = newIdempotencyKey();
+  const body = grantBody(migrationKey.id);
+  const captured: string[] = [];
+  const methods = ["log", "info", "warn", "error", "debug"] as const;
+  const originals = methods.map((method) => console[method]);
+  for (const method of methods) {
+    console[method] = (...args: unknown[]) => {
+      captured.push(
+        args
+          .map((arg) =>
+            arg instanceof Error
+              ? `${arg.name}: ${arg.message}\n${arg.stack ?? ""}`
+              : typeof arg === "string"
+                ? arg
+                : JSON.stringify(arg, (_k, v) =>
+                    v instanceof Error ? `${v.message}\n${v.stack ?? ""}` : v,
+                  ),
+          )
+          .join(" "),
+      );
+    };
+  }
+  const responseTexts: string[] = [];
+  const record = async (response: Promise<Response>) => {
+    const resolved = await response;
+    responseTexts.push(
+      JSON.stringify([...resolved.headers.entries()]),
+      await resolved.text(),
+    );
+    return resolved;
+  };
+  try {
+    // A failed create (logged 500), the real create, a replay, a conflict,
+    // a disabled recovery and a disabled miss.
+    await app.storage.DB.prepare(`
+      CREATE TRIGGER fail_fixture BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'migration_grant.created' AND NEW.result = 'allowed'
+      BEGIN SELECT RAISE(ABORT, 'fixture create audit failure'); END
+    `).run();
+    assert.equal((await record(postGrant(app, body, grantHeaders(key)))).status, 500);
+    await app.storage.DB.prepare("DROP TRIGGER fail_fixture").run();
+    assert.equal((await record(postGrant(app, body, grantHeaders(key)))).status, 201);
+    assert.equal((await record(postGrant(app, body, grantHeaders(key)))).status, 201);
+    assert.equal(
+      (await record(postGrant(app, { ...body, notAfter: futureIso(7200) }, grantHeaders(key)))).status,
+      409,
+    );
+    const disabledApp = createTestApp(
+      { RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS: "false" },
+      { storage: app.storage },
+    );
+    assert.equal((await record(postGrant(disabledApp, body, grantHeaders(key)))).status, 201);
+    assert.equal(
+      (await record(postGrant(disabledApp, { ...body, plan: {} }, grantHeaders(key)))).status,
+      403,
+    );
+  } finally {
+    methods.forEach((method, index) => {
+      console[method] = originals[index]!;
+    });
+  }
+
+  assert.ok(captured.length > 0, "the failed create was logged");
+  for (const line of captured) {
+    assert.equal(line.includes(key), false, "raw key leaked into a log line");
+  }
+  for (const text of responseTexts) {
+    assert.equal(text.includes(key), false, "raw key leaked into a response");
+  }
+
+  const tables = await app.storage.DB.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table'",
+  ).all<{ name: string }>();
+  let rowsScanned = 0;
+  for (const { name } of tables.results ?? []) {
+    const rows = await app.storage.DB.prepare(`SELECT * FROM "${name}"`).all<Record<string, unknown>>();
+    for (const row of rows.results ?? []) {
+      rowsScanned += 1;
+      assert.equal(JSON.stringify(row).includes(key), false, `raw key stored in ${name}`);
+    }
+  }
+  assert.ok(rowsScanned > 0);
+  const auditEntries = await app.storage.audit.query({ orgId: ORG, limit: 200 });
+  assert.ok(auditEntries.entries.length > 0);
+  assert.equal(JSON.stringify(auditEntries).includes(key), false);
+  // The stored hash is not a bare SHA-256 of the key either.
+  const receipt = await app.storage.DB.prepare(
+    "SELECT key_hash FROM migration_grant_idempotency_receipts",
+  ).first<{ key_hash: string }>();
+  assert.notEqual(receipt?.key_hash, crypto.createHash("sha256").update(key).digest("hex"));
 });
