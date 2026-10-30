@@ -59,7 +59,12 @@ attestations.post("/grants", async (c) => {
   const storage = c.get("storage");
   const workspaceToken = late
     ? null
-    : await resolveWorkspaceToken(storage.apiKeys, auth.claims.meta?.apiKeyId);
+    : await resolveWorkspaceToken(
+        storage.apiKeys,
+        typeof auth.claims.meta?.apiKeyId === "string"
+          ? auth.claims.meta.apiKeyId
+          : undefined,
+      );
   if (!late && !workspaceToken) {
     return c.json({ error: "workspace_token_required", code: "workspace_token_required" }, 401);
   }

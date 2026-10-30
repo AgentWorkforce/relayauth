@@ -11,11 +11,14 @@ export {
   toStorageCapacityExhaustedError,
 } from "./lib/storage-retry.js";
 export {
+  canonicalMigrationJson,
+  normalizeMigrationGrantPairs,
   resolveAuthStorage,
   resolveAuditStorage,
   resolveContextStorage,
   resolvePolicyStorage,
   resolveRoleStorage,
+  verifyStoredMigrationGrantPlan,
 } from "./storage/index.js";
 export type {
   AuthStorage,
@@ -27,6 +30,8 @@ export type {
   RevocationStorage,
   RoleStorage,
   TokenStorage,
+  MigrationGrantPair,
+  MigrationGrantPlan,
 } from "./storage/index.js";
 export type { AppConfig, AppEnv } from "./env.js";
 export type {

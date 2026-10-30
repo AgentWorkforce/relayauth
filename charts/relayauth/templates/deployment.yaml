@@ -64,6 +64,10 @@ spec:
             - name: RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN
               value: "true"
             {{- end }}
+            {{- if (.Values.migrationAssertions).enabled }}
+            - name: RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS
+              value: "true"
+            {{- end }}
             {{- with .Values.allowedOrigins }}
             - name: ALLOWED_ORIGINS
               value: {{ . | quote }}

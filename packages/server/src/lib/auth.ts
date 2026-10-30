@@ -494,7 +494,11 @@ async function isWorkspaceLineageRevoked(
   storage: AuthStorage,
   claims: RelayAuthTokenClaims,
 ): Promise<boolean> {
-  const workspaceTokenId = normalizeCredential(claims.meta?.workspaceTokenId);
+  const workspaceTokenId = normalizeCredential(
+    typeof claims.meta?.workspaceTokenId === "string"
+      ? claims.meta.workspaceTokenId
+      : undefined,
+  );
   if (!workspaceTokenId) {
     return false;
   }

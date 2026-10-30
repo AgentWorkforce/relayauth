@@ -9,6 +9,27 @@ export interface RelayAuthWorkspaceScope {
   scopes: string[];
 }
 
+export interface RelayAuthMigrationUploadIdentity {
+  grant_id: string;
+  plan_digest: string;
+  key: string;
+  org_id: string;
+  workspace_id: string;
+  source_user_id: string;
+  session: {
+    machine_id: string;
+    harness: string;
+    session_id: string;
+    started_at: string;
+  };
+  content_sha256: string;
+  entry_sha256: string;
+}
+
+export type RelayAuthTokenMetadataValue =
+  | string
+  | RelayAuthMigrationUploadIdentity;
+
 export interface RelayAuthTokenClaims {
   sub: string;
   org: string;
@@ -32,7 +53,8 @@ export interface RelayAuthTokenClaims {
   jti: string;
   nbf?: number;
   sid?: string;
-  meta?: Record<string, string>;
+  /** Signed, JSON-safe metadata. Consumers must validate capability-specific shapes. */
+  meta?: Record<string, RelayAuthTokenMetadataValue>;
   parentTokenId?: string;
   budget?: TokenBudget;
 }

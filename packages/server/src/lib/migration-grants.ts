@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import type { AuditLogWriteEntry, AuthStorage } from "../storage/index.js";
+import { canonicalMigrationId } from "./migration-plan.js";
 
 /**
  * Scope a dedicated API key must carry, and carry alone, to mint migration
@@ -12,20 +13,9 @@ export const MIGRATION_ASSERTION_SCOPE = "relayauth:assertion:create:migration";
 export const MIGRATION_GRANT_MANAGE_SCOPE = "relayauth:api-key:manage:*";
 export const MIGRATION_ASSERTION_SUBJECT = "agent_relayhistory_migration";
 export const MAX_MIGRATION_GRANT_TTL_SECONDS = 7 * 24 * 3600;
-/** Mirrors the CHECK on migration_grants.allowed_users_json. */
-export const MAX_MIGRATION_GRANT_USERS = 1000;
 
-/**
- * Identity ids as RelayAuth and Cloud issue them. Bounded and free of
- * whitespace and JSON/URL metacharacters so an id can sit in a claim, an
- * audit row and a log line verbatim.
- */
-const MIGRATION_USER_ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9_.:@|-]{0,255}$/u;
+/** Maximum sanitized scalar length accepted into denial audit metadata. */
 const AUDIT_VALUE_MAX_LENGTH = 256;
-
-export function isMigrationUserId(value: unknown): value is string {
-  return typeof value === "string" && MIGRATION_USER_ID_SHAPE.test(value);
-}
 
 export function createMigrationGrantId(): string {
   return `mgr_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -38,7 +28,8 @@ export type MigrationSourceUserRefusal = {
     | "source_user_not_found"
     | "source_user_org_mismatch"
     | "source_user_not_human"
-    | "source_user_inactive";
+    | "source_user_inactive"
+    | "source_user_ambiguous";
   status: 403;
 };
 
@@ -54,7 +45,38 @@ export async function checkMigrationSourceUser(
   orgId: string,
   userId: string,
 ): Promise<{ ok: true } | MigrationSourceUserRefusal> {
-  const identity = await storage.identities.get(userId);
+  let canonicalUserId: string;
+  let canonicalOrgId: string;
+  try {
+    canonicalUserId = canonicalMigrationId(userId, "source user id");
+    canonicalOrgId = canonicalMigrationId(orgId, "organization id");
+  } catch {
+    return {
+      ok: false,
+      error: "source user is not a RelayAuth identity",
+      code: "source_user_not_found",
+      status: 403,
+    };
+  }
+  // RelayAuth deployments historically stored either the canonical id or its
+  // single `relay_` alias. Resolve both, but fail closed on an ambiguous store.
+  const [canonicalIdentity, prefixedIdentity] = await Promise.all([
+    storage.identities.get(canonicalUserId),
+    storage.identities.get(`relay_${canonicalUserId}`),
+  ]);
+  if (
+    canonicalIdentity &&
+    prefixedIdentity &&
+    canonicalIdentity.id !== prefixedIdentity.id
+  ) {
+    return {
+      ok: false,
+      error: "source user id has ambiguous RelayAuth aliases",
+      code: "source_user_ambiguous",
+      status: 403,
+    };
+  }
+  const identity = canonicalIdentity ?? prefixedIdentity;
   if (!identity) {
     return {
       ok: false,
@@ -63,7 +85,20 @@ export async function checkMigrationSourceUser(
       status: 403,
     };
   }
-  if (identity.orgId !== orgId) {
+  let identityOrgId: string;
+  let identityId: string;
+  try {
+    identityOrgId = canonicalMigrationId(identity.orgId, "organization id");
+    identityId = canonicalMigrationId(identity.id, "source user id");
+  } catch {
+    return {
+      ok: false,
+      error: "source user is not a RelayAuth identity",
+      code: "source_user_not_found",
+      status: 403,
+    };
+  }
+  if (identityId !== canonicalUserId || identityOrgId !== canonicalOrgId) {
     return {
       ok: false,
       error: "source user belongs to another organization",

@@ -32,11 +32,18 @@ import {
   auditMetadata,
   auditValue,
   checkMigrationSourceUser,
-  isMigrationUserId,
   MIGRATION_ASSERTION_SCOPE,
   MIGRATION_ASSERTION_SUBJECT,
   writeMigrationDenialAudit,
 } from "../lib/migration-grants.js";
+import {
+  canonicalMigrationId,
+  migrationAllowedPairHash,
+  migrationSha256,
+  migrationUploadIdentity,
+  MigrationPlanError,
+  type MigrationPlanEntry,
+} from "../lib/migration-plan.js";
 import { resolveIssuer, signToken } from "../lib/sign.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
@@ -121,6 +128,7 @@ type MigrationAssertionRequest = {
   grantId?: unknown;
   sourceUserId?: unknown;
   workspaceId?: unknown;
+  upload?: unknown;
   nonce?: unknown;
   expiresIn?: unknown;
 };
@@ -827,8 +835,7 @@ tokens.post("/migration-assertion", async (c) => {
       metadata: auditMetadata({
         reason: code,
         grantId: auditValue(body?.grantId),
-        sourceUserId: auditValue(body?.sourceUserId),
-        workspaceId: auditValue(body?.workspaceId),
+        pairHash: migrationRequestPairHash(body),
       }),
     });
     return c.json({ error, code }, status);
@@ -856,6 +863,14 @@ tokens.post("/migration-assertion", async (c) => {
     );
   }
 
+  if (c.env.RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS !== "true") {
+    return refuse(
+      "migration assertions are disabled",
+      "migration_assertions_disabled",
+      403,
+    );
+  }
+
   if (!storage.migrationGrants) {
     return refuse(
       "migration grants are not supported by this storage backend",
@@ -875,7 +890,13 @@ tokens.post("/migration-assertion", async (c) => {
 
   // A grant in another org reads as absent, the same as an unknown id.
   const grant = await storage.migrationGrants.get(request.grantId);
-  if (!grant || grant.orgId !== auth.claims.org) {
+  let callerOrgId: string;
+  try {
+    callerOrgId = canonicalMigrationId(auth.claims.org, "organization id");
+  } catch {
+    return refuse("migration_grant_not_found", "migration_grant_not_found", 404);
+  }
+  if (!grant || grant.orgId !== callerOrgId) {
     return refuse("migration_grant_not_found", "migration_grant_not_found", 404);
   }
   if (grant.apiKeyId !== auth.claims.meta.apiKeyId) {
@@ -891,10 +912,35 @@ tokens.post("/migration-assertion", async (c) => {
   if (Date.now() >= Date.parse(grant.notAfter)) {
     return refuse("migration grant has expired", "migration_grant_expired", 403);
   }
-  if (!grant.allowedUserIds.includes(request.sourceUserId)) {
+  const pairAllowed = grant.allowedPairs.some(
+    (pair) =>
+      pair.sourceUserId === request.sourceUserId &&
+      pair.workspaceId === request.workspaceId,
+  );
+  if (!pairAllowed) {
     return refuse(
-      "source user is not allowed by this migration grant",
-      "source_user_not_allowed",
+      "source user and workspace are not an allowed migration pair",
+      "migration_pair_not_allowed",
+      403,
+    );
+  }
+  const planEntry = grant.plan.manifests.find(
+    (entry) => entry.key === request.uploadKey,
+  );
+  if (!planEntry) {
+    return refuse(
+      "upload key is not in this migration grant's plan",
+      "migration_upload_not_allowed",
+      403,
+    );
+  }
+  if (
+    planEntry.source_user_id !== request.sourceUserId ||
+    planEntry.workspace_id !== request.workspaceId
+  ) {
+    return refuse(
+      "upload key is bound to another migration pair",
+      "migration_pair_not_allowed",
       403,
     );
   }
@@ -911,10 +957,11 @@ tokens.post("/migration-assertion", async (c) => {
     grant,
     sourceUserId: request.sourceUserId,
     workspaceId: request.workspaceId,
+    planEntry,
     nonce: request.nonce,
     expiresIn: request.expiresIn,
     actorId: auth.claims.sub,
-    actorOrgId: auth.claims.org,
+    actorOrgId: callerOrgId,
   });
   if (!assertion) {
     return refuse("migration grant has expired", "migration_grant_expired", 403);
@@ -1043,7 +1090,7 @@ tokens.post("/refresh", async (c) => {
       sessionId: presentedSid,
       action: "token.refreshed",
       parentTokenId: normalizeOptionalString(verification.claims.parentTokenId),
-      meta: verification.claims.meta,
+      meta: stringTokenMetadata(verification.claims.meta),
       expiresNotAfter: delegationHorizon.epochSeconds,
       wrapAccessToken: isDerivedClaims(verification.claims),
       wrapRefreshToken: isDerivedClaims(verification.claims),
@@ -1601,6 +1648,7 @@ async function issueMigrationAssertion(
     grant: MigrationGrant;
     sourceUserId: string;
     workspaceId: string;
+    planEntry: MigrationPlanEntry;
     nonce: string;
     expiresIn: number;
     actorId: string;
@@ -1618,6 +1666,10 @@ async function issueMigrationAssertion(
 
   const sessionId = createSessionId();
   const scopes = [...MIGRATION_ASSERTION_SCOPES];
+  const upload = migrationUploadIdentity(
+    options.planEntry,
+    options.grant.planDigest,
+  );
   const claims: RelayAuthTokenClaims = {
     sub: MIGRATION_ASSERTION_SUBJECT,
     org: options.grant.orgId,
@@ -1644,6 +1696,7 @@ async function issueMigrationAssertion(
       actorId: options.actorId,
       actorOrgId: options.actorOrgId,
       workspaceId: options.workspaceId,
+      upload,
     },
   };
 
@@ -1664,7 +1717,13 @@ async function issueMigrationAssertion(
         actorOrgId: options.actorOrgId,
         grantId: options.grant.grantId,
         planDigest: options.grant.planDigest,
-        sourceUserId: options.sourceUserId,
+        pairHash: migrationAllowedPairHash([
+          {
+            sourceUserId: options.sourceUserId,
+            workspaceId: options.workspaceId,
+          },
+        ]),
+        uploadKeyHash: migrationSha256(options.planEntry.key),
         nonce: options.nonce,
         grantedScopes: JSON.stringify(scopes),
       },
@@ -2265,10 +2324,25 @@ function normalizeMigrationAssertionRequest(
       grantId: string;
       sourceUserId: string;
       workspaceId: string;
+      uploadKey: string;
       nonce: string;
       expiresIn: number;
     }
   | { ok: false; error: string; code: string; status: 400 } {
+  if (
+    !hasAllowedKeys(
+      value as Record<string, unknown>,
+      ["grantId", "sourceUserId", "workspaceId", "upload", "nonce", "expiresIn"],
+      ["grantId", "sourceUserId", "workspaceId", "upload", "nonce"],
+    )
+  ) {
+    return {
+      ok: false,
+      error: "request has missing or unsupported fields",
+      code: "invalid_request",
+      status: 400,
+    };
+  }
   const grantId = normalizeOptionalString(value.grantId);
   if (!grantId) {
     return {
@@ -2279,21 +2353,57 @@ function normalizeMigrationAssertionRequest(
     };
   }
 
-  if (!isMigrationUserId(value.sourceUserId)) {
+  let sourceUserId: string;
+  let workspaceId: string;
+  try {
+    sourceUserId = canonicalMigrationId(value.sourceUserId, "source user id");
+    workspaceId = canonicalMigrationId(value.workspaceId, "workspace id");
+  } catch (error) {
+    if (!(error instanceof MigrationPlanError)) {
+      throw error;
+    }
     return {
       ok: false,
-      error: "sourceUserId must be a user id",
-      code: "sourceUserId_required",
+      error: "sourceUserId and workspaceId must be canonical identities",
+      code: "migration_pair_required",
       status: 400,
     };
   }
 
-  const workspaceId = normalizeOptionalString(value.workspaceId);
-  if (!workspaceId || workspaceId.length > MAX_MIGRATION_WORKSPACE_ID_LENGTH) {
+  if (workspaceId.length > MAX_MIGRATION_WORKSPACE_ID_LENGTH) {
     return {
       ok: false,
       error: "workspaceId is required",
       code: "workspaceId_required",
+      status: 400,
+    };
+  }
+
+  if (
+    !value.upload ||
+    typeof value.upload !== "object" ||
+    Array.isArray(value.upload) ||
+    !hasAllowedKeys(
+      value.upload as Record<string, unknown>,
+      ["key"],
+      ["key"],
+    )
+  ) {
+    return {
+      ok: false,
+      error: "upload must contain only its manifest key",
+      code: "invalid_upload_selector",
+      status: 400,
+    };
+  }
+  const uploadKey = normalizeOptionalString(
+    (value.upload as Record<string, unknown>).key,
+  );
+  if (!uploadKey || uploadKey.length > 1024) {
+    return {
+      ok: false,
+      error: "upload.key is required",
+      code: "invalid_upload_selector",
       status: 400,
     };
   }
@@ -2331,11 +2441,45 @@ function normalizeMigrationAssertionRequest(
   return {
     ok: true,
     grantId,
-    sourceUserId: value.sourceUserId,
+    sourceUserId,
     workspaceId,
+    uploadKey,
     nonce: value.nonce,
     expiresIn,
   };
+}
+
+function hasAllowedKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  required: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    keys.every((key) => allowed.includes(key)) &&
+    required.every((key) => Object.hasOwn(value, key))
+  );
+}
+
+function migrationRequestPairHash(
+  body: MigrationAssertionRequest | null,
+): string | undefined {
+  if (!body) {
+    return undefined;
+  }
+  try {
+    return migrationAllowedPairHash([
+      {
+        sourceUserId: canonicalMigrationId(
+          body.sourceUserId,
+          "source user id",
+        ),
+        workspaceId: canonicalMigrationId(body.workspaceId, "workspace id"),
+      },
+    ]);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -2797,10 +2941,10 @@ function normalizeRefreshTokenTtl(value: unknown): number | undefined {
 }
 
 function parseMetaRefreshTokenTtl(
-  meta: Record<string, string> | undefined,
+  meta: RelayAuthTokenClaims["meta"],
 ): number | undefined {
   const raw = meta?.[REFRESH_TOKEN_TTL_META_KEY];
-  if (!raw) {
+  if (typeof raw !== "string" || !raw) {
     return undefined;
   }
 
@@ -2811,10 +2955,10 @@ function parseMetaRefreshTokenTtl(
 }
 
 function parseMetaStringArray(
-  value: string | undefined,
+  value: unknown,
   fallback: string[],
 ): string[] {
-  if (!value) {
+  if (typeof value !== "string" || !value) {
     return [...fallback];
   }
 
@@ -2831,6 +2975,18 @@ function parseMetaStringArray(
   } catch {
     return [...fallback];
   }
+}
+
+function stringTokenMetadata(
+  meta: RelayAuthTokenClaims["meta"],
+): Record<string, string> | undefined {
+  if (!meta) {
+    return undefined;
+  }
+  const entries = Object.entries(meta).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string",
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 async function parseJsonObjectBody<T extends object>(
@@ -2952,7 +3108,10 @@ async function resolveRefreshIdentity(
 
   return createPathTokenIdentity({
     agentId: claims.sub,
-    agentName: claims.meta?.agentName ?? claims.sub,
+    agentName:
+      typeof claims.meta?.agentName === "string"
+        ? claims.meta.agentName
+        : claims.sub,
     orgId: claims.org,
     workspaceId: claims.wks,
     sponsorId: claims.sponsorId,

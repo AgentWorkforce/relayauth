@@ -26,6 +26,12 @@ import type {
   IdentityBudgetUsage,
   StoredIdentity,
 } from "./identity-types.js";
+import {
+  canonicalMigrationJson,
+  normalizeMigrationGrantPairs,
+  verifyStoredMigrationGrantPlan,
+  type MigrationGrantPlan,
+} from "../lib/migration-plan.js";
 import type {
   ApiKeyStorage,
   AppendAttestationLedgerEntryInput,
@@ -469,15 +475,15 @@ const REDEEM_ATTESTATION_GRANT_SQL = `
 const INSERT_MIGRATION_GRANT_SQL = `
   INSERT INTO migration_grants (
     grant_id, org_id, api_key_id, plan_digest, audience, allowed_users_json,
-    not_after, created_by, created_at, revoked_at
+    allowed_pairs_json, plan_json, not_after, created_by, created_at, revoked_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const SELECT_MIGRATION_GRANT_SQL = `
   SELECT
     grant_id, org_id, api_key_id, plan_digest, audience, allowed_users_json,
-    not_after, created_by, created_at, revoked_at
+    allowed_pairs_json, plan_json, not_after, created_by, created_at, revoked_at
   FROM migration_grants
   WHERE grant_id = ?
   LIMIT 1
@@ -912,6 +918,8 @@ type MigrationGrantRow = {
   plan_digest?: string;
   audience?: string;
   allowed_users_json?: string | null;
+  allowed_pairs_json?: string | null;
+  plan_json?: string | null;
   not_after?: string;
   created_by?: string;
   created_at?: string;
@@ -3932,23 +3940,24 @@ function assertFinalizeEntryMatchesGrant(
 }
 
 function normalizeMigrationGrant(input: MigrationGrant): MigrationGrant {
-  const allowedUserIds = normalizeRequiredStringArray(
-    input.allowedUserIds,
-    "allowedUserIds is required",
-  );
+  const allowedPairs = normalizeMigrationGrantPairs(input.allowedPairs);
+  const plan = structuredClone(input.plan);
   const revokedAt = normalizeOptionalString(input.revokedAt);
-  return {
+  const grant = {
     grantId: requireString(input.grantId, "grantId is required"),
     orgId: requireString(input.orgId, "orgId is required"),
     apiKeyId: requireString(input.apiKeyId, "apiKeyId is required"),
     planDigest: requireString(input.planDigest, "planDigest is required"),
+    plan,
     audience: requireString(input.audience, "audience is required"),
-    allowedUserIds: [...new Set(allowedUserIds)],
+    allowedPairs,
     notAfter: normalizeTimestamp(input.notAfter),
     createdBy: requireString(input.createdBy, "createdBy is required"),
     createdAt: normalizeTimestamp(input.createdAt),
     ...(revokedAt ? { revokedAt } : {}),
   };
+  verifyStoredMigrationGrantPlan(grant);
+  return grant;
 }
 
 function hydrateMigrationGrant(row: MigrationGrantRow | undefined): MigrationGrant | null {
@@ -3956,14 +3965,16 @@ function hydrateMigrationGrant(row: MigrationGrantRow | undefined): MigrationGra
     return null;
   }
   try {
-    const allowedUserIds = JSON.parse(row.allowed_users_json ?? "") as unknown;
+    const allowedPairs = JSON.parse(row.allowed_pairs_json ?? "") as unknown;
+    const plan = JSON.parse(row.plan_json ?? "") as unknown;
     return normalizeMigrationGrant({
       grantId: row.grant_id ?? "",
       orgId: row.org_id ?? "",
       apiKeyId: row.api_key_id ?? "",
       planDigest: row.plan_digest ?? "",
+      plan: plan as MigrationGrantPlan,
       audience: row.audience ?? "",
-      allowedUserIds: normalizeRequiredStringArray(allowedUserIds, "invalid allowed users"),
+      allowedPairs: normalizeMigrationGrantPairs(allowedPairs),
       notAfter: row.not_after ?? "",
       createdBy: row.created_by ?? "",
       createdAt: row.created_at ?? "",
@@ -3980,17 +3991,26 @@ function hydrateMigrationGrant(row: MigrationGrantRow | undefined): MigrationGra
 }
 
 function cloneMigrationGrant(grant: MigrationGrant): MigrationGrant {
-  return { ...grant, allowedUserIds: [...grant.allowedUserIds] };
+  return {
+    ...grant,
+    plan: structuredClone(grant.plan),
+    allowedPairs: grant.allowedPairs.map((pair) => ({ ...pair })),
+  };
 }
 
 function toMigrationGrantParams(grant: MigrationGrant): unknown[] {
+  const legacyAllowedUsers = [
+    ...new Set(grant.allowedPairs.map((pair) => pair.sourceUserId)),
+  ];
   return [
     grant.grantId,
     grant.orgId,
     grant.apiKeyId,
     grant.planDigest,
     grant.audience,
-    JSON.stringify(grant.allowedUserIds),
+    JSON.stringify(legacyAllowedUsers),
+    canonicalMigrationJson(grant.allowedPairs),
+    canonicalMigrationJson(grant.plan),
     grant.notAfter,
     grant.createdBy,
     grant.createdAt,

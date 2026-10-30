@@ -10,13 +10,19 @@ import {
   auditValue,
   checkMigrationSourceUser,
   createMigrationGrantId,
-  isMigrationUserId,
   MAX_MIGRATION_GRANT_TTL_SECONDS,
-  MAX_MIGRATION_GRANT_USERS,
   MIGRATION_ASSERTION_SCOPE,
   MIGRATION_GRANT_MANAGE_SCOPE,
   writeMigrationDenialAudit,
 } from "../lib/migration-grants.js";
+import {
+  canonicalMigrationId,
+  deriveMigrationGrantPlan,
+  migrationAllowedPairHash,
+  MigrationPlanError,
+  type MigrationGrantPair,
+  type MigrationGrantPlan,
+} from "../lib/migration-plan.js";
 import {
   isStorageError,
   isValidAuditTimestamp,
@@ -27,9 +33,8 @@ import { normalizeRelayhistoryAssertionOrigin } from "./tokens.js";
 
 type CreateMigrationGrantRequest = {
   apiKeyId?: unknown;
-  planDigest?: unknown;
   audience?: unknown;
-  allowedUserIds?: unknown;
+  plan?: unknown;
   notAfter?: unknown;
 };
 
@@ -39,7 +44,8 @@ type MigrationGrantResponse = {
   apiKeyId: string;
   planDigest: string;
   audience: string;
-  allowedUserIds: string[];
+  allowedPairs: MigrationGrantPair[];
+  planEntries: number;
   notAfter: string;
   createdBy: string;
   createdAt: string;
@@ -50,10 +56,9 @@ type Refusal = {
   error: string;
   code: string;
   status: 400 | 403 | 404 | 409 | 501;
-  userId?: string;
+  sourceUserId?: string;
+  pairHash?: string;
 };
-
-const PLAN_DIGEST_SHAPE = /^[0-9a-f]{64}$/u;
 
 const migrationGrants = new Hono<AppEnv>();
 
@@ -74,16 +79,17 @@ migrationGrants.post("/", async (c) => {
       metadata: auditMetadata({
         reason: refusal.code,
         apiKeyId: auditValue(body?.apiKeyId),
-        planDigest: auditValue(body?.planDigest),
         audience: auditValue(body?.audience),
-        userId: refusal.userId,
+        pairHash: refusal.pairHash,
       }),
     });
     return c.json(
       {
         error: refusal.error,
         code: refusal.code,
-        ...(refusal.userId ? { userId: refusal.userId } : {}),
+        ...(refusal.sourceUserId
+          ? { sourceUserId: refusal.sourceUserId }
+          : {}),
       },
       refusal.status,
     );
@@ -99,14 +105,29 @@ migrationGrants.post("/", async (c) => {
     return refuse(unsupportedRefusal());
   }
 
+  if (c.env.RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS !== "true") {
+    return refuse({
+      error: "migration assertions are disabled",
+      code: "migration_assertions_disabled",
+      status: 403,
+    });
+  }
+
   if (!body) {
     return refuse({ error: "Invalid JSON body", code: "invalid_request", status: 400 });
   }
 
-  const request = normalizeCreateMigrationGrantRequest(body, {
-    allowPrivateHttpOrigin:
-      c.env.RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN === "true",
-  });
+  const request = normalizeCreateMigrationGrantRequest(
+    body,
+    {
+      allowPrivateHttpOrigin:
+        c.env.RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN === "true",
+    },
+    {
+      grantId: createMigrationGrantId(),
+      orgId: auth.claims.org,
+    },
+  );
   if (!request.ok) {
     return refuse(request);
   }
@@ -115,7 +136,15 @@ migrationGrants.post("/", async (c) => {
   // live operator API key of the caller's org whose only scope is the
   // migration scope, so it can neither manage grants nor do anything else.
   const apiKey = await storage.apiKeys.get(request.apiKeyId);
-  if (!apiKey || apiKey.orgId !== auth.claims.org) {
+  let apiKeyOrgId: string | undefined;
+  try {
+    apiKeyOrgId = apiKey
+      ? canonicalMigrationId(apiKey.orgId, "organization id")
+      : undefined;
+  } catch {
+    apiKeyOrgId = undefined;
+  }
+  if (!apiKey || apiKeyOrgId !== request.orgId) {
     return refuse({ error: "api_key_not_found", code: "api_key_not_found", status: 404 });
   }
   if (apiKey.revokedAt) {
@@ -143,20 +172,34 @@ migrationGrants.post("/", async (c) => {
     });
   }
 
-  for (const userId of request.allowedUserIds) {
-    const sourceUser = await checkMigrationSourceUser(storage, auth.claims.org, userId);
+  for (const userId of new Set(
+    request.allowedPairs.map((pair) => pair.sourceUserId),
+  )) {
+    const sourceUser = await checkMigrationSourceUser(
+      storage,
+      request.orgId,
+      userId,
+    );
     if (!sourceUser.ok) {
-      return refuse({ ...sourceUser, userId });
+      const pair = request.allowedPairs.find(
+        (candidate) => candidate.sourceUserId === userId,
+      )!;
+      return refuse({
+        ...sourceUser,
+        sourceUserId: userId,
+        pairHash: migrationAllowedPairHash([pair]),
+      });
     }
   }
 
   const grant: MigrationGrant = {
-    grantId: createMigrationGrantId(),
-    orgId: auth.claims.org,
+    grantId: request.grantId,
+    orgId: request.orgId,
     apiKeyId: apiKey.id,
     planDigest: request.planDigest,
+    plan: request.plan,
     audience: request.audience,
-    allowedUserIds: request.allowedUserIds,
+    allowedPairs: request.allowedPairs,
     notAfter: request.notAfter,
     createdBy: auth.claims.sub,
     createdAt: new Date().toISOString(),
@@ -208,14 +251,20 @@ migrationGrants.post("/:grantId/revoke", async (c) => {
   }
 
   const existing = await storage.migrationGrants.get(grantId);
-  if (!existing || existing.orgId !== auth.claims.org) {
+  let callerOrgId: string;
+  try {
+    callerOrgId = canonicalMigrationId(auth.claims.org, "organization id");
+  } catch {
+    return refuse(grantNotFound());
+  }
+  if (!existing || existing.orgId !== callerOrgId) {
     return refuse(grantNotFound());
   }
 
   try {
     const revoked = await storage.migrationGrants.revokeWithAudit({
       grantId,
-      orgId: auth.claims.org,
+      orgId: callerOrgId,
       revokedAt: new Date().toISOString(),
       auditEntry: createGrantAuditEntry("migration_grant.revoked", auth.claims, existing),
     });
@@ -237,28 +286,31 @@ export default migrationGrants;
 function normalizeCreateMigrationGrantRequest(
   value: CreateMigrationGrantRequest,
   originPolicy: { allowPrivateHttpOrigin: boolean },
+  context: { grantId: string; orgId: string },
 ):
   | {
       ok: true;
       apiKeyId: string;
       planDigest: string;
+      plan: MigrationGrantPlan;
+      orgId: string;
+      grantId: string;
       audience: string;
-      allowedUserIds: string[];
+      allowedPairs: MigrationGrantPair[];
       notAfter: string;
     }
   | (Refusal & { ok: false; status: 400 }) {
+  if (!hasExactKeys(value, ["apiKeyId", "audience", "plan", "notAfter"])) {
+    return {
+      ok: false,
+      error: "request has missing or unsupported fields",
+      code: "invalid_request",
+      status: 400,
+    };
+  }
   const apiKeyId = normalizeOptionalString(value.apiKeyId);
   if (!apiKeyId) {
     return { ok: false, error: "apiKeyId is required", code: "apiKeyId_required", status: 400 };
-  }
-
-  if (typeof value.planDigest !== "string" || !PLAN_DIGEST_SHAPE.test(value.planDigest)) {
-    return {
-      ok: false,
-      error: "planDigest must be a SHA-256 digest as 64 lowercase hex characters",
-      code: "invalid_plan_digest",
-      status: 400,
-    };
   }
 
   const audience = normalizeMigrationAudience(value.audience, originPolicy);
@@ -273,16 +325,22 @@ function normalizeCreateMigrationGrantRequest(
     };
   }
 
-  if (
-    !Array.isArray(value.allowedUserIds) ||
-    value.allowedUserIds.length === 0 ||
-    value.allowedUserIds.length > MAX_MIGRATION_GRANT_USERS ||
-    !value.allowedUserIds.every(isMigrationUserId)
-  ) {
+  let derived: ReturnType<typeof deriveMigrationGrantPlan>;
+  let orgId: string;
+  try {
+    orgId = canonicalMigrationId(context.orgId, "organization id");
+    derived = deriveMigrationGrantPlan({
+      grantId: context.grantId,
+      orgId,
+      plan: value.plan,
+    });
+  } catch (error) {
+    const code =
+      error instanceof MigrationPlanError ? error.code : "invalid_plan";
     return {
       ok: false,
-      error: `allowedUserIds must list 1 to ${MAX_MIGRATION_GRANT_USERS} user ids`,
-      code: "invalid_allowed_users",
+      error: error instanceof Error ? error.message : "plan is invalid",
+      code,
       status: 400,
     };
   }
@@ -299,10 +357,13 @@ function normalizeCreateMigrationGrantRequest(
 
   return {
     ok: true,
+    grantId: context.grantId,
+    orgId,
     apiKeyId,
-    planDigest: value.planDigest,
+    planDigest: derived.planDigest,
+    plan: derived.plan,
     audience,
-    allowedUserIds: [...new Set(value.allowedUserIds)],
+    allowedPairs: derived.allowedPairs,
     notAfter,
   };
 }
@@ -360,7 +421,9 @@ function createGrantAuditEntry(
       apiKeyId: grant.apiKeyId,
       planDigest: grant.planDigest,
       audience: grant.audience,
-      allowedUserCount: String(grant.allowedUserIds.length),
+      allowedPairCount: String(grant.allowedPairs.length),
+      allowedPairHash: migrationAllowedPairHash(grant.allowedPairs),
+      planEntries: String(grant.plan.manifests.length),
       notAfter: grant.notAfter,
     },
     timestamp: new Date().toISOString(),
@@ -374,12 +437,25 @@ function toMigrationGrantResponse(grant: MigrationGrant): MigrationGrantResponse
     apiKeyId: grant.apiKeyId,
     planDigest: grant.planDigest,
     audience: grant.audience,
-    allowedUserIds: [...grant.allowedUserIds],
+    allowedPairs: grant.allowedPairs.map((pair) => ({ ...pair })),
+    planEntries: grant.plan.manifests.length,
     notAfter: grant.notAfter,
     createdBy: grant.createdBy,
     createdAt: grant.createdAt,
     revokedAt: grant.revokedAt ?? null,
   };
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return (
+    actual.length === wanted.length &&
+    actual.every((key, index) => key === wanted[index])
+  );
 }
 
 function grantNotFound(): Refusal {

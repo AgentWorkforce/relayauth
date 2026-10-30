@@ -36,6 +36,12 @@ relayhistory:
   # https. Sets RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true.
   allowPrivateHttpOrigin: false
 
+migrationAssertions:
+  # Emergency/rollout gate for migration-grant creation and assertion minting.
+  # Keep false except during an approved migration window. Grant revocation is
+  # still available after this is turned back off.
+  enabled: false
+
 # Pre-created Secret holding keys/secrets (never rendered by this chart).
 # Each entry under secretKeys names a key inside that Secret; set an optional
 # entry to "" to leave it unconfigured. See docs/self-hosting.md.

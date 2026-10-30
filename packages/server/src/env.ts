@@ -37,6 +37,11 @@ export type AppConfig = {
    * http is not accepted there.
    */
   RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN?: string;
+  /**
+   * Default-off migration assertion issuer. Exactly "true" enables grant
+   * creation and minting; revocation remains available while disabled.
+   */
+  RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS?: string;
   RELAYAUTH_ENV_STAGE?: string;
   /** JSON object keyed by org id. See SponsorFederationConfig. */
   RELAYAUTH_SPONSOR_FEDERATIONS?: string;
