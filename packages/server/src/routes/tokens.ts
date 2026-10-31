@@ -1749,7 +1749,8 @@ function createAssertionAuditEntry(options: {
       actorOrgId: options.actorOrgId,
       sponsorId: options.sponsorId,
       grantedScopes: JSON.stringify(options.scopes),
-      // A compat-flag mint without a machine is flagged so it stays reviewable.
+      // Keep omission explicit for review; correlate with grantedScopes and
+      // the consumer operation because non-machine paths legitimately omit it.
       ...(options.machineId
         ? { machineId: options.machineId }
         : { machineIdMissing: "true" }),
