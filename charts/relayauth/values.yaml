@@ -36,6 +36,15 @@ relayhistory:
   # https. Sets RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true.
   allowPrivateHttpOrigin: false
 
+# Second issuer for session directory search tokens. Off by default. Enabling it
+# needs an issuer that differs from the general one and
+# secretKeys.sessionDirectorySigningKey, or RelayAuth refuses to start.
+sessionDirectory:
+  issuance: false
+  issuer: ""
+  # Comma-separated subject token audiences. Empty means "relayhistory".
+  subjectAudiences: ""
+
 # Pre-created Secret holding keys/secrets (never rendered by this chart).
 # Each entry under secretKeys names a key inside that Secret; set an optional
 # entry to "" to leave it unconfigured. See docs/self-hosting.md.
@@ -49,6 +58,12 @@ secretKeys:
   signingKeyNext: ""
   signingKeyPrevious: ""
   bootstrapApiKey: bootstrap-api-key
+  # Session directory search issuer: a dedicated key, never a general one.
+  sessionDirectorySigningKey: ""
+  sessionDirectorySigningKeyNext: ""
+  sessionDirectorySigningKeyPrevious: ""
+  # The search minting API key, created at boot with only that scope.
+  sessionDirectoryBootstrapApiKey: ""
 
 # Extra plain environment variables, e.g. rate-limit tuning.
 extraEnv: []

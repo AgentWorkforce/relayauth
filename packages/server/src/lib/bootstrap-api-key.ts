@@ -5,6 +5,7 @@ import type { StoredApiKey } from "../storage/api-key-types.js";
 export const BOOTSTRAP_API_KEY_SCOPE = "relayauth:assertion:create:relayhistory";
 export const DEFAULT_BOOTSTRAP_API_KEY_ORG = "org_selfhost";
 export const BOOTSTRAP_API_KEY_NAME = "selfhost-bootstrap-relayhistory-assertion";
+export const SESSION_DIRECTORY_BOOTSTRAP_API_KEY_NAME = "bootstrap-session-directory-search";
 const MIN_BOOTSTRAP_API_KEY_LENGTH = 32;
 
 export type BootstrapApiKeyResult =
@@ -19,11 +20,21 @@ export type BootstrapApiKeyResult =
   | { status: "revoked"; id: string; prefix: string }
   | { status: "scope_mismatch"; id: string; prefix: string; scopes: string[] };
 
-function classifyExisting(existing: StoredApiKey, requestedOrgId: string): BootstrapApiKeyResult {
+function classifyExisting(
+  existing: StoredApiKey,
+  requestedOrgId: string,
+  scope: string,
+  exactScope: boolean,
+): BootstrapApiKeyResult {
   if (existing.revokedAt) {
     return { status: "revoked", id: existing.id, prefix: existing.prefix };
   }
-  if (!existing.scopes.includes(BOOTSTRAP_API_KEY_SCOPE)) {
+  // A dedicated key (the session directory mint) is usable only with exactly its one
+  // scope; the endpoint refuses a key carrying anything else.
+  const scopeOk = exactScope
+    ? existing.scopes.length === 1 && existing.scopes[0] === scope
+    : existing.scopes.includes(scope);
+  if (!scopeOk) {
     return {
       status: "scope_mismatch",
       id: existing.id,
@@ -43,7 +54,8 @@ function classifyExisting(existing: StoredApiKey, requestedOrgId: string): Boots
 
 /**
  * Idempotently ensure an API key with exactly this value exists and can mint
- * History assertions (scope relayauth:assertion:create:relayhistory).
+ * History assertions (scope relayauth:assertion:create:relayhistory, or
+ * `options.scope` for another broker).
  *
  * Only the SHA-256 hash and display prefix are stored, exactly like keys
  * minted through POST /v1/api-keys. The raw value is never logged or
@@ -54,8 +66,10 @@ function classifyExisting(existing: StoredApiKey, requestedOrgId: string): Boots
 export async function ensureBootstrapApiKey(
   storage: AuthStorage,
   rawValue: string,
-  options: { orgId?: string; name?: string } = {},
+  options: { orgId?: string; name?: string; scope?: string; exactScope?: boolean } = {},
 ): Promise<BootstrapApiKeyResult> {
+  const scope = options.scope ?? BOOTSTRAP_API_KEY_SCOPE;
+  const exactScope = options.exactScope ?? false;
   const apiKey = rawValue.trim();
   if (apiKey.length < MIN_BOOTSTRAP_API_KEY_LENGTH || /\s/u.test(apiKey)) {
     throw new Error(
@@ -68,7 +82,7 @@ export async function ensureBootstrapApiKey(
   const orgId = options.orgId?.trim() || DEFAULT_BOOTSTRAP_API_KEY_ORG;
   const existing = await storage.apiKeys.getByHash(keyHash);
   if (existing) {
-    return classifyExisting(existing, orgId);
+    return classifyExisting(existing, orgId, scope, exactScope);
   }
 
   try {
@@ -77,7 +91,7 @@ export async function ensureBootstrapApiKey(
       name: options.name?.trim() || BOOTSTRAP_API_KEY_NAME,
       prefix,
       keyHash,
-      scopes: [BOOTSTRAP_API_KEY_SCOPE],
+      scopes: [scope],
     });
     return { status: "created", id: created.id, prefix: created.prefix };
   } catch (error) {
@@ -86,7 +100,7 @@ export async function ensureBootstrapApiKey(
     // fired. Re-read and report what is there instead of failing boot.
     const raced = await storage.apiKeys.getByHash(keyHash);
     if (raced) {
-      return classifyExisting(raced, orgId);
+      return classifyExisting(raced, orgId, scope, exactScope);
     }
     throw error;
   }

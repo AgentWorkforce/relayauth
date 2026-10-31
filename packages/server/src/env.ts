@@ -21,6 +21,21 @@ export type AppConfig = {
    */
   RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS?: string;
   /**
+   * Exactly "true" enables `POST /v1/tokens/session-directory-search`. Off by
+   * default, and revocation of existing tokens is unaffected either way.
+   */
+  RELAYAUTH_SESSION_DIRECTORY_ISSUANCE?: string;
+  /** `iss` of session directory search tokens. Must differ from RELAYAUTH_ISSUER. */
+  RELAYAUTH_SESSION_DIRECTORY_ISSUER?: string;
+  /** PKCS#8 private key for that issuer. Must not be a general signing key. */
+  RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM?: string;
+  /** Same rules as RELAYAUTH_SIGNING_KEY_PEM_NEXT, for the search issuer. */
+  RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT?: string;
+  /** Same rules as RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS, for the search issuer. */
+  RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS?: string;
+  /** Comma-separated subject token audiences accepted. Defaults to "relayhistory". */
+  RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES?: string;
+  /**
    * `iss` stamped on and required of RelayAuth-issued tokens, and advertised
    * by discovery. Defaults to "https://relayauth.dev" for back-compat.
    */
