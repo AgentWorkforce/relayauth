@@ -297,7 +297,15 @@ tokens.post("/workspace", async (c) => {
   // Broker scopes are delegable only by a caller holding the exact literal;
   // `manage`/`*` covers them in scopesWithinGrant but must not here, or an org
   // admin could mint a workspace token that carries the broker literal.
-  const undelegable = firstUndelegableBrokerScope(auth.claims.scopes, scopes);
+  const undelegable = firstUndelegableBrokerScope(
+    {
+      scopes: auth.claims.scopes,
+      isPlainApiKey:
+        c.get("apiKeyVia") === "api_key"
+        && auth.claims.meta?.apiKeyKind === "api_key",
+    },
+    scopes,
+  );
   if (undelegable) {
     return c.json(
       {

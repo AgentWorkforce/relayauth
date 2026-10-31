@@ -64,7 +64,15 @@ apiKeys.post("/", async (c) => {
   // caller's scopes.
   // Broker scopes are delegable only by a caller holding the exact literal;
   // `manage`/`*` covers them in validateSubset but must not here.
-  const undelegable = firstUndelegableBrokerScope(auth.claims.scopes, scopes);
+  const undelegable = firstUndelegableBrokerScope(
+    {
+      scopes: auth.claims.scopes,
+      isPlainApiKey:
+        c.get("apiKeyVia") === "api_key"
+        && auth.claims.meta?.apiKeyKind === "api_key",
+    },
+    scopes,
+  );
   if (undelegable) {
     return c.json(
       {
