@@ -848,6 +848,8 @@ tokens.post("/migration-assertion", async (c) => {
         reason: code,
         grantId: auditValue(body?.grantId),
         pairHash: migrationRequestPairHash(body),
+        // v2 selectors only, so a v1 refusal row is unchanged.
+        ...migrationV2RefusalAuditFields(body?.upload),
       }),
     });
     return c.json({ error, code }, status);
@@ -898,6 +900,17 @@ tokens.post("/migration-assertion", async (c) => {
   const request = normalizeMigrationAssertionRequest(body);
   if (!request.ok) {
     return refuse(request.error, request.code, request.status);
+  }
+  // #86 §9: base-read issuance has its own default-off switch.
+  if (
+    request.upload.form === "backfill_base_read" &&
+    c.env.RELAYAUTH_ENABLE_MIGRATION_BASE_READ !== "true"
+  ) {
+    return refuse(
+      "migration base-read issuance is disabled",
+      "migration_base_read_disabled",
+      403,
+    );
   }
 
   // A grant in another org reads as absent, the same as an unknown id.
@@ -1656,6 +1669,36 @@ async function issueRelayhistoryAssertion(
   };
 }
 
+/**
+ * Refusal-audit fields for a v2 selector: its form and the key's SHA-256,
+ * never the raw key, nonce or base content. Empty for anything else, so v1
+ * refusal rows keep their exact shape.
+ */
+function migrationV2RefusalAuditFields(
+  upload: unknown,
+): Record<string, string | undefined> {
+  if (!upload || typeof upload !== "object" || Array.isArray(upload)) {
+    return {};
+  }
+  const record = upload as Record<string, unknown>;
+  const kind =
+    "base" in record
+      ? "backfill"
+      : "kind" in record
+        ? "backfill_base_read"
+        : undefined;
+  if (!kind) {
+    return {};
+  }
+  return {
+    upload_kind: kind,
+    uploadKeyHash:
+      typeof record.key === "string" && record.key.length <= 1024
+        ? migrationSha256(record.key.trim())
+        : undefined,
+  };
+}
+
 type MigrationUploadSelector =
   | { form: "v1"; key: string }
   | { form: "backfill_base_read"; key: string }
@@ -1774,7 +1817,8 @@ async function issueMigrationAssertion(
       actorId: options.actorId,
       actorOrgId: options.actorOrgId,
       workspaceId: options.workspaceId,
-      upload,
+      // #86 §3: the base-read identity is meta.read and meta.upload is absent.
+      ...(baseRead ? { read: upload } : { upload }),
     },
   };
 
@@ -1802,15 +1846,19 @@ async function issueMigrationAssertion(
           },
         ]),
         uploadKeyHash: migrationSha256(upload.key),
-        nonce: options.nonce,
         grantedScopes: JSON.stringify(scopes),
-        // #86 §6: which form was signed, the entry digest, and of the base
-        // only its revision.
-        upload_kind: uploadKind,
-        entry_sha256: upload.entry_sha256,
-        ...("base" in upload
-          ? { base_revision: String(upload.base.revision) }
-          : {}),
+        // The v1 row is unchanged (it keeps its nonce). v2 rows follow #86
+        // §8: no raw nonce, correlated by tokenId (the jti); the signed form,
+        // the entry digest and, of the base, only its revision.
+        ...(uploadKind === "v1"
+          ? { nonce: options.nonce }
+          : {
+              upload_kind: uploadKind,
+              entry_sha256: upload.entry_sha256,
+              ...("base" in upload
+                ? { base_revision: String(upload.base.revision) }
+                : {}),
+            }),
       },
       timestamp: new Date().toISOString(),
     },

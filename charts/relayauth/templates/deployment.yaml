@@ -68,6 +68,10 @@ spec:
             - name: RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS
               value: "true"
             {{- end }}
+            {{- if (.Values.migrationAssertions).baseReadEnabled }}
+            - name: RELAYAUTH_ENABLE_MIGRATION_BASE_READ
+              value: "true"
+            {{- end }}
             {{- with .Values.allowedOrigins }}
             - name: ALLOWED_ORIGINS
               value: {{ . | quote }}

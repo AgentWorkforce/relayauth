@@ -58,6 +58,8 @@ type Refusal = {
   status: 400 | 403 | 404 | 409 | 501;
   sourceUserId?: string;
   pairHash?: string;
+  /** Internal-only precise reason; never returned to the caller. */
+  auditDetail?: string;
 };
 
 const migrationGrants = new Hono<AppEnv>();
@@ -81,6 +83,7 @@ migrationGrants.post("/", async (c) => {
         apiKeyId: auditValue(body?.apiKeyId),
         audience: auditValue(body?.audience),
         pairHash: refusal.pairHash,
+        detail: refusal.auditDetail,
       }),
     });
     return c.json(
@@ -342,6 +345,9 @@ function normalizeCreateMigrationGrantRequest(
       error: error instanceof Error ? error.message : "plan is invalid",
       code,
       status: 400,
+      ...(error instanceof MigrationPlanError && error.auditReason
+        ? { auditDetail: error.auditReason }
+        : {}),
     };
   }
 

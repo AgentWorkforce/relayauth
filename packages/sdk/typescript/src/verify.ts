@@ -534,10 +534,17 @@ function isTokenMetadata(value: unknown): boolean {
     return false;
   }
 
-  return Object.entries(value).every(
+  const meta = value as Record<string, unknown>;
+  // #86 §3: the base-read identity lives only in meta.read, the
+  // upload/commit identity only in meta.upload, and never both.
+  if (meta.read !== undefined && meta.upload !== undefined) {
+    return false;
+  }
+  return Object.entries(meta).every(
     ([key, entry]) =>
       typeof entry === "string" ||
-      (key === "upload" && isMigrationUploadIdentity(entry)),
+      (key === "upload" && isMigrationUploadIdentity(entry)) ||
+      (key === "read" && isMigrationBaseReadIdentity(entry)),
   );
 }
 
@@ -551,9 +558,8 @@ const V2_BASE_KEYS =
   "chunk_count,content_sha256,epoch,owner,revision,version,writer";
 
 /**
- * Exactly three shapes (96BullSessions #86 §7): the v1 upload identity, the
- * v2 base-read capability and the v2 backfill commit identity. Any other key
- * set, or a v2 shape with the other shape's `kind`, is malformed.
+ * `meta.upload` is exactly one of two shapes: the v1 upload identity or the
+ * v2 backfill commit identity. The v2 base-read identity is never valid here.
  */
 function isMigrationUploadIdentity(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -563,13 +569,6 @@ function isMigrationUploadIdentity(value: unknown): boolean {
   const keys = Object.keys(upload).sort().join(",");
   if (keys === V1_UPLOAD_KEYS) {
     return isMigrationIdentityCommon(upload) && isHexSha256(upload.content_sha256);
-  }
-  if (keys === V2_BASE_READ_KEYS) {
-    return (
-      upload.v === 2 &&
-      upload.kind === "backfill_base_read" &&
-      isMigrationIdentityCommon(upload)
-    );
   }
   if (keys === V2_COMMIT_KEYS) {
     return (
@@ -581,6 +580,20 @@ function isMigrationUploadIdentity(value: unknown): boolean {
     );
   }
   return false;
+}
+
+/** `meta.read`: exactly the v2 base-read capability identity. */
+function isMigrationBaseReadIdentity(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const read = value as Record<string, unknown>;
+  return (
+    Object.keys(read).sort().join(",") === V2_BASE_READ_KEYS &&
+    read.v === 2 &&
+    read.kind === "backfill_base_read" &&
+    isMigrationIdentityCommon(read)
+  );
 }
 
 function isMigrationIdentityCommon(upload: Record<string, unknown>): boolean {

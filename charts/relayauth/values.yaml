@@ -41,6 +41,9 @@ migrationAssertions:
   # Keep false except during an approved migration window. Grant revocation is
   # still available after this is turned back off.
   enabled: false
+  # Separate default-off gate for the plan-entry-v2 base-read capability
+  # (upload {key, kind: "backfill_base_read"}). Needs `enabled` as well.
+  baseReadEnabled: false
 
 # Pre-created Secret holding keys/secrets (never rendered by this chart).
 # Each entry under secretKeys names a key inside that Secret; set an optional

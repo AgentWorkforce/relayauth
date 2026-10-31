@@ -749,7 +749,7 @@ test("migration grant storage verifies the canonical persisted plan", async (t) 
   }
 });
 
-// --- Plan entry v2 (PROTOTYPE: 96BullSessions #86 is on review HOLD) -------
+// --- Plan entry v2 (spec of record: 96BullSessions main @ f67f741, #86) ----
 
 const LIVE_KEY =
   "v1/ws=ws_alice/m=machine-live/h=claude/d=2026/10/30/s=session-live/manifest.json";
@@ -798,7 +798,7 @@ async function jwksVerifier(app: TestApp, audience: string[]) {
   });
 }
 
-test("v2 prototype: grant creation stores v1 byte for byte for absent and empty backfills", async () => {
+test("v2: grant creation stores v1 byte for byte for absent and empty backfills", async () => {
   const { app, migrationKey } = await createHarness();
   const absent = await createGrant(app, migrationKey.id);
   const empty = await createGrant(app, migrationKey.id, {
@@ -834,8 +834,10 @@ test("v2 prototype: grant creation stores v1 byte for byte for absent and empty 
   }
 });
 
-test("v2 prototype: a v2 grant mints the base-read capability and the commit identity", async () => {
-  const { app, migrationKey } = await createHarness();
+test("v2: a v2 grant mints the base-read capability and the commit identity", async () => {
+  const { app, migrationKey } = await createHarness({
+    RELAYAUTH_ENABLE_MIGRATION_BASE_READ: "true",
+  });
   const grant = await createGrant(app, migrationKey.id, { plan: v2PlanBody() });
   assert.equal(grant.planEntries, 3);
   const stored = await app.storage.migrationGrants!.get(grant.grantId);
@@ -855,14 +857,18 @@ test("v2 prototype: a v2 grant mints the base-read capability and the commit ide
   const read = decodeClaims(readResponse.accessToken);
   assert.equal(read.sub, "agent_relayhistory_migration_base_read");
   assert.deepEqual(read.aud, [`${AUDIENCE}/v1/pipeline/manifests/base`]);
-  assert.deepEqual(read.scopes, ["rth:migration-base:read"]);
+  assert.deepEqual(read.scopes, ["rth:migration_base_read"]);
   assert.equal(read.meta?.tokenClass, "migration_base_read");
   assert.match(read.jti, /^mbr_[0-9a-f]{32}$/u);
   assert.ok(read.exp - read.iat <= 30);
   assert.equal(read.org, ORG);
   assert.equal(read.wks, "ws_alice");
   assert.equal(read.sponsorId, "user_alice");
-  assert.deepEqual(read.meta?.upload, migrationBackfillBaseReadIdentity(entry!, grant.planDigest));
+  assert.deepEqual(read.meta?.read, migrationBackfillBaseReadIdentity(entry!, grant.planDigest));
+  assert.equal("upload" in (read.meta ?? {}), false, "meta.upload is absent on a base-read");
+  assert.equal(read.meta?.grantId, grant.grantId);
+  assert.equal(read.meta?.planDigest, grant.planDigest);
+  assert.equal(read.meta?.nonce, NONCE);
 
   // Commit identity: the upload assertion's class, with the request's base.
   const commitResponse = await assertJsonResponse<AssertionResponse>(
@@ -877,6 +883,7 @@ test("v2 prototype: a v2 grant mints the base-read capability and the commit ide
   assert.deepEqual(commit.scopes, ["rth:sync"]);
   assert.equal(commit.meta?.tokenClass, "migration_assertion");
   assert.match(commit.jti, /^tok_/u);
+  assert.equal("read" in (commit.meta ?? {}), false);
   assert.deepEqual(
     commit.meta?.upload,
     migrationBackfillUploadIdentity(entry!, grant.planDigest, LIVE_BASE),
@@ -891,7 +898,7 @@ test("v2 prototype: a v2 grant mints the base-read capability and the commit ide
   assert.equal("v" in (v1Claims.meta?.upload as object), false);
   assert.equal((v1Claims.meta?.upload as { plan_digest: string }).plan_digest, grant.planDigest);
 
-  // Issuer audit (#86 §6): kind, key hash, entry digest, base revision only.
+  // Issuer audit (#86 §8): kind, key hash, entry digest, base revision only.
   const rows = await app.storage.DB.prepare(
     "SELECT resource, metadata_json FROM audit_logs WHERE action = 'token.issued' AND result = 'allowed' ORDER BY timestamp",
   ).all<{ resource: string; metadata_json: string }>();
@@ -899,12 +906,28 @@ test("v2 prototype: a v2 grant mints the base-read capability and the commit ide
     resource: row.resource,
     metadata: JSON.parse(row.metadata_json) as Record<string, string>,
   }));
-  const byKind = Object.fromEntries(audits.map((a) => [a.metadata.upload_kind, a]));
-  assert.equal(byKind.backfill_base_read?.resource, "migration-base-read");
-  assert.equal(byKind.backfill?.resource, "migration-assertion");
-  assert.equal(byKind.v1?.resource, "migration-assertion");
-  assert.equal(byKind.backfill?.metadata.base_revision, "7");
-  assert.equal(byKind.backfill_base_read?.metadata.base_revision, undefined);
+  const byJti = Object.fromEntries(audits.map((a) => [a.metadata.tokenId, a]));
+  const readAudit = byJti[read.jti]!;
+  const commitAudit = byJti[commit.jti]!;
+  const v1Audit = byJti[v1Claims.jti]!;
+  assert.equal(readAudit.resource, "migration-base-read");
+  assert.equal(readAudit.metadata.upload_kind, "backfill_base_read");
+  assert.equal(readAudit.metadata.entry_sha256, read.meta?.read && (read.meta.read as { entry_sha256: string }).entry_sha256);
+  assert.equal(readAudit.metadata.base_revision, undefined);
+  assert.equal(commitAudit.resource, "migration-assertion");
+  assert.equal(commitAudit.metadata.upload_kind, "backfill");
+  assert.equal(commitAudit.metadata.base_revision, "7");
+  for (const audit of [readAudit, commitAudit]) {
+    // v2 rows: no raw nonce; correlated by tokenId (the jti).
+    assert.equal("nonce" in audit.metadata, false);
+    assert.equal(JSON.stringify(audit.metadata).includes(NONCE), false);
+  }
+  // Ruling: the v1 mint audit row is exactly #111's.
+  assert.equal(v1Audit.resource, "migration-assertion");
+  assert.deepEqual(Object.keys(v1Audit.metadata).sort(), [
+    "actorOrgId", "grantId", "grantedScopes", "nonce", "pairHash",
+    "planDigest", "tokenId", "uploadKeyHash",
+  ]);
   for (const audit of audits) {
     const text = JSON.stringify(audit.metadata);
     assert.equal(text.includes(LIVE_BASE.content_sha256), false, "no base content in audit");
@@ -934,8 +957,10 @@ test("v2 prototype: a v2 grant mints the base-read capability and the commit ide
   assert.ok(asBearer.status === 401 || asBearer.status === 403, String(asBearer.status));
 });
 
-test("v2 prototype: each upload form only reaches its own list, pair and shape", async (t) => {
-  const { app, migrationKey } = await createHarness();
+test("v2: each upload form only reaches its own list, pair and shape", async (t) => {
+  const { app, migrationKey } = await createHarness({
+    RELAYAUTH_ENABLE_MIGRATION_BASE_READ: "true",
+  });
   const grant = await createGrant(app, migrationKey.id, { plan: v2PlanBody() });
   const v1Only = await createGrant(app, migrationKey.id);
   const cases: Array<[string, string, Record<string, unknown>, number, string]> = [
@@ -958,14 +983,23 @@ test("v2 prototype: each upload form only reaches its own list, pair and shape",
     });
   }
   const denied = await app.storage.DB.prepare(
-    "SELECT COUNT(*) AS count FROM audit_logs WHERE resource = 'migration-assertion' AND result = 'denied'",
-  ).first<{ count: number }>();
-  assert.equal(denied?.count, cases.length, "every refusal is audited");
+    "SELECT metadata_json FROM audit_logs WHERE resource = 'migration-assertion' AND result = 'denied'",
+  ).all<{ metadata_json: string }>();
+  const deniedRows = (denied.results ?? []).map(
+    (row) => JSON.parse(row.metadata_json) as Record<string, string>,
+  );
+  assert.equal(deniedRows.length, cases.length, "every refusal is audited");
+  for (const row of deniedRows) {
+    // v2 selectors carry their form and the key hash, never the raw key.
+    assert.equal(JSON.stringify(row).includes(LIVE_KEY), false);
+  }
+  assert.ok(deniedRows.some((row) => row.upload_kind === "backfill_base_read"));
+  assert.ok(deniedRows.some((row) => row.upload_kind === "backfill"));
   const tokens = await app.storage.DB.prepare("SELECT COUNT(*) AS count FROM tokens").first<{ count: number }>();
   assert.equal(tokens?.count, 0);
 });
 
-test("v2 prototype: grant creation refuses malformed backfills and cross-list keys", async (t) => {
+test("v2: grant creation refuses malformed backfills and cross-list keys", async (t) => {
   const { app, migrationKey } = await createHarness();
   const cases: Array<[string, Record<string, unknown>]> = [
     ["supplied backfill_sha256", liveBackfill({ backfill_sha256: "0".repeat(64) })],
@@ -995,4 +1029,93 @@ test("v2 prototype: grant creation refuses malformed backfills and cross-list ke
       "source_user_not_human",
     );
   });
+});
+
+test("v2: base-read issuance is default-off and separately switched", async () => {
+  for (const flag of [undefined, "false", "1", "TRUE"]) {
+    const { app, migrationKey } = await createHarness(
+      flag === undefined ? {} : { RELAYAUTH_ENABLE_MIGRATION_BASE_READ: flag },
+    );
+    const grant = await createGrant(app, migrationKey.id, { plan: v2PlanBody() });
+    await expectError(
+      await mint(app, migrationKey.key, mintBody(grant.grantId, {
+        upload: { key: LIVE_KEY, kind: "backfill_base_read" },
+      })),
+      403,
+      "migration_base_read_disabled",
+    );
+    // The commit form and v1 are not gated by it.
+    assert.equal(
+      (await mint(app, migrationKey.key, mintBody(grant.grantId, {
+        upload: { key: LIVE_KEY, base: LIVE_BASE },
+      }))).status,
+      201,
+    );
+    assert.equal((await mint(app, migrationKey.key, mintBody(grant.grantId))).status, 201);
+  }
+  // It never overrides the main switch.
+  const off = await createHarness({
+    RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS: "false",
+    RELAYAUTH_ENABLE_MIGRATION_BASE_READ: "true",
+  });
+  await expectError(
+    await mint(off.app, off.migrationKey.key, mintBody("mgr_00000000000000000000000000000001", {
+      upload: { key: LIVE_KEY, kind: "backfill_base_read" },
+    })),
+    403,
+    "migration_assertions_disabled",
+  );
+});
+
+test("v2: backfill-only grants, and wrong-org backfills are generic with an internal reason", async () => {
+  const { app, migrationKey } = await createHarness({
+    RELAYAUTH_ENABLE_MIGRATION_BASE_READ: "true",
+  });
+  const grant = await createGrant(app, migrationKey.id, {
+    plan: { exported_at: plan().exported_at, manifests: [], backfills: [liveBackfill()] },
+  });
+  assert.equal(grant.planEntries, 1);
+  assert.deepEqual(grant.allowedPairs, [{ sourceUserId: "user_alice", workspaceId: "ws_alice" }]);
+  assert.equal(
+    (await mint(app, migrationKey.key, mintBody(grant.grantId, {
+      upload: { key: LIVE_KEY, kind: "backfill_base_read" },
+    }))).status,
+    201,
+  );
+  await expectError(
+    await request(app, "POST", "/v1/migration-grants", grantBody(migrationKey.id, {
+      plan: { exported_at: plan().exported_at, manifests: [], backfills: [] },
+    }), adminHeaders()),
+    400,
+    "invalid_plan",
+  );
+
+  const wrongOrg = await request(app, "POST", "/v1/migration-grants", grantBody(migrationKey.id, {
+    plan: { ...plan(), backfills: [liveBackfill({ org_id: "org_other" })] },
+  }), adminHeaders());
+  const text = await wrongOrg.text();
+  assert.equal(wrongOrg.status, 400);
+  assert.equal((JSON.parse(text) as ErrorBody).code, "invalid_plan");
+  assert.equal(text.includes("org"), false, "the response does not name the org problem");
+  // Two denials can share a millisecond, so select by content, not order.
+  const deniedRows = await app.storage.DB.prepare(
+    "SELECT metadata_json FROM audit_logs WHERE action = 'migration_grant.created' AND result = 'denied'",
+  ).all<{ metadata_json: string }>();
+  const denials = (deniedRows.results ?? []).map(
+    (row) => JSON.parse(row.metadata_json) as Record<string, string>,
+  );
+  assert.equal(denials.length, 2);
+  const withDetail = denials.filter((metadata) => metadata.detail !== undefined);
+  assert.equal(withDetail.length, 1, "only the wrong-org refusal carries a detail");
+  assert.equal(withDetail[0]!.reason, "invalid_plan");
+  assert.equal(withDetail[0]!.detail, "backfill_org_mismatch");
+
+  // v1 keeps plan_org_mismatch.
+  await expectError(
+    await request(app, "POST", "/v1/migration-grants", grantBody(migrationKey.id, {
+      plan: plan({ orgId: "org_other" }),
+    }), adminHeaders()),
+    400,
+    "plan_org_mismatch",
+  );
 });

@@ -217,7 +217,7 @@ describe("TokenVerifier", () => {
       }
     });
 
-    it("accepts exactly the v2 base-read and backfill commit shapes (prototype, #86 §7)", async () => {
+    it("accepts the v2 commit in meta.upload and the base-read only in meta.read (#86 d4e0e040)", async () => {
       const { privateKey, jwk } = await generateRS256KeyPair();
       const kid = "migration-v2-key";
       globalThis.fetch = mockFetch([{ ...jwk, kid, use: "sig", alg: "RS256" }]);
@@ -248,32 +248,51 @@ describe("TokenVerifier", () => {
       };
       const read = { ...shared, kind: "backfill_base_read" };
       const commit = { ...shared, kind: "backfill", backfill_sha256: "e".repeat(64), base };
+      const v1 = {
+        grant_id: shared.grant_id,
+        plan_digest: shared.plan_digest,
+        key: shared.key,
+        org_id: "org_a",
+        workspace_id: "ws_a",
+        source_user_id: "user_a",
+        session: shared.session,
+        content_sha256: "b".repeat(64),
+        entry_sha256: "c".repeat(64),
+      };
       const verifier = new TokenVerifier({
         jwksUrl: "https://auth.test/.well-known/jwks.json",
       });
       const sign = (meta: Record<string, unknown>) =>
         signToken({ alg: "RS256", typ: "JWT", kid }, { ...validClaims, meta } as never, privateKey, "RS256");
 
-      for (const upload of [read, commit]) {
-        assert.deepEqual((await verifier.verify(await sign({ upload }))).meta?.upload, upload);
-      }
-      for (const upload of [
-        { ...read, kind: "backfill" },
-        { ...commit, kind: "backfill_base_read" },
-        { ...read, v: 1 },
-        { ...read, base },
-        { ...commit, base: { ...base, owner: "migration:mgr_x" } },
-        { ...commit, base: { ...base, extra: 1 } },
-        { ...commit, base: { ...base, revision: 0 } },
-        { ...commit, base: { ...base, epoch: -1 } },
-        { ...commit, base: { ...base, chunk_count: 1.5 } },
-        { ...commit, base: { ...base, version: "" } },
-        { ...commit, backfill_sha256: "E".repeat(64) },
-        { ...read, content_sha256: "b".repeat(64) },
-        { ...read, org_id: "relay_org_a" },
-        { ...read, client_field: "x" },
-      ]) {
-        const token = await sign({ upload });
+      assert.deepEqual((await verifier.verify(await sign({ upload: commit }))).meta?.upload, commit);
+      assert.deepEqual((await verifier.verify(await sign({ read }))).meta?.read, read);
+
+      const refused: Array<Record<string, unknown>> = [
+        // Token-class confusion: each identity only under its own meta key.
+        { upload: read },
+        { read: commit },
+        { read: v1 },
+        { read, upload: commit },
+        { read, upload: v1 },
+        // Malformed shapes.
+        { upload: { ...commit, kind: "backfill_base_read" } },
+        { read: { ...read, kind: "backfill" } },
+        { read: { ...read, v: 1 } },
+        { read: { ...read, base } },
+        { upload: { ...commit, base: { ...base, owner: "migration:mgr_x" } } },
+        { upload: { ...commit, base: { ...base, extra: 1 } } },
+        { upload: { ...commit, base: { ...base, revision: 0 } } },
+        { upload: { ...commit, base: { ...base, epoch: -1 } } },
+        { upload: { ...commit, base: { ...base, chunk_count: 1.5 } } },
+        { upload: { ...commit, base: { ...base, version: "" } } },
+        { upload: { ...commit, backfill_sha256: "E".repeat(64) } },
+        { read: { ...read, content_sha256: "b".repeat(64) } },
+        { read: { ...read, org_id: "relay_org_a" } },
+        { read: { ...read, client_field: "x" } },
+      ];
+      for (const meta of refused) {
+        const token = await sign(meta);
         await assert.rejects(() => verifier.verify(token), RelayAuthError);
       }
     });

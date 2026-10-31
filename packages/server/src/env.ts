@@ -42,6 +42,13 @@ export type AppConfig = {
    * creation and minting; revocation remains available while disabled.
    */
   RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS?: string;
+  /**
+   * Default-off issuance of the plan-entry-v2 base-read capability
+   * (`upload: {key, kind: "backfill_base_read"}`). Requires
+   * RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS as well. Exactly "true" enables it;
+   * otherwise that selector is refused with 403 migration_base_read_disabled.
+   */
+  RELAYAUTH_ENABLE_MIGRATION_BASE_READ?: string;
   RELAYAUTH_ENV_STAGE?: string;
   /** JSON object keyed by org id. See SponsorFederationConfig. */
   RELAYAUTH_SPONSOR_FEDERATIONS?: string;

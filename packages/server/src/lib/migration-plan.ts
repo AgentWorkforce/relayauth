@@ -69,7 +69,8 @@ export type MigrationBackfillChunk = {
 };
 
 /**
- * Plan entry v2 (96BullSessions #79 data contract, #86 issuer spec): one
+ * Plan entry v2 (96BullSessions data contract #79; issuer spec #86, main
+ * @ f67f741): one
  * sealed backfill epoch to append to a live ndjson manifest. Chunk positions
  * are relative (offsets from 0, no seq, no epoch); the live base is bound at
  * mint time, not in the plan.
@@ -156,6 +157,11 @@ export class MigrationPlanError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    /**
+     * Precise reason for the internal audit only, when the public `code` and
+     * message are deliberately generic.
+     */
+    readonly auditReason?: string,
   ) {
     super(message);
     this.name = "MigrationPlanError";
@@ -244,31 +250,36 @@ export function deriveMigrationGrantPlan(input: {
     "plan",
   );
   const exportedAt = canonicalTimestamp(rawPlan.exported_at, "exported_at");
-  if (
-    !Array.isArray(rawPlan.manifests) ||
-    rawPlan.manifests.length === 0 ||
-    rawPlan.manifests.length > MAX_MIGRATION_GRANT_ENTRIES
-  ) {
+  // #86 §1 legacy conditional. Absent `backfills` or `backfills: []` is the
+  // v1 path, byte for byte (including v1's 1..1000 manifests rule). A
+  // non-empty array is v2, where `manifests` may be empty. Anything else
+  // (null, an object, a string) is refused.
+  if (rawPlan.backfills !== undefined && !Array.isArray(rawPlan.backfills)) {
     throw new MigrationPlanError(
       "invalid_plan",
-      `plan.manifests must contain 1 to ${MAX_MIGRATION_GRANT_ENTRIES} entries`,
-    );
-  }
-
-  // Absent and empty `backfills` are the same v1 plan with the same digest.
-  if (
-    rawPlan.backfills !== undefined &&
-    (!Array.isArray(rawPlan.backfills) ||
-      rawPlan.backfills.length > MAX_MIGRATION_GRANT_ENTRIES)
-  ) {
-    throw new MigrationPlanError(
-      "invalid_plan",
-      `plan.backfills must contain at most ${MAX_MIGRATION_GRANT_ENTRIES} entries`,
+      "plan.backfills must be an array",
     );
   }
   const rawBackfills: unknown[] = Array.isArray(rawPlan.backfills)
     ? rawPlan.backfills
     : [];
+  const minManifests = rawBackfills.length === 0 ? 1 : 0;
+  if (
+    !Array.isArray(rawPlan.manifests) ||
+    rawPlan.manifests.length < minManifests ||
+    rawPlan.manifests.length > MAX_MIGRATION_GRANT_ENTRIES
+  ) {
+    throw new MigrationPlanError(
+      "invalid_plan",
+      `plan.manifests must contain ${minManifests} to ${MAX_MIGRATION_GRANT_ENTRIES} entries`,
+    );
+  }
+  if (rawBackfills.length > MAX_MIGRATION_GRANT_ENTRIES) {
+    throw new MigrationPlanError(
+      "invalid_plan",
+      `plan.backfills must contain at most ${MAX_MIGRATION_GRANT_ENTRIES} entries`,
+    );
+  }
   if (
     rawPlan.manifests.length + rawBackfills.length >
     MAX_MIGRATION_GRANT_ENTRIES
@@ -516,9 +527,9 @@ export function normalizeMigrationBackfillBase(
     ],
     "upload.base",
   );
-  // PROTOTYPE bounds pending the amended #86: the commit writes revision + 1
-  // and epoch + 1, so both must stay representable (a safe integer; a
-  // manifest chunk epoch is a uint32).
+  // #86 §5 bounds: the commit writes revision + 1, chunk_count + i and
+  // epoch + 1, so each must stay representable (a safe integer; a manifest
+  // chunk epoch is a uint32).
   const revision = uint(
     raw.revision,
     "upload.base.revision",
@@ -667,10 +678,14 @@ function normalizeBackfillEntry(
       `${name} must be a v2 backfill entry`,
     );
   }
+  // Ruling on #86: a wrong-org v2 entry is a generic invalid_plan to the
+  // caller (it does not confirm which org is wrong); the precise reason
+  // reaches only the internal audit row. v1 keeps plan_org_mismatch.
   if (canonicalMigrationId(raw.org_id, `${name}.org_id`) !== orgId) {
     throw new MigrationPlanError(
       "invalid_plan",
-      `${name}.org_id is outside the caller's organization`,
+      `${name} is invalid`,
+      "backfill_org_mismatch",
     );
   }
   const location = normalizeEntryLocation(raw, name);
@@ -706,14 +721,15 @@ function normalizeBackfillEntry(
     if (bytes === 0) {
       throw new MigrationPlanError("invalid_plan", `${chunkName}.bytes must be positive`);
     }
+    // #86 §2: start_offset + bytes <= MAX, checked exactly (no float sum).
+    if (bytes > Number.MAX_SAFE_INTEGER - startOffset) {
+      throw new MigrationPlanError("invalid_plan", `${name}.raw_bytes overflows`);
+    }
     if (typeof rawChunk.sha256 !== "string" || !HEX_64.test(rawChunk.sha256)) {
       throw new MigrationPlanError("invalid_plan", `${chunkName}.sha256 is malformed`);
     }
     const records = uint(rawChunk.records, `${chunkName}.records`);
     offset += bytes;
-    if (!Number.isSafeInteger(offset)) {
-      throw new MigrationPlanError("invalid_plan", `${name}.raw_bytes overflows`);
-    }
     return { start_offset: startOffset, bytes, sha256: rawChunk.sha256, records };
   });
   return {

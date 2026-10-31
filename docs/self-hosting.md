@@ -27,6 +27,7 @@ its `_FILE` variant. `_FILE` handling lives only in the Node entrypoint
 | `ALLOWED_ORIGINS` | no | Comma-separated CORS allowlist. |
 | `RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN` | no | Exactly `true` lets History assertions bind to a plain-`http` `historyOrigin` on a private host (see below). Any other value, or unset, keeps the hosted rule. Chart: `relayhistory.allowPrivateHttpOrigin`. |
 | `RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS` | no | Default-off kill switch. Exactly `true` enables migration-grant creation and assertion minting. Revocation remains available when disabled. Chart: `migrationAssertions.enabled`. |
+| `RELAYAUTH_ENABLE_MIGRATION_BASE_READ` | no | Default-off. Exactly `true` (with `RELAYAUTH_ENABLE_MIGRATION_ASSERTIONS=true`) enables minting the plan-entry-v2 base-read capability; otherwise that selector gets 403 `migration_base_read_disabled`. Chart: `migrationAssertions.baseReadEnabled`. |
 
 ### Keys and `kid`
 
@@ -205,6 +206,32 @@ grant's org, `wks` = `workspaceId`, `sponsorId` = `sourceUserId`,
 `workspace_id`, `source_user_id`, the machine/harness/session/start tuple,
 `content_sha256`, and the canonical plan-entry `entry_sha256`. The issuer never
 echoes a client-authored upload identity.
+
+**Plan entry v2 (backfill epochs).** The spec of record is 96BullSessions
+`docs/contracts/relayhistory-export-plan-entry-v2-issuer.md` (main @
+`f67f741`). In short:
+
+- `plan` may carry `backfills`: v2 entries `{v: 2, kind: "backfill", key,
+  org_id, workspace_id, source_user_id, session, format: "ndjson", chunks:
+  [{start_offset, bytes, sha256, records}]}`. RelayAuth derives `grant_id`,
+  `backfill_sha256` and `raw_bytes`; supplying any of them is refused.
+- Absent `backfills` and `backfills: []` store exactly the v1 plan, with the
+  same digest. A non-empty list stores a `v: 2` plan whose digest covers
+  `{v: 2, grant_id, exported_at, manifests, backfills}`; `manifests` may then
+  be empty. All other plan errors are `invalid_plan`.
+- The mint's `upload` is `{key}` (v1, unchanged), `{key, kind:
+  "backfill_base_read"}` (the base-read capability, gated separately by
+  `RELAYAUTH_ENABLE_MIGRATION_BASE_READ`) or `{key, base}` (the v2 commit
+  assertion). Both v2 forms look the key up in `backfills` only.
+- The base-read capability is a separate token class: `sub
+  agent_relayhistory_migration_base_read`, `meta.tokenClass
+  migration_base_read`, `scopes ["rth:migration_base_read"]`, `aud
+  ["<audience>/v1/pipeline/manifests/base"]`, at most 30 s, `jti` prefix
+  `mbr_`, and its identity in `meta.read` (no `meta.upload`). The commit
+  assertion keeps the v1 claims with the v2 identity in `meta.upload`.
+- v2 issuance audit rows record `upload_kind`, the key's SHA-256,
+  `entry_sha256` and, for a commit, `base_revision`; they omit the raw nonce
+  and correlate by `tokenId`. v1 rows are unchanged.
 
 Grant creation, revocation and every mint are written to the audit log with
 the record they produce: `migration_grant.created`, `migration_grant.revoked`,

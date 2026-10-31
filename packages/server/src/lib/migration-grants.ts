@@ -14,14 +14,14 @@ export const MIGRATION_GRANT_MANAGE_SCOPE = "relayauth:api-key:manage:*";
 export const MIGRATION_ASSERTION_SUBJECT = "agent_relayhistory_migration";
 
 /**
- * PROTOTYPE (96BullSessions #86 is on contract-review HOLD; these values
- * follow the review's direction and are not final). The base-read
- * capability is a separate token class from the upload assertion: its own
- * subject, audience, scope, tokenClass, TTL and jti namespace, so no verifier
- * or route that admits an upload assertion can admit it, and vice versa.
+ * The v2 base-read capability (96BullSessions #86 §3; spec of record main
+ * @ f67f741). It is a separate token class from
+ * the upload/commit assertion and shares no token class, audience, scope,
+ * meta identity key or jti namespace with it. Issuance is default-off.
  */
-export const MIGRATION_BASE_READ_SUBJECT = "agent_relayhistory_migration_base_read";
-export const MIGRATION_BASE_READ_SCOPE = "rth:migration-base:read";
+export const MIGRATION_BASE_READ_SUBJECT =
+  "agent_relayhistory_migration_base_read";
+export const MIGRATION_BASE_READ_SCOPE = "rth:migration_base_read";
 export const MIGRATION_BASE_READ_TOKEN_CLASS = "migration_base_read";
 /** The one ingest route that admits it, appended to the grant's origin. */
 export const MIGRATION_BASE_READ_ROUTE = "/v1/pipeline/manifests/base";
