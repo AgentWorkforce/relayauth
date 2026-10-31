@@ -16,6 +16,7 @@ import {
 import type { ApiKeyKind } from "../storage/api-key-types.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
 import type { MigrationGrant } from "../storage/interface.js";
+import { migrationGrantFingerprintPlan } from "../routes/migration-grants.js";
 import { createSqliteStorage } from "../storage/sqlite.js";
 import {
   assertJsonResponse,
@@ -1414,4 +1415,39 @@ test("idempotency: the raw key never appears in the database, audit, responses o
     "SELECT key_hash FROM migration_grant_idempotency_receipts",
   ).first<{ key_hash: string }>();
   assert.notEqual(receipt?.key_hash, crypto.createHash("sha256").update(key).digest("hex"));
+});
+
+test("idempotency: the fingerprint plan strips every generated grant_id, backfills included", () => {
+  const derived = deriveMigrationGrantPlan({
+    grantId: "mgr_11111111111111111111111111111111",
+    orgId: ORG,
+    plan: plan(),
+  });
+  // v1: identical to the construction #112 shipped with.
+  const { grant_id: _g, ...rest } = derived.plan;
+  assert.deepEqual(migrationGrantFingerprintPlan(derived.plan), {
+    ...rest,
+    manifests: rest.manifests.map(({ grant_id: _e, ...entry }) => entry),
+  });
+  assert.equal("backfills" in migrationGrantFingerprintPlan(derived.plan), false);
+
+  // v2 shape (relayauth #117): backfill entries lose grant_id too, so two
+  // derivations under different generated ids fingerprint identically.
+  const v2 = (grantId: string) => ({
+    v: 2,
+    grant_id: grantId,
+    exported_at: "2026-10-30T00:00:00.000Z",
+    manifests: [{ key: "a", grant_id: grantId }],
+    backfills: [{ v: 2, kind: "backfill", key: "b", grant_id: grantId, raw_bytes: 1 }],
+  });
+  const first = migrationGrantFingerprintPlan(v2("mgr_11111111111111111111111111111111"));
+  const second = migrationGrantFingerprintPlan(v2("mgr_22222222222222222222222222222222"));
+  assert.deepEqual(first, second);
+  assert.equal(JSON.stringify(first).includes("grant_id"), false);
+  assert.deepEqual(first, {
+    v: 2,
+    exported_at: "2026-10-30T00:00:00.000Z",
+    manifests: [{ key: "a" }],
+    backfills: [{ v: 2, kind: "backfill", key: "b", raw_bytes: 1 }],
+  });
 });

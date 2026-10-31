@@ -439,7 +439,6 @@ function fingerprintCreateMigrationGrantRequest(
   }
   const notAfter = new Date(Date.parse(value.notAfter)).toISOString();
 
-  const { grant_id: _planGrantId, ...planWithoutGrantId } = derived.plan;
   const fingerprintInput = {
     v: 1,
     org_id: orgId,
@@ -450,12 +449,7 @@ function fingerprintCreateMigrationGrantRequest(
       source_user_id: pair.sourceUserId,
       workspace_id: pair.workspaceId,
     })),
-    plan: {
-      ...planWithoutGrantId,
-      manifests: planWithoutGrantId.manifests.map(
-        ({ grant_id: _entryGrantId, ...entry }) => entry,
-      ),
-    },
+    plan: migrationGrantFingerprintPlan(derived.plan),
   };
   return {
     ok: true,
@@ -464,6 +458,33 @@ function fingerprintCreateMigrationGrantRequest(
     notAfter,
     requestFingerprint: migrationSha256(canonicalMigrationJson(fingerprintInput)),
   };
+}
+
+/**
+ * The derived plan with every generated `grant_id` removed: the plan's own
+ * and each entry's in `manifests` and, once plan entry v2 (relayauth #117)
+ * lands, in `backfills`. A v1 plan has no `backfills` key, so its
+ * fingerprint is unchanged by the second list. Everything else, including
+ * `v`, is kept, so a v1 and a v2 plan never share a fingerprint.
+ */
+export function migrationGrantFingerprintPlan(
+  plan: object,
+): Record<string, unknown> {
+  const { grant_id: _planGrantId, ...rest } = plan as Record<string, unknown>;
+  const stripped: Record<string, unknown> = { ...rest };
+  for (const list of ["manifests", "backfills"] as const) {
+    const entries = stripped[list];
+    if (Array.isArray(entries)) {
+      stripped[list] = entries.map((entry) => {
+        const { grant_id: _entryGrantId, ...kept } = entry as Record<
+          string,
+          unknown
+        >;
+        return kept;
+      });
+    }
+  }
+  return stripped;
 }
 
 /** Full validation for a fresh create, binding the newly generated grantId. */
