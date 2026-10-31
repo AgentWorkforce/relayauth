@@ -15,7 +15,10 @@ import {
   WORKSPACE_TOKEN_PREFIX,
 } from "../lib/api-keys.js";
 import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
-import { matchBrokerScopeExactly } from "../lib/broker-scopes.js";
+import {
+  firstUndelegableBrokerScope,
+  matchBrokerScopeExactly,
+} from "../lib/broker-scopes.js";
 import {
   scheduleDeferredTask,
   type DeferredTaskScheduler,
@@ -290,6 +293,19 @@ tokens.post("/workspace", async (c) => {
   }
 
   const scopes = normalizeScopes(body.scopes, auth.claims.scopes);
+  // Broker scopes are delegable only by a caller holding the exact literal;
+  // `manage`/`*` covers them in scopesWithinGrant but must not here, or an org
+  // admin could mint a workspace token that carries the broker literal.
+  const undelegable = firstUndelegableBrokerScope(auth.claims.scopes, scopes);
+  if (undelegable) {
+    return c.json(
+      {
+        error: `scope ${undelegable} can only be delegated by a key that holds it exactly`,
+        code: "scope_escalation",
+      },
+      403,
+    );
+  }
   if (!scopesWithinGrant(scopes, auth.claims.scopes)) {
     return c.json({ error: "insufficient_scope" }, 403);
   }
@@ -738,7 +754,10 @@ tokens.post("/relayhistory-assertion", async (c) => {
     return c.json({ error: auth.error, code: auth.code }, auth.status);
   }
 
-  if (c.get("apiKeyVia") !== "api_key") {
+  if (
+    c.get("apiKeyVia") !== "api_key"
+    || auth.claims.meta?.apiKeyKind !== "api_key"
+  ) {
     return c.json(
       {
         error: "relayhistory assertion mint requires a dedicated api key",
