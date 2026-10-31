@@ -18,6 +18,7 @@ import {
   createTestApp,
   createTestRequest,
   generateTestToken,
+  seedPlainApiKey,
   seedStoredIdentity,
   TEST_RS256_PRIVATE_KEY_PEM,
 } from "./test-helpers.js";
@@ -70,15 +71,14 @@ async function harness(bindings: Parameters<typeof createTestApp>[0] = ENABLED) 
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   } as never);
-  const admin = {
-    Authorization: `Bearer ${generateTestToken({
-      iss: GENERAL_ISSUER,
-      sub: "agent_operator",
-      org: "org_operator",
-      wks: "ws_operator",
-      scopes: ["relayauth:api-key:manage:*", "*", SESSION_DIRECTORY_SEARCH_MINT_SCOPE],
-    })}`,
-  };
+  // Since #119 only a plain API key holding the broker literal may delegate it,
+  // so the operator is a key provisioned out of band, not a bearer token.
+  const operatorKey = await seedPlainApiKey(app, {
+    orgId: "org_operator",
+    name: "operator",
+    scopes: ["relayauth:api-key:manage:*", "*", SESSION_DIRECTORY_SEARCH_MINT_SCOPE],
+  });
+  const admin = { "x-api-key": operatorKey.key };
   const key = async (scopes: string[]) => {
     const created = await assertJsonResponse<{ key: string; apiKey?: { id: string } }>(
       await post(app, "/v1/api-keys", { name: "search-minter", scopes }, admin),
@@ -236,6 +236,25 @@ test("an org admin without the literal scope cannot create a minting key", async
     403,
     "scope_escalation",
   );
+});
+
+test("a bearer token holding the literal scope cannot create a minting key", async () => {
+  const { app } = await harness();
+  const bearer = {
+    Authorization: `Bearer ${generateTestToken({
+      iss: GENERAL_ISSUER,
+      sub: "agent_operator",
+      org: "org_operator",
+      wks: "ws_operator",
+      scopes: ["relayauth:api-key:manage:*", "*", SESSION_DIRECTORY_SEARCH_MINT_SCOPE],
+    })}`,
+  };
+  for (const [path, body] of [
+    ["/v1/api-keys", { name: "jwt-minter", scopes: [SESSION_DIRECTORY_SEARCH_MINT_SCOPE] }],
+    ["/v1/tokens/workspace", { workspaceId: "ws_operator", scopes: [SESSION_DIRECTORY_SEARCH_MINT_SCOPE] }],
+  ] as const) {
+    await refused(await post(app, path, body, bearer), 403, "scope_escalation");
+  }
 });
 
 test("a workspace token holding the literal scope cannot mint", async () => {
