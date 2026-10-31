@@ -36,6 +36,7 @@ import {
   seedPlainApiKey,
   seedWorkspaceContext,
   TEST_RS256_PRIVATE_KEY_PEM,
+  TEST_RS256_PUBLIC_KEY_PEM,
 } from "./test-helpers.js";
 
 type JwtHeader = {
@@ -2271,6 +2272,7 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
             orgId: "org_relayhistory_target",
             workspaceId: "ws_relayhistory_target",
             sponsorId: "user_cloud_login",
+            machineId: "machine-a",
             scopes: ["rth:sync", "rth:read"],
             expiresIn: 45,
           },
@@ -2315,6 +2317,7 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
         requestedOrgId: "org_relayhistory_target",
         workspaceId: "ws_relayhistory_target",
         grantedScopes: JSON.stringify(["rth:read", "rth:sync"]),
+        machineId: "machine-a",
       });
       assert.equal(
         await countStoredTokens(app),
@@ -2346,6 +2349,7 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
         actorOrgId: "org_tokens_route",
         sponsorId: "user_cloud_login",
         grantedScopes: JSON.stringify(["rth:read", "rth:sync"]),
+        machineId: "machine-a",
       });
     },
   );
@@ -2369,6 +2373,7 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
             orgId: "org_relayhistory_target",
             workspaceId: "ws_relayhistory_target",
             sponsorId: "user_cloud_login",
+            machineId: "machine-a",
             scopes: ["rth:read"],
           },
           headers: { "x-api-key": assertionKey.key },
@@ -2399,6 +2404,7 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
             orgId: "org_relayhistory_target",
             workspaceId: "ws_relayhistory_target",
             sponsorId: "user_cloud_login",
+            machineId: "machine-a",
             scopes: ["rth:read"],
           },
           headers: authHeaders,
@@ -2611,6 +2617,7 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
             orgId: "org_relayhistory_target",
             workspaceId: "ws_relayhistory_target",
             sponsorId: "user_cloud_login",
+            machineId: "machine-a",
             scopes: ["rth:read", "rth:admin"],
           },
           headers: {
@@ -2644,6 +2651,7 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
             orgId: "org_relayhistory_target",
             workspaceId: "ws_relayhistory_target",
             sponsorId: "user_cloud_login",
+            machineId: "machine-a",
             scopes: ["rth:read"],
             expiresIn: 61,
           },
@@ -2675,6 +2683,7 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
         orgId: "org_relayhistory_target",
         workspaceId: "ws_relayhistory_target",
         sponsorId: "user_cloud_login",
+        machineId: "machine-a",
         scopes: ["rth:read"],
         historyOrigin,
       },
@@ -2892,6 +2901,194 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
       );
       assert.deepEqual(claims.aud, [expected]);
     }
+  });
+});
+
+function verifyRs256Token(token: string): boolean {
+  const [header, payload, signature] = token.split(".");
+  return crypto.verify(
+    "RSA-SHA256",
+    Buffer.from(`${header}.${payload}`),
+    TEST_RS256_PUBLIC_KEY_PEM,
+    Buffer.from(signature ?? "", "base64url"),
+  );
+}
+
+test("POST /v1/tokens/relayhistory-assertion machineId claim", async (t) => {
+  const assertionScope = "relayauth:assertion:create:relayhistory";
+  const baseBody = {
+    orgId: "org_relayhistory_target",
+    workspaceId: "ws_relayhistory_target",
+    sponsorId: "user_cloud_login",
+    scopes: ["rth:sync"],
+  };
+
+  async function harness() {
+    const { app, authHeaders } = await createHarness({
+      authClaims: {
+        scopes: ["relayauth:api-key:manage:*", assertionScope],
+      },
+    });
+    // Broker keys are provisioned out of band. Current main deliberately
+    // refuses bearer/admin callers that try to delegate this literal scope.
+    const assertionKey = await seedPlainApiKey(app, {
+      orgId: "org_tokens_route",
+      name: "relayhistory-machine-binding-broker",
+      scopes: [assertionScope],
+    });
+    const mint = (body: Record<string, unknown>, headers?: HeadersInit) =>
+      requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
+        body,
+        headers: headers ?? { "x-api-key": assertionKey.key },
+      });
+    return { app, authHeaders, assertionKey, mint };
+  }
+
+  async function lastAssertionAudit(app: ReturnType<typeof createTestApp>) {
+    const row = await app.storage.DB.prepare(
+      `SELECT metadata_json FROM audit_logs
+       WHERE resource = 'relayhistory-assertion'
+       ORDER BY timestamp DESC LIMIT 1`,
+    ).first<{ metadata_json: string }>();
+    return JSON.parse(row?.metadata_json ?? "{}") as Record<string, string>;
+  }
+
+  for (const machineId of [
+    "machine-a",
+    "M",
+    "unknown-origin-42",
+    "host.example_01",
+    "a".repeat(128),
+    "019a1f3c-8e2b-7c41-9d3a-5b6f0e2a7c18",
+  ]) {
+    await t.test(`signs a canonical machineId (${machineId.slice(0, 24)})`, async () => {
+      const { app, mint } = await harness();
+      const body = await assertJsonResponse<RelayhistoryAssertionResponse>(
+        await mint({ ...baseBody, machineId }),
+        201,
+      );
+      assert.equal(verifyRs256Token(body.accessToken), true);
+      const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
+      assert.equal(claims.meta?.machineId, machineId);
+      assert.equal((await lastAssertionAudit(app)).machineId, machineId);
+    });
+  }
+
+  for (const machineId of [
+    "",
+    " machine-a",
+    "machine-a ",
+    "machine a",
+    "machine/a",
+    "m=machine-a",
+    ".hidden",
+    "..",
+    ".",
+    "relay_machine-a",
+    "a".repeat(129),
+    "machine-\u00e4",
+    "machine-a\n",
+    null,
+    42,
+    true,
+    ["machine-a"],
+    { id: "machine-a" },
+  ]) {
+    await t.test(`refuses a malformed machineId (${JSON.stringify(machineId)})`, async () => {
+      const { app, mint } = await harness();
+      await assertJsonResponse<ErrorBody>(
+        await mint({ ...baseBody, machineId }),
+        400,
+        (body) => {
+          assert.equal(body.code, "invalid_machine_id");
+        },
+      );
+      assert.equal(await countStoredTokens(app), 0);
+    });
+  }
+
+  await t.test("allows and audits an omitted machineId for non-machine paths", async () => {
+    const { app, mint } = await harness();
+    const body = await assertJsonResponse<RelayhistoryAssertionResponse>(
+      await mint(baseBody),
+      201,
+    );
+    const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
+    assert.equal(claims.meta?.machineId, undefined);
+    assert.equal("machineId" in (claims.meta ?? {}), false);
+    const audit = await lastAssertionAudit(app);
+    assert.equal(audit.machineIdMissing, "true");
+    assert.equal(audit.machineId, undefined);
+
+    // A supplied machineId is still validated and signed exactly.
+    const withMachine = await assertJsonResponse<RelayhistoryAssertionResponse>(
+      await mint({ ...baseBody, machineId: "machine-a" }),
+      201,
+    );
+    assert.equal(
+      decodeJwtJsonSegment<RelayAuthTokenClaims>(withMachine.accessToken, 1).meta?.machineId,
+      "machine-a",
+    );
+  });
+
+  await t.test("machineId does not widen who may mint or for which org", async () => {
+    const { app, authHeaders, assertionKey, mint } = await harness();
+    // The claim is only ever minted through the dedicated assertion key.
+    await assertJsonResponse<ErrorBody>(
+      await mint({ ...baseBody, machineId: "machine-a" }, authHeaders),
+      403,
+      (body) => {
+        assert.equal(body.code, "assertion_key_required");
+      },
+    );
+    const otherKey = await issueApiKey(app, authHeaders, ["relayauth:api-key:manage:*"]);
+    const wrongScope = await mint(
+      { ...baseBody, machineId: "machine-a" },
+      { "x-api-key": otherKey.key },
+    );
+    assert.equal(wrongScope.status, 403);
+
+    // A machine id never stands in for, or rewrites, org/workspace/sponsor.
+    for (const [field, code] of [
+      ["orgId", "orgId_required"],
+      ["workspaceId", "workspaceId_required"],
+      ["sponsorId", "sponsorId_required"],
+    ] as const) {
+      const { [field]: _omitted, ...partial } = baseBody;
+      await assertJsonResponse<ErrorBody>(
+        await mint({ ...partial, machineId: "org_relayhistory_target" }),
+        400,
+        (body) => {
+          assert.equal(body.code, code);
+        },
+      );
+    }
+    const body = await assertJsonResponse<RelayhistoryAssertionResponse>(
+      await mint({
+        ...baseBody,
+        machineId: "org_other",
+        meta: { machineId: "injected", org: "org_other" },
+        org: "org_other",
+      }),
+      201,
+    );
+    const claims = decodeJwtJsonSegment<RelayAuthTokenClaims>(body.accessToken, 1);
+    assert.equal(claims.org, baseBody.orgId);
+    assert.equal(claims.wks, baseBody.workspaceId);
+    assert.equal(claims.sponsorId, baseBody.sponsorId);
+    assert.equal(claims.meta?.requestedOrgId, baseBody.orgId);
+    assert.equal(claims.meta?.actorOrgId, "org_tokens_route");
+    assert.equal(claims.meta?.actorId, "api_key:" + assertionKey.apiKey.id);
+    assert.equal(claims.meta?.machineId, "org_other");
+    assert.deepEqual(Object.keys(claims.meta ?? {}).sort(), [
+      "actorId",
+      "actorOrgId",
+      "grantedScopes",
+      "machineId",
+      "requestedOrgId",
+      "tokenClass",
+      "workspaceId",
+    ]);
   });
 });
 

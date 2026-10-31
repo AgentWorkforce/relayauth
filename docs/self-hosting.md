@@ -85,6 +85,35 @@ before it becomes the `aud`. `https` rules are unchanged. The flag widens only
 which http hosts are accepted. It does not make a public http origin acceptable,
 so turn it on only where History is reached over a trusted private network.
 
+### Machine binding (`meta.machineId`)
+
+History assertions for courier writes carry the machine they were minted for
+as `meta.machineId`, so ingest can check that a manifest POST or status call
+comes from the machine named in the manifest key's `m=` component. Read-only
+and control-plane History paths may omit the request body field because they do
+not represent a courier machine. When `machineId` is supplied it is:
+
+- 1 to 128 characters of `A-Za-z0-9._-`, the same form as the `m=` component;
+- no leading `.`, and no `relay_` prefix (machine ids have no RelayAuth alias);
+- exact bytes: values that would need trimming, case folding or prefix
+  stripping are refused (400 `invalid_machine_id`), never rewritten.
+
+An omitted `machineId` produces no `meta.machineId` claim and the audit row is
+marked `machineIdMissing: "true"`. Consumers of machine-bound operations must
+require the claim and match it to their own authenticated machine context;
+RelayAuth cannot infer that context for read-only or control-plane callers.
+
+**Who is trusted to assert it.** RelayAuth validates the form only. It cannot
+know which machine a courier runs on, so it signs the `machineId` that the
+holder of the dedicated `relayauth:assertion:create:relayhistory` API key sends
+(the control plane / Cloud's broker), exactly as it already signs that caller's
+`orgId`, `workspaceId` and `sponsorId`. That caller must establish the machine
+from its own authenticated session with the courier before asking, and must
+never pass through a value the courier chose without that check. The route
+accepts only that dedicated key over `x-api-key` (a bearer token carrying the
+scope is refused with `assertion_key_required`), so couriers and other callers
+cannot choose a `machineId`. Never hand the assertion key to a courier.
+
 ## Session directory search issuer
 
 RelayAuth can mint 60-second tokens for one PostgREST RPC,

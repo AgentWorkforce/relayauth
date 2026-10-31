@@ -119,6 +119,18 @@ type RelayhistoryAssertionRequest = {
    * History. Omitted: the legacy shared `relayhistory` audience.
    */
   historyOrigin?: unknown;
+  /**
+   * Canonical id of the courier machine (the writer) the assertion is for,
+   * signed as `meta.machineId` so ingest can bind the token to the manifest
+   * key's `m=` component. Same form as that component: 1 to 128 characters of
+   * `A-Za-z0-9._-`, no leading `.`, no `relay_` alias prefix, exact bytes (no
+   * trimming or case folding). RelayAuth checks the form only: the caller (the
+   * holder of the dedicated assertion key, i.e. Cloud's broker) is trusted to
+   * have authorized the machine before asking. Optional because read-only and
+   * control-plane History paths do not represent a courier machine; consumers
+   * of machine-bound writes must require and match the signed claim.
+   */
+  machineId?: unknown;
 };
 
 type RevokeTokenRequest = {
@@ -228,6 +240,9 @@ const RELAYHISTORY_ASSERTION_SCOPE = "relayauth:assertion:create:relayhistory";
 const RELAYHISTORY_ASSERTION_AUDIENCE = "relayhistory";
 const MAX_RELAYHISTORY_ASSERTION_TTL_SECONDS = 60;
 const RELAYHISTORY_ASSERTION_SCOPES = ["rth:read", "rth:sync"] as const;
+/** Mirrors the manifest key's `m=` component ([A-Za-z0-9._-]{1,128}). */
+const RELAYHISTORY_MACHINE_ID_SHAPE = /^[A-Za-z0-9._-]{1,128}$/u;
+const RELAYHISTORY_MACHINE_ID_ALIAS_PREFIX = "relay_";
 
 tokens.post("/", async (c) => {
   const auth = await authenticateAndAuthorizeFromContext(
@@ -812,6 +827,7 @@ tokens.post("/relayhistory-assertion", async (c) => {
     scopes: request.scopes,
     expiresIn: request.expiresIn,
     historyOrigin: request.historyOrigin,
+    machineId: request.machineId,
     actorId: auth.claims.sub,
     actorOrgId: auth.claims.org,
   });
@@ -1570,6 +1586,7 @@ async function issueRelayhistoryAssertion(
     scopes: string[];
     expiresIn: number;
     historyOrigin?: string;
+    machineId?: string;
     actorId: string;
     actorOrgId: string;
   },
@@ -1603,6 +1620,7 @@ async function issueRelayhistoryAssertion(
       ...(options.historyOrigin
         ? { historyOrigin: options.historyOrigin }
         : {}),
+      ...(options.machineId ? { machineId: options.machineId } : {}),
     },
   };
 
@@ -1617,6 +1635,7 @@ async function issueRelayhistoryAssertion(
       sponsorId: options.sponsorId,
       tokenId: claims.jti,
       scopes: options.scopes,
+      machineId: options.machineId,
     }),
   });
 
@@ -1714,6 +1733,7 @@ function createAssertionAuditEntry(options: {
   sponsorId: string;
   tokenId: string;
   scopes: string[];
+  machineId?: string;
 }): AuditLogWriteEntry {
   return {
     id: crypto.randomUUID(),
@@ -1729,6 +1749,11 @@ function createAssertionAuditEntry(options: {
       actorOrgId: options.actorOrgId,
       sponsorId: options.sponsorId,
       grantedScopes: JSON.stringify(options.scopes),
+      // Keep omission explicit for review; correlate with grantedScopes and
+      // the consumer operation because non-machine paths legitimately omit it.
+      ...(options.machineId
+        ? { machineId: options.machineId }
+        : { machineIdMissing: "true" }),
     },
     timestamp: new Date().toISOString(),
   };
@@ -2129,6 +2154,7 @@ function normalizeRelayhistoryAssertionRequest(
       scopes: string[];
       expiresIn: number;
       historyOrigin?: string;
+      machineId?: string;
     }
   | { ok: false; error: string; code: string; status: 400 } {
   const orgId = normalizeOptionalString(value.orgId);
@@ -2194,6 +2220,11 @@ function normalizeRelayhistoryAssertionRequest(
     };
   }
 
+  const machineId = normalizeRelayhistoryMachineId(value.machineId);
+  if (!machineId.ok) {
+    return machineId;
+  }
+
   return {
     ok: true,
     orgId,
@@ -2202,7 +2233,40 @@ function normalizeRelayhistoryAssertionRequest(
     scopes: scopes.scopes,
     expiresIn: expiresIn.expiresIn,
     ...(historyOrigin.origin ? { historyOrigin: historyOrigin.origin } : {}),
+    ...(machineId.machineId ? { machineId: machineId.machineId } : {}),
   };
+}
+
+/**
+ * Canonical machine id: exactly the manifest key's `m=` component form. The
+ * value is taken byte for byte; anything that would need trimming, case
+ * folding or alias stripping is refused rather than rewritten, so one machine
+ * has exactly one signed spelling. Only an absent field counts as missing;
+ * `null`, `""` and non-strings are malformed.
+ */
+export function normalizeRelayhistoryMachineId(
+  value: unknown,
+):
+  | { ok: true; machineId?: string }
+  | { ok: false; error: string; code: string; status: 400 } {
+  if (value === undefined) {
+    return { ok: true };
+  }
+  if (
+    typeof value !== "string" ||
+    !RELAYHISTORY_MACHINE_ID_SHAPE.test(value) ||
+    value.startsWith(".") ||
+    value.startsWith(RELAYHISTORY_MACHINE_ID_ALIAS_PREFIX)
+  ) {
+    return {
+      ok: false,
+      error:
+        "machineId must be 1 to 128 characters of A-Za-z0-9._-, not starting with '.' or 'relay_'",
+      code: "invalid_machine_id",
+      status: 400,
+    };
+  }
+  return { ok: true, machineId: value };
 }
 
 /**
