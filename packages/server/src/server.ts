@@ -21,6 +21,7 @@ import {
   toStorageCapacityExhaustedError,
 } from "./lib/storage-retry.js";
 import { DEFAULT_BOOTSTRAP_API_KEY_ORG, ensureBootstrapApiKey } from "./lib/bootstrap-api-key.js";
+import { assertSessionDirectoryIssuerConfig } from "./lib/session-directory-issuer.js";
 import { assertSigningKeyConfig } from "./lib/signing-keys.js";
 import { apiKeyAuth } from "./middleware/api-key-auth.js";
 import { SponsorOidcService } from "./lib/sponsor-binding.js";
@@ -522,6 +523,24 @@ export async function startServer(options: StartServerOptions = {}) {
       options.config?.RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS
       ?? readEnvOrFile("RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS"),
     RELAYAUTH_ISSUER: options.config?.RELAYAUTH_ISSUER ?? process.env.RELAYAUTH_ISSUER,
+    RELAYAUTH_SESSION_DIRECTORY_ISSUANCE:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_ISSUANCE
+      ?? process.env.RELAYAUTH_SESSION_DIRECTORY_ISSUANCE,
+    RELAYAUTH_SESSION_DIRECTORY_ISSUER:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_ISSUER
+      ?? process.env.RELAYAUTH_SESSION_DIRECTORY_ISSUER,
+    RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM
+      ?? readEnvOrFile("RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM"),
+    RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT
+      ?? readEnvOrFile("RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT"),
+    RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS
+      ?? readEnvOrFile("RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS"),
+    RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES
+      ?? process.env.RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES,
     RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN:
       options.config?.RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN
       ?? process.env.RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN,
@@ -546,6 +565,7 @@ export async function startServer(options: StartServerOptions = {}) {
   // or an explicit public key that does not match the private key) rather
   // than signing with one key while advertising another.
   await assertSigningKeyConfig(config);
+  await assertSessionDirectoryIssuerConfig(config);
 
   const bootstrapApiKey = options.bootstrapApiKey ?? readEnvOrFile("RELAYAUTH_BOOTSTRAP_API_KEY");
   if (bootstrapApiKey) {

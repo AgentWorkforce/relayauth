@@ -14,7 +14,10 @@ import {
   generateApiKey,
   WORKSPACE_TOKEN_PREFIX,
 } from "../lib/api-keys.js";
-import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
+import {
+  authenticateAndAuthorizeFromContext,
+  isVerifiedTokenRevoked,
+} from "../lib/auth.js";
 import {
   scheduleDeferredTask,
   type DeferredTaskScheduler,
@@ -24,6 +27,17 @@ import {
   RELAY_PATH_TOKEN_PREFIX,
   wrapRelayToken,
 } from "../lib/jwt.js";
+import { FixedWindowRateLimiter } from "../lib/rate-limit.js";
+import {
+  assertSessionDirectoryIssuerConfig,
+  buildSessionDirectorySearchClaims,
+  refuseSubject,
+  SESSION_DIRECTORY_SEARCH_MINT_SCOPE,
+  SESSION_DIRECTORY_SEARCH_SUBJECT,
+  SESSION_DIRECTORY_SEARCH_TOKEN_CLASS,
+  sessionDirectoryIssuanceEnabled,
+  signSessionDirectorySearchToken,
+} from "../lib/session-directory-issuer.js";
 import { resolveIssuer, signToken } from "../lib/sign.js";
 import { verifyRs256Token } from "../lib/token-verifier.js";
 import type { StoredIdentity } from "../storage/identity-types.js";
@@ -773,6 +787,133 @@ tokens.post("/relayhistory-assertion", async (c) => {
   });
 
   return c.json<RelayhistoryAssertionResponse>(assertion, 201);
+});
+
+// Per subject and workspace. RelayHistory reuses a token for up to 30 seconds,
+// so this only trips on a caller minting far more often than search needs.
+const sessionDirectoryMintLimiter = new FixedWindowRateLimiter(120, 60_000);
+
+tokens.post("/session-directory-search", async (c) => {
+  if (!sessionDirectoryIssuanceEnabled(c.env)) {
+    return c.json(
+      { error: "Session directory issuance is disabled", code: "session_directory_issuance_disabled" },
+      503,
+    );
+  }
+
+  const auth = await authenticateAndAuthorizeFromContext(
+    c,
+    SESSION_DIRECTORY_SEARCH_MINT_SCOPE,
+    matchScope,
+  );
+  if (!auth.ok) {
+    return c.json({ error: auth.error, code: auth.code }, auth.status);
+  }
+  // A wildcard key passes matchScope, and a key with other scopes is no longer
+  // narrow. Only a key carrying this one literal scope may mint.
+  if (
+    c.get("apiKeyVia") !== "api_key"
+    || auth.claims.scopes.length !== 1
+    || auth.claims.scopes[0] !== SESSION_DIRECTORY_SEARCH_MINT_SCOPE
+  ) {
+    return c.json(
+      {
+        error: "session directory mint requires a dedicated api key",
+        code: "assertion_key_required",
+      },
+      403,
+    );
+  }
+
+  const body = await parseJsonObjectBody<{ subjectToken?: unknown; workspaceId?: unknown }>(c.req.raw);
+  if (!body) {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  const subjectToken = typeof body.subjectToken === "string" ? body.subjectToken.trim() : "";
+  const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId.trim() : "";
+  if (!subjectToken) {
+    return c.json({ error: "subjectToken is required", code: "subjectToken_required" }, 400);
+  }
+  if (!workspaceId) {
+    return c.json({ error: "workspaceId is required", code: "workspaceId_required" }, 400);
+  }
+
+  await assertSessionDirectoryIssuerConfig(c.env);
+
+  let subject: RelayAuthTokenClaims;
+  try {
+    subject = await verifyRs256Token(subjectToken, c.env, { issuer: resolveIssuer(c.env) });
+  } catch {
+    return c.json({ error: "Invalid subject token", code: "subject_token_invalid" }, 401);
+  }
+  const storage = c.get("storage");
+  if (await isVerifiedTokenRevoked(storage, subject)) {
+    return c.json({ error: "Invalid subject token", code: "subject_token_invalid" }, 401);
+  }
+  const refusal = refuseSubject(subject, workspaceId, c.env);
+  if (refusal) {
+    return c.json(refusal, 403);
+  }
+
+  const claims = buildSessionDirectorySearchClaims(
+    subject,
+    c.env,
+    Math.floor(Date.now() / 1000),
+    createTokenId(),
+  );
+  const rate = sessionDirectoryMintLimiter.consume([
+    `${claims.app_metadata.org_id}:${claims.app_metadata.workspace_ids[0]}:${claims.sub}`,
+  ]);
+  if (!rate.allowed) {
+    return c.json({ error: "Too many search token requests", code: "rate_limited" }, 429);
+  }
+
+  const accessToken = await signSessionDirectorySearchToken(claims, c.env);
+  await storage.tokens.persistIssuedWithAudit({
+    token: {
+      id: claims.jti,
+      tokenId: claims.jti,
+      jti: claims.jti,
+      identityId: SESSION_DIRECTORY_SEARCH_SUBJECT,
+      sessionId: null,
+      issuedAt: claims.iat,
+      expiresAt: claims.exp,
+      createdAt: new Date(claims.iat * 1000).toISOString(),
+      lineage: {
+        orgId: claims.app_metadata.org_id,
+        workspaceId: claims.app_metadata.workspace_ids[0],
+        sponsorId: claims.sub,
+        sponsorChain: [claims.sub, SESSION_DIRECTORY_SEARCH_SUBJECT],
+        tokenType: "access",
+      },
+    },
+    auditEntry: {
+      id: crypto.randomUUID(),
+      action: "token.issued",
+      identityId: auth.claims.sub,
+      orgId: claims.app_metadata.org_id,
+      workspaceId: claims.app_metadata.workspace_ids[0],
+      plane: "relayauth",
+      resource: SESSION_DIRECTORY_SEARCH_TOKEN_CLASS,
+      result: "allowed",
+      metadata: {
+        tokenId: claims.jti,
+        actorOrgId: auth.claims.org,
+        sponsorId: claims.sub,
+        subjectTokenId: subject.jti,
+      },
+      timestamp: new Date().toISOString(),
+    },
+  });
+
+  return c.json(
+    {
+      accessToken,
+      accessTokenExpiresAt: new Date(claims.exp * 1000).toISOString(),
+      tokenType: "Bearer",
+    },
+    201,
+  );
 });
 
 tokens.post("/refresh", async (c) => {
