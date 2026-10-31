@@ -156,6 +156,34 @@ test("search token never outlives its subject", async () => {
   assert.equal(decode(body.accessToken).exp, now + 10);
 });
 
+test("a subject inside the verifier's expiry grace is refused, never minted with exp <= iat", async () => {
+  const { exchange } = await harness();
+  const now = Math.floor(Date.now() / 1000);
+  for (const exp of [now, now - 10]) {
+    await refused(
+      await exchange({ subjectToken: subject({ iat: now - 120, exp }), workspaceId: "ws_a" }),
+      401,
+      "subject_token_invalid",
+    );
+  }
+});
+
+test("no search token is minted when revocation cannot be checked", async () => {
+  const { app, exchange } = await harness();
+  const revocations = app.storage.revocations as { isRevoked?: unknown };
+  const original = revocations.isRevoked;
+  revocations.isRevoked = undefined;
+  try {
+    await refused(
+      await exchange({ subjectToken: subject(), workspaceId: "ws_a" }),
+      501,
+      "revocation_check_unavailable",
+    );
+  } finally {
+    revocations.isRevoked = original;
+  }
+});
+
 test("issuance is off by default and with any value but true", async () => {
   for (const value of [undefined, "1", "TRUE"]) {
     const { exchange } = await harness({ ...ENABLED, RELAYAUTH_SESSION_DIRECTORY_ISSUANCE: value });
@@ -269,6 +297,24 @@ test("a workspace token holding the literal scope cannot mint", async () => {
   );
   const response = await exchange({ subjectToken: subject(), workspaceId: "ws_a" }, created.token ?? created.key);
   assert.equal(response.status, 403);
+});
+
+test("an existing dedicated bootstrap key with extra scopes is reported unusable", async () => {
+  const app = createTestApp(ENABLED);
+  const value = `rak_${"x".repeat(40)}`;
+  await app.storage.apiKeys.create({
+    orgId: "org_operator",
+    name: SESSION_DIRECTORY_BOOTSTRAP_API_KEY_NAME,
+    prefix: value.slice(0, 12),
+    keyHash: hashApiKey(value),
+    scopes: [SESSION_DIRECTORY_SEARCH_MINT_SCOPE, "relayauth:token:read:*"],
+  });
+  const result = await ensureBootstrapApiKey(app.storage, value, {
+    orgId: "org_operator",
+    scope: SESSION_DIRECTORY_SEARCH_MINT_SCOPE,
+    exactScope: true,
+  });
+  assert.equal(result.status, "scope_mismatch");
 });
 
 test("boot creates the dedicated key with only the mint scope, and it can mint", async () => {

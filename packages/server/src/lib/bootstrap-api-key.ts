@@ -24,11 +24,17 @@ function classifyExisting(
   existing: StoredApiKey,
   requestedOrgId: string,
   scope: string,
+  exactScope: boolean,
 ): BootstrapApiKeyResult {
   if (existing.revokedAt) {
     return { status: "revoked", id: existing.id, prefix: existing.prefix };
   }
-  if (!existing.scopes.includes(scope)) {
+  // A dedicated key (the session directory mint) is usable only with exactly its one
+  // scope; the endpoint refuses a key carrying anything else.
+  const scopeOk = exactScope
+    ? existing.scopes.length === 1 && existing.scopes[0] === scope
+    : existing.scopes.includes(scope);
+  if (!scopeOk) {
     return {
       status: "scope_mismatch",
       id: existing.id,
@@ -60,9 +66,10 @@ function classifyExisting(
 export async function ensureBootstrapApiKey(
   storage: AuthStorage,
   rawValue: string,
-  options: { orgId?: string; name?: string; scope?: string } = {},
+  options: { orgId?: string; name?: string; scope?: string; exactScope?: boolean } = {},
 ): Promise<BootstrapApiKeyResult> {
   const scope = options.scope ?? BOOTSTRAP_API_KEY_SCOPE;
+  const exactScope = options.exactScope ?? false;
   const apiKey = rawValue.trim();
   if (apiKey.length < MIN_BOOTSTRAP_API_KEY_LENGTH || /\s/u.test(apiKey)) {
     throw new Error(
@@ -75,7 +82,7 @@ export async function ensureBootstrapApiKey(
   const orgId = options.orgId?.trim() || DEFAULT_BOOTSTRAP_API_KEY_ORG;
   const existing = await storage.apiKeys.getByHash(keyHash);
   if (existing) {
-    return classifyExisting(existing, orgId, scope);
+    return classifyExisting(existing, orgId, scope, exactScope);
   }
 
   try {
@@ -93,7 +100,7 @@ export async function ensureBootstrapApiKey(
     // fired. Re-read and report what is there instead of failing boot.
     const raced = await storage.apiKeys.getByHash(keyHash);
     if (raced) {
-      return classifyExisting(raced, orgId, scope);
+      return classifyExisting(raced, orgId, scope, exactScope);
     }
     throw error;
   }

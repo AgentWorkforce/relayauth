@@ -590,12 +590,18 @@ export async function startServer(options: StartServerOptions = {}) {
       value: readEnvOrFile("RELAYAUTH_SESSION_DIRECTORY_BOOTSTRAP_API_KEY"),
       scope: SESSION_DIRECTORY_SEARCH_MINT_SCOPE,
       name: SESSION_DIRECTORY_BOOTSTRAP_API_KEY_NAME,
+      exactScope: true,
     },
   ];
-  for (const { label, setting, value, scope, name } of bootstrapKeys) {
+  for (const { label, setting, value, scope, name, exactScope } of bootstrapKeys) {
     if (!value) continue;
     // Never log the key or its prefix: the record id is enough to find it.
-    const result = await ensureBootstrapApiKey(storage, value, { orgId: requestedBootstrapOrg, scope, name });
+    const result = await ensureBootstrapApiKey(storage, value, {
+      orgId: requestedBootstrapOrg,
+      scope,
+      name,
+      exactScope,
+    });
     if (result.status === "created" || result.status === "exists") {
       console.log(`relayauth ${label} ${result.status}`, { id: result.id });
       if (result.status === "exists" && result.orgMismatch) {

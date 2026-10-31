@@ -877,7 +877,21 @@ tokens.post("/session-directory-search", async (c) => {
     return c.json({ error: "Invalid subject token", code: "subject_token_invalid" }, 401);
   }
   const storage = c.get("storage");
+  // Fail closed: a search token must never come from a subject whose revocation
+  // cannot be checked (matching GET /v1/tokens/revocation's 501).
+  if (typeof storage.revocations.isRevoked !== "function") {
+    return c.json(
+      { error: "Revocation check unavailable", code: "revocation_check_unavailable" },
+      501,
+    );
+  }
   if (await isVerifiedTokenRevoked(storage, subject)) {
+    return c.json({ error: "Invalid subject token", code: "subject_token_invalid" }, 401);
+  }
+  // The verifier allows 30s of clock skew past `exp`. A search token never outlives
+  // its subject, so a subject at or past `exp` would yield exp <= iat: refuse it.
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (typeof subject.exp !== "number" || subject.exp <= nowSeconds) {
     return c.json({ error: "Invalid subject token", code: "subject_token_invalid" }, 401);
   }
   const refusal = refuseSubject(subject, workspaceId, c.env);
@@ -888,7 +902,7 @@ tokens.post("/session-directory-search", async (c) => {
   const claims = buildSessionDirectorySearchClaims(
     subject,
     c.env,
-    Math.floor(Date.now() / 1000),
+    nowSeconds,
     createTokenId(),
   );
   const rate = sessionDirectoryMintLimiter.consume([
