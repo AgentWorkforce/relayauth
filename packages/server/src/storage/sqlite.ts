@@ -49,7 +49,9 @@ import type {
   AuthStorage,
   ContextStorage,
   CreateAuditWebhookInput,
+  CreateMigrationGrantResult,
   CreateMigrationGrantWithAuditInput,
+  FindMigrationGrantByIdempotencyKeyInput,
   DashboardAuditCounts,
   DashboardAuditQuery,
   DuplicateIdentityRecord,
@@ -63,6 +65,8 @@ import type {
   IssuedTokenRecord,
   ListIdentitiesOptions,
   MigrationGrant,
+  MigrationGrantIdempotencyLookup,
+  MigrationGrantIdempotencyReceipt,
   MigrationGrantStorage,
   OrganizationContextRecord,
   PolicyStorage,
@@ -486,6 +490,20 @@ const SELECT_MIGRATION_GRANT_SQL = `
     allowed_pairs_json, plan_json, not_after, created_by, created_at, revoked_at
   FROM migration_grants
   WHERE grant_id = ?
+  LIMIT 1
+`;
+
+const INSERT_MIGRATION_GRANT_RECEIPT_SQL = `
+  INSERT INTO migration_grant_idempotency_receipts (
+    org_id, key_hash, caller_id, request_fingerprint, grant_id, created_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?)
+`;
+
+const SELECT_MIGRATION_GRANT_RECEIPT_SQL = `
+  SELECT org_id, key_hash, caller_id, request_fingerprint, grant_id, created_at
+  FROM migration_grant_idempotency_receipts
+  WHERE org_id = ? AND key_hash = ?
   LIMIT 1
 `;
 
@@ -925,6 +943,14 @@ type MigrationGrantRow = {
   created_at?: string;
   revoked_at?: string | null;
 };
+type MigrationGrantReceiptRow = {
+  org_id?: string;
+  key_hash?: string;
+  caller_id?: string;
+  request_fingerprint?: string;
+  grant_id?: string;
+  created_at?: string;
+};
 type AttestationLedgerRow = {
   seq?: number | string | null;
   org_id?: string;
@@ -1057,6 +1083,14 @@ type MemoryState = {
   revokedTokens: Map<string, RevokedTokenRecord>;
   attestations: MemoryAttestationState;
   migrationGrants: Map<string, MigrationGrant>;
+  /** Keyed by migrationGrantReceiptMemoryKey(orgId, keyHash). */
+  migrationGrantReceipts: Map<string, MemoryMigrationGrantReceipt>;
+};
+
+type MemoryMigrationGrantReceipt = MigrationGrantIdempotencyReceipt & {
+  orgId: string;
+  grantId: string;
+  createdAt: string;
 };
 
 type BackendContext =
@@ -2978,38 +3012,115 @@ class SqliteMigrationGrantStorage implements MigrationGrantStorage {
 
   async createWithAudit(
     input: CreateMigrationGrantWithAuditInput,
-  ): Promise<MigrationGrant> {
+  ): Promise<CreateMigrationGrantResult> {
     const grant = normalizeMigrationGrant(input.grant);
     const auditEntry = normalizeAuditWriteEntry(input.auditEntry);
+    const receipt = normalizeMigrationGrantReceipt(input.idempotency);
     if (grant.revokedAt) {
       throw new Error("a migration grant cannot be created revoked");
     }
 
     const backend = await this.provider.getBackend();
     if (backend.kind === "memory") {
+      // Synchronous from here on, so the check-and-insert cannot interleave.
+      const receiptKey = migrationGrantReceiptMemoryKey(grant.orgId, receipt.keyHash);
+      const existing = backend.state.migrationGrantReceipts.get(receiptKey);
+      if (existing) {
+        return resolveExistingMigrationGrantReceipt(
+          existing.callerId,
+          existing.requestFingerprint,
+          receipt,
+          () => {
+            const stored = backend.state.migrationGrants.get(existing.grantId);
+            return stored ? cloneMigrationGrant(stored) : null;
+          },
+        );
+      }
       if (backend.state.migrationGrants.has(grant.grantId)) {
         throw new StorageError("migration_grant_already_exists", 409, "migration_grant_already_exists");
       }
       backend.state.migrationGrants.set(grant.grantId, cloneMigrationGrant(grant));
+      backend.state.migrationGrantReceipts.set(receiptKey, {
+        ...receipt,
+        orgId: grant.orgId,
+        grantId: grant.grantId,
+        createdAt: grant.createdAt,
+      });
       backend.state.auditLogs.push(cloneAuditEntryRecord(auditEntry));
       backend.state.auditLogs.sort(compareAuditRecordDesc);
-      return cloneMigrationGrant(grant);
+      return { outcome: "created", grant: cloneMigrationGrant(grant) };
     }
 
-    beginSqliteTransaction(backend.db);
+    const db = backend.db;
+    beginSqliteTransaction(db);
     try {
-      backend.db
-        .prepare(INSERT_MIGRATION_GRANT_SQL)
-        .run(...toMigrationGrantParams(grant));
-      backend.db
-        .prepare(INSERT_AUDIT_LOG_SQL)
-        .run(...toAuditParams(auditEntry));
-      commitSqliteTransaction(backend.db);
-      return cloneMigrationGrant(grant);
+      // BEGIN IMMEDIATE holds the write lock, so this read and the inserts
+      // below are serialized against every other writer on the database.
+      const existing = db
+        .prepare<MigrationGrantReceiptRow>(SELECT_MIGRATION_GRANT_RECEIPT_SQL)
+        .get(grant.orgId, receipt.keyHash);
+      if (existing) {
+        const result = resolveExistingMigrationGrantReceipt(
+          existing.caller_id,
+          existing.request_fingerprint,
+          receipt,
+          () => readMigrationGrant(db, existing.grant_id),
+        );
+        // Nothing was written; end the read-only transaction.
+        rollbackSqliteTransaction(db);
+        return result;
+      }
+      db.prepare(INSERT_MIGRATION_GRANT_SQL).run(...toMigrationGrantParams(grant));
+      db.prepare(INSERT_MIGRATION_GRANT_RECEIPT_SQL).run(
+        grant.orgId,
+        receipt.keyHash,
+        receipt.callerId,
+        receipt.requestFingerprint,
+        grant.grantId,
+        grant.createdAt,
+      );
+      db.prepare(INSERT_AUDIT_LOG_SQL).run(...toAuditParams(auditEntry));
+      commitSqliteTransaction(db);
+      return { outcome: "created", grant: cloneMigrationGrant(grant) };
     } catch (error) {
-      rollbackSqliteTransaction(backend.db);
+      rollbackSqliteTransaction(db);
       throw error;
     }
+  }
+
+  async findByIdempotencyKey(
+    input: FindMigrationGrantByIdempotencyKeyInput,
+  ): Promise<MigrationGrantIdempotencyLookup | null> {
+    const orgId = requireString(input.orgId, "orgId is required");
+    const keyHash = requireSha256Hex(input.keyHash, "keyHash");
+    const callerId = requireString(input.callerId, "callerId is required");
+
+    const backend = await this.provider.getBackend();
+    if (backend.kind === "memory") {
+      const receipt = backend.state.migrationGrantReceipts.get(
+        migrationGrantReceiptMemoryKey(orgId, keyHash),
+      );
+      if (!receipt || receipt.callerId !== callerId) {
+        return null;
+      }
+      const grant = backend.state.migrationGrants.get(receipt.grantId);
+      return {
+        requestFingerprint: receipt.requestFingerprint,
+        grant: grant && grant.orgId === orgId ? cloneMigrationGrant(grant) : null,
+      };
+    }
+
+    const row = backend.db
+      .prepare<MigrationGrantReceiptRow>(SELECT_MIGRATION_GRANT_RECEIPT_SQL)
+      .get(orgId, keyHash);
+    if (!row || row.caller_id !== callerId || !row.request_fingerprint) {
+      return null;
+    }
+    const grant = readMigrationGrant(backend.db, row.grant_id);
+    return {
+      requestFingerprint: row.request_fingerprint,
+      grant: grant && grant.orgId === orgId ? grant : null,
+    };
   }
 
   async get(grantId: string): Promise<MigrationGrant | null> {
@@ -3990,6 +4101,75 @@ function hydrateMigrationGrant(row: MigrationGrantRow | undefined): MigrationGra
   }
 }
 
+function readMigrationGrant(
+  db: SqliteDatabase,
+  grantId: string | undefined,
+): MigrationGrant | null {
+  const normalizedGrantId = normalizeOptionalString(grantId);
+  if (!normalizedGrantId) {
+    return null;
+  }
+  return hydrateMigrationGrant(
+    db.prepare<MigrationGrantRow>(SELECT_MIGRATION_GRANT_SQL).get(normalizedGrantId),
+  );
+}
+
+function migrationGrantReceiptMemoryKey(orgId: string, keyHash: string): string {
+  return `${orgId}\u0000${keyHash}`;
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/u;
+
+function requireSha256Hex(value: unknown, field: string): string {
+  if (typeof value !== "string" || !SHA256_HEX.test(value)) {
+    throw new Error(`${field} must be a lowercase SHA-256 hex digest`);
+  }
+  return value;
+}
+
+function normalizeMigrationGrantReceipt(
+  input: MigrationGrantIdempotencyReceipt | undefined,
+): MigrationGrantIdempotencyReceipt {
+  if (!input) {
+    throw new Error("a migration grant requires an idempotency receipt");
+  }
+  return {
+    keyHash: requireSha256Hex(input.keyHash, "keyHash"),
+    callerId: requireString(input.callerId, "callerId is required"),
+    requestFingerprint: requireSha256Hex(
+      input.requestFingerprint,
+      "requestFingerprint",
+    ),
+  };
+}
+
+/**
+ * The key hash already binds the caller, so a caller mismatch here means a
+ * hash collision or a corrupted row; either way it is never a replay.
+ */
+function resolveExistingMigrationGrantReceipt(
+  existingCallerId: string | undefined,
+  existingFingerprint: string | undefined,
+  receipt: MigrationGrantIdempotencyReceipt,
+  loadGrant: () => MigrationGrant | null,
+): CreateMigrationGrantResult {
+  if (
+    existingCallerId !== receipt.callerId ||
+    existingFingerprint !== receipt.requestFingerprint
+  ) {
+    return { outcome: "conflict" };
+  }
+  const grant = loadGrant();
+  if (!grant) {
+    throw new StorageError(
+      "migration grant idempotency receipt has no readable grant",
+      500,
+      "migration_grant_receipt_unreadable",
+    );
+  }
+  return { outcome: "replayed", grant };
+}
+
 function cloneMigrationGrant(grant: MigrationGrant): MigrationGrant {
   return {
     ...grant,
@@ -4093,6 +4273,7 @@ function createMemoryBackend(): BackendContext {
         ledger: [],
       },
       migrationGrants: new Map<string, MigrationGrant>(),
+      migrationGrantReceipts: new Map<string, MemoryMigrationGrantReceipt>(),
     },
   };
 }

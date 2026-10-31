@@ -673,9 +673,49 @@ export type MigrationGrant = {
   revokedAt?: string;
 };
 
+/**
+ * Idempotency receipt written with a grant. Only hashes are stored: never the
+ * raw Idempotency-Key.
+ */
+export type MigrationGrantIdempotencyReceipt = {
+  /** Domain-separated SHA-256 over (org, caller, raw key); unique per org. */
+  keyHash: string;
+  /** The creating caller's subject. */
+  callerId: string;
+  /** SHA-256 of the canonical pre-grant request. */
+  requestFingerprint: string;
+};
+
 export type CreateMigrationGrantWithAuditInput = {
   grant: MigrationGrant;
   auditEntry: AuditLogWriteEntry;
+  /** Committed in the same transaction as the grant and its audit row. */
+  idempotency: MigrationGrantIdempotencyReceipt;
+};
+
+/**
+ * `created`: the receipt, the grant and the audit row were committed.
+ * `replayed`: a receipt for this org, key hash and caller with the same
+ * fingerprint already existed (for example, a concurrent create won); nothing
+ * was written and `grant` is the original grant, unchanged.
+ * `conflict`: the receipt exists with a different fingerprint; nothing was
+ * written.
+ */
+export type CreateMigrationGrantResult =
+  | { outcome: "created"; grant: MigrationGrant }
+  | { outcome: "replayed"; grant: MigrationGrant }
+  | { outcome: "conflict" };
+
+export type FindMigrationGrantByIdempotencyKeyInput = {
+  orgId: string;
+  keyHash: string;
+  callerId: string;
+};
+
+export type MigrationGrantIdempotencyLookup = {
+  requestFingerprint: string;
+  /** Null only when the grant row cannot be read or verified. */
+  grant: MigrationGrant | null;
 };
 
 export type RevokeMigrationGrantWithAuditInput = {
@@ -687,8 +727,19 @@ export type RevokeMigrationGrantWithAuditInput = {
 };
 
 export interface MigrationGrantStorage {
-  /** Persists the grant and its audit entry in one transaction. */
-  createWithAudit(input: CreateMigrationGrantWithAuditInput): Promise<MigrationGrant>;
+  /**
+   * Persists the idempotency receipt, the grant and its audit entry in one
+   * transaction, or reports an existing receipt for the same org, key hash and
+   * caller without writing anything.
+   */
+  createWithAudit(input: CreateMigrationGrantWithAuditInput): Promise<CreateMigrationGrantResult>;
+  /**
+   * Reads the receipt for exactly this org, key hash and caller. A receipt held
+   * by another org or caller is reported as absent (null).
+   */
+  findByIdempotencyKey(
+    input: FindMigrationGrantByIdempotencyKeyInput,
+  ): Promise<MigrationGrantIdempotencyLookup | null>;
   get(grantId: string): Promise<MigrationGrant | null>;
   /**
    * Stamps revoked_at and writes the audit entry in one transaction. Throws
