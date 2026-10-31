@@ -2916,9 +2916,6 @@ function verifyRs256Token(token: string): boolean {
 
 test("POST /v1/tokens/relayhistory-assertion machineId claim", async (t) => {
   const assertionScope = "relayauth:assertion:create:relayhistory";
-  const compatOn = {
-    RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID: "true",
-  };
   const baseBody = {
     orgId: "org_relayhistory_target",
     workspaceId: "ws_relayhistory_target",
@@ -2926,12 +2923,11 @@ test("POST /v1/tokens/relayhistory-assertion machineId claim", async (t) => {
     scopes: ["rth:sync"],
   };
 
-  async function harness(bindings?: Parameters<typeof createTestApp>[0]) {
+  async function harness() {
     const { app, authHeaders } = await createHarness({
       authClaims: {
         scopes: ["relayauth:api-key:manage:*", assertionScope],
       },
-      bindings,
     });
     // Broker keys are provisioned out of band. Current main deliberately
     // refuses bearer/admin callers that try to delegate this literal scope.
@@ -2999,36 +2995,20 @@ test("POST /v1/tokens/relayhistory-assertion machineId claim", async (t) => {
     { id: "machine-a" },
   ]) {
     await t.test(`refuses a malformed machineId (${JSON.stringify(machineId)})`, async () => {
-      for (const bindings of [undefined, compatOn]) {
-        const { app, mint } = await harness(bindings);
-        await assertJsonResponse<ErrorBody>(
-          await mint({ ...baseBody, machineId }),
-          400,
-          (body) => {
-            assert.equal(body.code, "invalid_machine_id");
-          },
-        );
-        assert.equal(await countStoredTokens(app), 0);
-      }
+      const { app, mint } = await harness();
+      await assertJsonResponse<ErrorBody>(
+        await mint({ ...baseBody, machineId }),
+        400,
+        (body) => {
+          assert.equal(body.code, "invalid_machine_id");
+        },
+      );
+      assert.equal(await countStoredTokens(app), 0);
     });
   }
 
-  await t.test("refuses a missing machineId by default", async () => {
-    for (const value of [undefined, "", "1", "TRUE", "yes", "false"]) {
-      const { app, mint } = await harness(
-        value === undefined
-          ? undefined
-          : { RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID: value },
-      );
-      await assertJsonResponse<ErrorBody>(await mint(baseBody), 400, (body) => {
-        assert.equal(body.code, "machineId_required");
-      });
-      assert.equal(await countStoredTokens(app), 0);
-    }
-  });
-
-  await t.test("allows a missing machineId only behind the exact compat flag", async () => {
-    const { app, mint } = await harness(compatOn);
+  await t.test("allows and audits an omitted machineId for non-machine paths", async () => {
+    const { app, mint } = await harness();
     const body = await assertJsonResponse<RelayhistoryAssertionResponse>(
       await mint(baseBody),
       201,
@@ -3040,7 +3020,7 @@ test("POST /v1/tokens/relayhistory-assertion machineId claim", async (t) => {
     assert.equal(audit.machineIdMissing, "true");
     assert.equal(audit.machineId, undefined);
 
-    // With the flag on, a supplied machineId is still validated and signed.
+    // A supplied machineId is still validated and signed exactly.
     const withMachine = await assertJsonResponse<RelayhistoryAssertionResponse>(
       await mint({ ...baseBody, machineId: "machine-a" }),
       201,

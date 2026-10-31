@@ -64,10 +64,6 @@ spec:
             - name: RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN
               value: "true"
             {{- end }}
-            {{- if (.Values.relayhistory).allowMissingMachineId }}
-            - name: RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID
-              value: "true"
-            {{- end }}
             {{- if (.Values.sessionDirectory).issuance }}
             - name: RELAYAUTH_SESSION_DIRECTORY_ISSUANCE
               value: "true"

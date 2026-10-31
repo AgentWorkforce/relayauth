@@ -126,8 +126,9 @@ type RelayhistoryAssertionRequest = {
    * `A-Za-z0-9._-`, no leading `.`, no `relay_` alias prefix, exact bytes (no
    * trimming or case folding). RelayAuth checks the form only: the caller (the
    * holder of the dedicated assertion key, i.e. Cloud's broker) is trusted to
-   * have authorized the machine before asking. Required unless
-   * RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID=true.
+   * have authorized the machine before asking. Optional because read-only and
+   * control-plane History paths do not represent a courier machine; consumers
+   * of machine-bound writes must require and match the signed claim.
    */
   machineId?: unknown;
 };
@@ -813,9 +814,6 @@ tokens.post("/relayhistory-assertion", async (c) => {
   const request = normalizeRelayhistoryAssertionRequest(body, {
     allowPrivateHttpOrigin:
       c.env.RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN === "true",
-  }, {
-    allowMissingMachineId:
-      c.env.RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID === "true",
   });
   if (!request.ok) {
     return c.json({ error: request.error, code: request.code }, request.status);
@@ -2146,7 +2144,6 @@ function normalizeExpiresIn(value: unknown): number {
 function normalizeRelayhistoryAssertionRequest(
   value: RelayhistoryAssertionRequest,
   originPolicy: RelayhistoryOriginPolicy = {},
-  machinePolicy: { allowMissingMachineId?: boolean } = {},
 ):
   | {
       ok: true;
@@ -2222,7 +2219,7 @@ function normalizeRelayhistoryAssertionRequest(
     };
   }
 
-  const machineId = normalizeRelayhistoryMachineId(value.machineId, machinePolicy);
+  const machineId = normalizeRelayhistoryMachineId(value.machineId);
   if (!machineId.ok) {
     return machineId;
   }
@@ -2248,20 +2245,11 @@ function normalizeRelayhistoryAssertionRequest(
  */
 export function normalizeRelayhistoryMachineId(
   value: unknown,
-  policy: { allowMissingMachineId?: boolean } = {},
 ):
   | { ok: true; machineId?: string }
   | { ok: false; error: string; code: string; status: 400 } {
   if (value === undefined) {
-    if (policy.allowMissingMachineId) {
-      return { ok: true };
-    }
-    return {
-      ok: false,
-      error: "machineId is required",
-      code: "machineId_required",
-      status: 400,
-    };
+    return { ok: true };
   }
   if (
     typeof value !== "string" ||

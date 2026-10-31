@@ -35,11 +35,6 @@ relayhistory:
   # http://relayhistory.relayhistory.svc:8080. Public names/IPs still need
   # https. Sets RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN=true.
   allowPrivateHttpOrigin: false
-  # Compat only, keep false: let History assertions mint without a machineId
-  # (no meta.machineId; audit flags machineIdMissing). For the rollout window
-  # before the control plane sends machineId. Sets
-  # RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID=true.
-  allowMissingMachineId: false
 
 # Second issuer for session directory search tokens. Off by default. Enabling it
 # needs an issuer that differs from the general one and
