@@ -161,8 +161,34 @@ test("ObserverEventBus listenerCount reflects current subscribers", () => {
   assert.equal(bus.listenerCount(), 0);
 });
 
+test("observer routes are absent unless RELAYAUTH_OBSERVER_ENABLED is true", async () => {
+  for (const setting of [undefined, "false", "1", "TRUE"]) {
+    const app = createTestApp(
+      setting === undefined ? {} : { RELAYAUTH_OBSERVER_ENABLED: setting },
+    );
+    const baselineListeners = observerBus.listenerCount();
+    try {
+      for (const path of ["/v1/observer/events", "/v1/observer/health"]) {
+        const response = await app.request(
+          createTestRequest("GET", path),
+          undefined,
+          app.bindings,
+        );
+        assert.equal(response.status, 404, `${path} with ${String(setting)}`);
+      }
+      assert.equal(
+        observerBus.listenerCount(),
+        baselineListeners,
+        "a disabled observer must not subscribe to the event bus",
+      );
+    } finally {
+      await app.close();
+    }
+  }
+});
+
 test("GET /v1/observer/health returns listener health without auth", async () => {
-  const app = createTestApp();
+  const app = createTestApp({ RELAYAUTH_OBSERVER_ENABLED: "true" });
 
   try {
     const response = await app.request(
@@ -183,7 +209,7 @@ test("GET /v1/observer/health returns listener health without auth", async () =>
 });
 
 test("GET /v1/observer/events responds with an SSE stream without auth", async () => {
-  const app = createTestApp();
+  const app = createTestApp({ RELAYAUTH_OBSERVER_ENABLED: "true" });
   const baselineListeners = observerBus.listenerCount();
   const controller = new AbortController();
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
