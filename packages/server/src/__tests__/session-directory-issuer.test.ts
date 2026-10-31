@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, createPublicKey, verify as verifySignature } from "node:crypto";
 import test from "node:test";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
+import { hashApiKey } from "../lib/api-keys.js";
+import {
+  ensureBootstrapApiKey,
+  SESSION_DIRECTORY_BOOTSTRAP_API_KEY_NAME,
+} from "../lib/bootstrap-api-key.js";
 import { SigningKeyConfigError } from "../lib/signing-keys.js";
 import {
   assertSessionDirectoryIssuerConfig,
@@ -71,7 +76,7 @@ async function harness(bindings: Parameters<typeof createTestApp>[0] = ENABLED) 
       sub: "agent_operator",
       org: "org_operator",
       wks: "ws_operator",
-      scopes: ["relayauth:api-key:manage:*", "*"],
+      scopes: ["relayauth:api-key:manage:*", "*", SESSION_DIRECTORY_SEARCH_MINT_SCOPE],
     })}`,
   };
   const key = async (scopes: string[]) => {
@@ -204,15 +209,72 @@ test("a revoked subject is refused", async () => {
 test("only a key with the one literal scope can mint", async () => {
   const { app, admin, key, exchange } = await harness();
   const body = { subjectToken: subject(), workspaceId: "ws_a" };
-  await refused(await exchange(body, await key(["*"])), 403, "assertion_key_required");
+  assert.equal((await exchange(body, await key(["*"]))).status, 403);
   await refused(
     await exchange(body, await key([SESSION_DIRECTORY_SEARCH_MINT_SCOPE, "relayauth:token:read:*"])),
     403,
     "assertion_key_required",
   );
   await refused(await post(app, "/v1/tokens/session-directory-search", body, admin), 403, "assertion_key_required");
-  const wrongScope = await exchange(body, await key(["relayauth:assertion:create:relayhistory"]));
+  const wrongScope = await exchange(body, await key(["relayauth:token:read:*"]));
   assert.equal(wrongScope.status, 403);
+});
+
+test("an org admin without the literal scope cannot create a minting key", async () => {
+  const { app } = await harness();
+  const orgAdmin = {
+    Authorization: `Bearer ${generateTestToken({
+      iss: GENERAL_ISSUER,
+      sub: "agent_operator",
+      org: "org_operator",
+      wks: "ws_operator",
+      scopes: ["relayauth:api-key:manage:*", "*"],
+    })}`,
+  };
+  await refused(
+    await post(app, "/v1/api-keys", { name: "stolen", scopes: [SESSION_DIRECTORY_SEARCH_MINT_SCOPE] }, orgAdmin),
+    403,
+    "scope_escalation",
+  );
+});
+
+test("a workspace token holding the literal scope cannot mint", async () => {
+  const { admin, app, exchange } = await harness();
+  const created = await assertJsonResponse<{ token?: string; key?: string }>(
+    await post(app, "/v1/tokens/workspace", {
+      workspaceId: "ws_operator",
+      name: "search-minter",
+      scopes: [SESSION_DIRECTORY_SEARCH_MINT_SCOPE],
+    }, admin),
+    201,
+  );
+  const response = await exchange({ subjectToken: subject(), workspaceId: "ws_a" }, created.token ?? created.key);
+  assert.equal(response.status, 403);
+});
+
+test("boot creates the dedicated key with only the mint scope, and it can mint", async () => {
+  const app = createTestApp(ENABLED);
+  const value = `rak_${"s".repeat(40)}`;
+  const first = await ensureBootstrapApiKey(app.storage, value, {
+    orgId: "org_operator",
+    scope: SESSION_DIRECTORY_SEARCH_MINT_SCOPE,
+    name: SESSION_DIRECTORY_BOOTSTRAP_API_KEY_NAME,
+  });
+  assert.equal(first.status, "created");
+  const stored = await app.storage.apiKeys.getByHash(hashApiKey(value));
+  assert.deepEqual(stored?.scopes, [SESSION_DIRECTORY_SEARCH_MINT_SCOPE]);
+  const response = await post(
+    app,
+    "/v1/tokens/session-directory-search",
+    { subjectToken: subject(), workspaceId: "ws_a" },
+    { "x-api-key": value },
+  );
+  assert.equal(response.status, 201);
+  const again = await ensureBootstrapApiKey(app.storage, value, {
+    orgId: "org_operator",
+    scope: SESSION_DIRECTORY_SEARCH_MINT_SCOPE,
+  });
+  assert.equal(again.status, "exists");
 });
 
 test("tenant ids lose exactly one relay_ prefix", async () => {

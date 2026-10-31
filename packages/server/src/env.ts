@@ -49,6 +49,12 @@ export type AppConfig = {
    */
   RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN?: string;
   RELAYAUTH_ENV_STAGE?: string;
+  /**
+   * "true" serves the unauthenticated /v1/observer live event stream (a local
+   * demo tool). It carries every org's identities and scopes, so anything else
+   * leaves it off and the routes answer 404.
+   */
+  RELAYAUTH_OBSERVER_ENABLED?: string;
   /** JSON object keyed by org id. See SponsorFederationConfig. */
   RELAYAUTH_SPONSOR_FEDERATIONS?: string;
   /**

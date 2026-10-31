@@ -62,6 +62,8 @@ secretKeys:
   sessionDirectorySigningKey: ""
   sessionDirectorySigningKeyNext: ""
   sessionDirectorySigningKeyPrevious: ""
+  # The search minting API key, created at boot with only that scope.
+  sessionDirectoryBootstrapApiKey: ""
 
 # Extra plain environment variables, e.g. rate-limit tuning.
 extraEnv: []

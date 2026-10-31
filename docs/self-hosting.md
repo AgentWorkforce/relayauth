@@ -98,14 +98,18 @@ by default.
 | `RELAYAUTH_SESSION_DIRECTORY_ISSUER` | The `iss` of these tokens. Must differ from `RELAYAUTH_ISSUER`. |
 | `RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM[_FILE]` | PKCS#8 RSA key. Must not be a general signing key. |
 | `RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT[_FILE]`, `_PREVIOUS[_FILE]` | Verify-only rotation slots, as for the general key. |
+| `RELAYAUTH_SESSION_DIRECTORY_BOOTSTRAP_API_KEY[_FILE]` | Value of the minting API key, created at boot with only the mint scope. Same rules as the bootstrap key above. |
 | `RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES` | Accepted subject token audiences, comma-separated. Defaults to `relayhistory`. |
 
 RelayAuth refuses to start if the issuer or any key overlaps the general issuer,
 or if issuance is on without an issuer and key.
 
 `POST /v1/tokens/session-directory-search` takes `x-api-key` with a key whose
-only scope is `relayauth:assertion:create:session-directory-search`, and a body
-of `{ "subjectToken": "...", "workspaceId": "..." }`. The org and workspace come
+only scope is `relayauth:assertion:create:session-directory-search`. Like every
+`relayauth:assertion:*` scope, it can only be granted by a caller holding that
+exact scope, so an org admin cannot create such a key; the first one comes from
+the bootstrap setting above. The body is
+`{ "subjectToken": "...", "workspaceId": "..." }`. The org and workspace come
 from the verified subject token, which must be an unrevoked access token with
 `rth:read`, an accepted audience and a workspace. There is no refresh token.
 

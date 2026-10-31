@@ -108,6 +108,10 @@ spec:
             - name: RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS_FILE
               value: /run/secrets/relayauth/{{ . }}
             {{- end }}
+            {{- with $keys.sessionDirectoryBootstrapApiKey }}
+            - name: RELAYAUTH_SESSION_DIRECTORY_BOOTSTRAP_API_KEY_FILE
+              value: /run/secrets/relayauth/{{ . }}
+            {{- end }}
             {{- with $keys.bootstrapApiKey }}
             - name: RELAYAUTH_BOOTSTRAP_API_KEY_FILE
               value: /run/secrets/relayauth/{{ . }}
