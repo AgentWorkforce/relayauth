@@ -12,6 +12,25 @@ export const MIGRATION_ASSERTION_SCOPE = "relayauth:assertion:create:migration";
 /** Creating or revoking a grant is API-key management for the caller's org. */
 export const MIGRATION_GRANT_MANAGE_SCOPE = "relayauth:api-key:manage:*";
 export const MIGRATION_ASSERTION_SUBJECT = "agent_relayhistory_migration";
+
+/**
+ * The v2 base-read capability (96BullSessions #86 §3; spec of record main
+ * @ f67f741). It is a separate token class from
+ * the upload/commit assertion and shares no token class, audience, scope,
+ * meta identity key or jti namespace with it. Issuance is default-off.
+ */
+export const MIGRATION_BASE_READ_SUBJECT =
+  "agent_relayhistory_migration_base_read";
+export const MIGRATION_BASE_READ_SCOPE = "rth:migration_base_read";
+export const MIGRATION_BASE_READ_TOKEN_CLASS = "migration_base_read";
+/** The one ingest route that admits it, appended to the grant's origin. */
+export const MIGRATION_BASE_READ_ROUTE = "/v1/pipeline/manifests/base";
+export const MAX_MIGRATION_BASE_READ_TTL_SECONDS = 30;
+export const MIGRATION_BASE_READ_JTI_PREFIX = "mbr_";
+
+export function migrationBaseReadAudience(grantAudience: string): string {
+  return `${grantAudience}${MIGRATION_BASE_READ_ROUTE}`;
+}
 export const MAX_MIGRATION_GRANT_TTL_SECONDS = 7 * 24 * 3600;
 
 /** Maximum sanitized scalar length accepted into denial audit metadata. */

@@ -32,16 +32,28 @@ import {
   auditMetadata,
   auditValue,
   checkMigrationSourceUser,
+  MAX_MIGRATION_BASE_READ_TTL_SECONDS,
   MIGRATION_ASSERTION_SCOPE,
   MIGRATION_ASSERTION_SUBJECT,
+  MIGRATION_BASE_READ_JTI_PREFIX,
+  MIGRATION_BASE_READ_SCOPE,
+  MIGRATION_BASE_READ_SUBJECT,
+  MIGRATION_BASE_READ_TOKEN_CLASS,
+  migrationBaseReadAudience,
   writeMigrationDenialAudit,
 } from "../lib/migration-grants.js";
 import {
   canonicalMigrationId,
+  canonicalMigrationJson,
   migrationAllowedPairHash,
+  migrationBackfillBaseReadIdentity,
+  migrationBackfillUploadIdentity,
   migrationSha256,
   migrationUploadIdentity,
   MigrationPlanError,
+  normalizeMigrationBackfillBase,
+  type MigrationBackfillBase,
+  type MigrationBackfillEntry,
   type MigrationPlanEntry,
 } from "../lib/migration-plan.js";
 import { resolveIssuer, signToken } from "../lib/sign.js";
@@ -836,6 +848,8 @@ tokens.post("/migration-assertion", async (c) => {
         reason: code,
         grantId: auditValue(body?.grantId),
         pairHash: migrationRequestPairHash(body),
+        // v2 selectors only, so a v1 refusal row is unchanged.
+        ...migrationV2RefusalAuditFields(body?.upload),
       }),
     });
     return c.json({ error, code }, status);
@@ -887,6 +901,17 @@ tokens.post("/migration-assertion", async (c) => {
   if (!request.ok) {
     return refuse(request.error, request.code, request.status);
   }
+  // #86 §9: base-read issuance has its own default-off switch.
+  if (
+    request.upload.form === "backfill_base_read" &&
+    c.env.RELAYAUTH_ENABLE_MIGRATION_BASE_READ !== "true"
+  ) {
+    return refuse(
+      "migration base-read issuance is disabled",
+      "migration_base_read_disabled",
+      403,
+    );
+  }
 
   // A grant in another org reads as absent, the same as an unknown id.
   const grant = await storage.migrationGrants.get(request.grantId);
@@ -924,9 +949,16 @@ tokens.post("/migration-assertion", async (c) => {
       403,
     );
   }
-  const planEntry = grant.plan.manifests.find(
-    (entry) => entry.key === request.uploadKey,
-  );
+  // Each upload form names exactly one list of the stored plan: `{key}` the
+  // v1 manifests, the two v2 forms the backfills. A key in the other list is
+  // simply not in the plan for that form.
+  const selector = request.upload;
+  const planEntry: MigrationPlanEntry | MigrationBackfillEntry | undefined =
+    selector.form === "v1"
+      ? grant.plan.manifests.find((entry) => entry.key === selector.key)
+      : grant.plan.v === 2
+        ? grant.plan.backfills.find((entry) => entry.key === selector.key)
+        : undefined;
   if (!planEntry) {
     return refuse(
       "upload key is not in this migration grant's plan",
@@ -957,7 +989,7 @@ tokens.post("/migration-assertion", async (c) => {
     grant,
     sourceUserId: request.sourceUserId,
     workspaceId: request.workspaceId,
-    planEntry,
+    upload: signedMigrationUpload(selector, planEntry, grant.planDigest),
     nonce: request.nonce,
     expiresIn: request.expiresIn,
     actorId: auth.claims.sub,
@@ -1638,6 +1670,81 @@ async function issueRelayhistoryAssertion(
 }
 
 /**
+ * Refusal-audit fields for a v2 selector: its form and the key's SHA-256,
+ * never the raw key, nonce or base content. Empty for anything else, so v1
+ * refusal rows keep their exact shape.
+ */
+function migrationV2RefusalAuditFields(
+  upload: unknown,
+): Record<string, string | undefined> {
+  if (!upload || typeof upload !== "object" || Array.isArray(upload)) {
+    return {};
+  }
+  const record = upload as Record<string, unknown>;
+  const kind =
+    "base" in record
+      ? "backfill"
+      : "kind" in record
+        ? "backfill_base_read"
+        : undefined;
+  if (!kind) {
+    return {};
+  }
+  return {
+    upload_kind: kind,
+    uploadKeyHash:
+      typeof record.key === "string" && record.key.length <= 1024
+        ? migrationSha256(record.key.trim())
+        : undefined,
+  };
+}
+
+type MigrationUploadSelector =
+  | { form: "v1"; key: string }
+  | { form: "backfill_base_read"; key: string }
+  | { form: "backfill"; key: string; base: MigrationBackfillBase };
+
+type SignedMigrationUpload =
+  | { kind: "v1"; upload: ReturnType<typeof migrationUploadIdentity> }
+  | {
+      kind: "backfill_base_read";
+      upload: ReturnType<typeof migrationBackfillBaseReadIdentity>;
+    }
+  | {
+      kind: "backfill";
+      upload: ReturnType<typeof migrationBackfillUploadIdentity>;
+    };
+
+/**
+ * Builds the signed `meta.upload` for the selector's form from the stored
+ * entry: every tenancy and digest field comes from the grant's plan; only a
+ * commit's `base` comes from the request.
+ */
+function signedMigrationUpload(
+  selector: MigrationUploadSelector,
+  entry: MigrationPlanEntry | MigrationBackfillEntry,
+  planDigest: string,
+): SignedMigrationUpload {
+  if (selector.form === "v1") {
+    return {
+      kind: "v1",
+      upload: migrationUploadIdentity(entry as MigrationPlanEntry, planDigest),
+    };
+  }
+  const backfill = entry as MigrationBackfillEntry;
+  if (selector.form === "backfill_base_read") {
+    return {
+      kind: "backfill_base_read",
+      upload: migrationBackfillBaseReadIdentity(backfill, planDigest),
+    };
+  }
+  return {
+    kind: "backfill",
+    upload: migrationBackfillUploadIdentity(backfill, planDigest, selector.base),
+  };
+}
+
+/**
  * Returns null when the grant's deadline leaves no whole second for the
  * assertion: its exp never outlives the grant's notAfter.
  */
@@ -1648,16 +1755,24 @@ async function issueMigrationAssertion(
     grant: MigrationGrant;
     sourceUserId: string;
     workspaceId: string;
-    planEntry: MigrationPlanEntry;
+    upload: SignedMigrationUpload;
     nonce: string;
     expiresIn: number;
     actorId: string;
     actorOrgId: string;
   },
 ): Promise<MigrationAssertionResponse | null> {
+  const { upload, kind: uploadKind } = options.upload;
+  // The base-read capability is its own token class (see
+  // MIGRATION_BASE_READ_*); the upload assertion's claims are unchanged.
+  const baseRead = uploadKind === "backfill_base_read";
+  const subject = baseRead ? MIGRATION_BASE_READ_SUBJECT : MIGRATION_ASSERTION_SUBJECT;
   const issuedAtSeconds = Math.floor(Date.now() / 1000);
   const expiresAtSeconds = Math.min(
-    issuedAtSeconds + options.expiresIn,
+    issuedAtSeconds +
+      (baseRead
+        ? Math.min(options.expiresIn, MAX_MIGRATION_BASE_READ_TTL_SECONDS)
+        : options.expiresIn),
     Math.floor(Date.parse(options.grant.notAfter) / 1000),
   );
   if (expiresAtSeconds <= issuedAtSeconds) {
@@ -1665,29 +1780,35 @@ async function issueMigrationAssertion(
   }
 
   const sessionId = createSessionId();
-  const scopes = [...MIGRATION_ASSERTION_SCOPES];
-  const upload = migrationUploadIdentity(
-    options.planEntry,
-    options.grant.planDigest,
-  );
+  const scopes = baseRead
+    ? [MIGRATION_BASE_READ_SCOPE]
+    : [...MIGRATION_ASSERTION_SCOPES];
   const claims: RelayAuthTokenClaims = {
-    sub: MIGRATION_ASSERTION_SUBJECT,
+    sub: subject,
     org: options.grant.orgId,
     wks: options.workspaceId,
     scopes,
     sponsorId: options.sourceUserId,
-    sponsorChain: [options.sourceUserId, MIGRATION_ASSERTION_SUBJECT],
+    sponsorChain: [options.sourceUserId, subject],
     token_type: "access",
     iss: resolveIssuer(env),
     // Only the grant's ingest origin; never the shared `relayhistory`
     // audience, so a History verifier does not accept a migration assertion.
-    aud: [options.grant.audience],
+    // A base-read capability is audience-bound to its one route instead, so
+    // an upload verifier pinned to the origin refuses it.
+    aud: [
+      baseRead
+        ? migrationBaseReadAudience(options.grant.audience)
+        : options.grant.audience,
+    ],
     exp: expiresAtSeconds,
     iat: issuedAtSeconds,
-    jti: createTokenId(),
+    jti: baseRead ? createTokenId(MIGRATION_BASE_READ_JTI_PREFIX) : createTokenId(),
     sid: sessionId,
     meta: {
-      tokenClass: "migration_assertion",
+      tokenClass: baseRead
+        ? MIGRATION_BASE_READ_TOKEN_CLASS
+        : "migration_assertion",
       grantId: options.grant.grantId,
       planDigest: options.grant.planDigest,
       // Single-use consumption of jti and nonce is the verifier's job.
@@ -1696,7 +1817,8 @@ async function issueMigrationAssertion(
       actorId: options.actorId,
       actorOrgId: options.actorOrgId,
       workspaceId: options.workspaceId,
-      upload,
+      // #86 §3: the base-read identity is meta.read and meta.upload is absent.
+      ...(baseRead ? { read: upload } : { upload }),
     },
   };
 
@@ -1710,7 +1832,7 @@ async function issueMigrationAssertion(
       orgId: options.grant.orgId,
       workspaceId: options.workspaceId,
       plane: "relayauth",
-      resource: "migration-assertion",
+      resource: baseRead ? "migration-base-read" : "migration-assertion",
       result: "allowed",
       metadata: {
         tokenId: claims.jti,
@@ -1723,9 +1845,20 @@ async function issueMigrationAssertion(
             workspaceId: options.workspaceId,
           },
         ]),
-        uploadKeyHash: migrationSha256(options.planEntry.key),
-        nonce: options.nonce,
+        uploadKeyHash: migrationSha256(upload.key),
         grantedScopes: JSON.stringify(scopes),
+        // The v1 row is unchanged (it keeps its nonce). v2 rows follow #86
+        // §8: no raw nonce, correlated by tokenId (the jti); the signed form,
+        // the entry digest and, of the base, only its revision.
+        ...(uploadKind === "v1"
+          ? { nonce: options.nonce }
+          : {
+              upload_kind: uploadKind,
+              entry_sha256: upload.entry_sha256,
+              ...("base" in upload
+                ? { base_revision: String(upload.base.revision) }
+                : {}),
+            }),
       },
       timestamp: new Date().toISOString(),
     },
@@ -2324,7 +2457,7 @@ function normalizeMigrationAssertionRequest(
       grantId: string;
       sourceUserId: string;
       workspaceId: string;
-      uploadKey: string;
+      upload: MigrationUploadSelector;
       nonce: string;
       expiresIn: number;
     }
@@ -2379,33 +2512,9 @@ function normalizeMigrationAssertionRequest(
     };
   }
 
-  if (
-    !value.upload ||
-    typeof value.upload !== "object" ||
-    Array.isArray(value.upload) ||
-    !hasAllowedKeys(
-      value.upload as Record<string, unknown>,
-      ["key"],
-      ["key"],
-    )
-  ) {
-    return {
-      ok: false,
-      error: "upload must contain only its manifest key",
-      code: "invalid_upload_selector",
-      status: 400,
-    };
-  }
-  const uploadKey = normalizeOptionalString(
-    (value.upload as Record<string, unknown>).key,
-  );
-  if (!uploadKey || uploadKey.length > 1024) {
-    return {
-      ok: false,
-      error: "upload.key is required",
-      code: "invalid_upload_selector",
-      status: 400,
-    };
+  const upload = normalizeMigrationUploadSelector(value.upload);
+  if (!upload.ok) {
+    return upload;
   }
 
   if (
@@ -2443,10 +2552,67 @@ function normalizeMigrationAssertionRequest(
     grantId,
     sourceUserId,
     workspaceId,
-    uploadKey,
+    upload: upload.selector,
     nonce: value.nonce,
     expiresIn,
   };
+}
+
+/**
+ * #86 §3: `upload` is exactly `{key}`, `{key, kind: "backfill_base_read"}` or
+ * `{key, base}`. Any other key (a tenant, identity or digest field included)
+ * or shape is `invalid_upload_selector`.
+ */
+function normalizeMigrationUploadSelector(
+  value: unknown,
+):
+  | { ok: true; selector: MigrationUploadSelector }
+  | { ok: false; error: string; code: string; status: 400 } {
+  const invalid = (error: string) => ({
+    ok: false as const,
+    error,
+    code: "invalid_upload_selector",
+    status: 400 as const,
+  });
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return invalid("upload must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort().join(",");
+  if (keys !== "key" && keys !== "key,kind" && keys !== "base,key") {
+    return invalid(
+      "upload must be {key}, {key, kind: \"backfill_base_read\"} or {key, base}",
+    );
+  }
+  const key = normalizeOptionalString(record.key);
+  // Trimmed exactly as the v1 selector always was.
+  if (!key || key.length > 1024) {
+    return invalid("upload.key is required");
+  }
+  if (keys === "key") {
+    return { ok: true, selector: { form: "v1", key } };
+  }
+  if (keys === "key,kind") {
+    if (record.kind !== "backfill_base_read") {
+      return invalid("upload.kind must be backfill_base_read");
+    }
+    return { ok: true, selector: { form: "backfill_base_read", key } };
+  }
+  try {
+    return {
+      ok: true,
+      selector: {
+        form: "backfill",
+        key,
+        base: normalizeMigrationBackfillBase(record.base),
+      },
+    };
+  } catch (error) {
+    if (!(error instanceof MigrationPlanError)) {
+      throw error;
+    }
+    return invalid(error.message);
+  }
 }
 
 function hasAllowedKeys(

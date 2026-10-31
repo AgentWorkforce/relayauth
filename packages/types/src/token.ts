@@ -26,9 +26,53 @@ export interface RelayAuthMigrationUploadIdentity {
   entry_sha256: string;
 }
 
+interface RelayAuthMigrationV2IdentityBase {
+  v: 2;
+  grant_id: string;
+  plan_digest: string;
+  key: string;
+  org_id: string;
+  workspace_id: string;
+  source_user_id: string;
+  session: {
+    machine_id: string;
+    harness: string;
+    session_id: string;
+    started_at: string;
+  };
+  entry_sha256: string;
+}
+
+/**
+ * Plan entry v2 base-read capability: admitted by the ingest only on
+ * `GET /v1/pipeline/manifests/base` for exactly this key.
+ */
+export interface RelayAuthMigrationBackfillBaseReadIdentity
+  extends RelayAuthMigrationV2IdentityBase {
+  kind: "backfill_base_read";
+}
+
+/** Plan entry v2 commit identity: one backfill epoch on the signed base. */
+export interface RelayAuthMigrationBackfillUploadIdentity
+  extends RelayAuthMigrationV2IdentityBase {
+  kind: "backfill";
+  backfill_sha256: string;
+  base: {
+    revision: number;
+    version: string;
+    owner: string;
+    writer: string;
+    chunk_count: number;
+    epoch: number;
+    content_sha256: string;
+  };
+}
+
 export type RelayAuthTokenMetadataValue =
   | string
-  | RelayAuthMigrationUploadIdentity;
+  | RelayAuthMigrationUploadIdentity
+  | RelayAuthMigrationBackfillBaseReadIdentity
+  | RelayAuthMigrationBackfillUploadIdentity;
 
 export interface RelayAuthTokenClaims {
   sub: string;

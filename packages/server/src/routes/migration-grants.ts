@@ -58,6 +58,8 @@ type Refusal = {
   status: 400 | 403 | 404 | 409 | 501;
   sourceUserId?: string;
   pairHash?: string;
+  /** Internal-only precise reason; never returned to the caller. */
+  auditDetail?: string;
 };
 
 const migrationGrants = new Hono<AppEnv>();
@@ -81,6 +83,7 @@ migrationGrants.post("/", async (c) => {
         apiKeyId: auditValue(body?.apiKeyId),
         audience: auditValue(body?.audience),
         pairHash: refusal.pairHash,
+        detail: refusal.auditDetail,
       }),
     });
     return c.json(
@@ -342,6 +345,9 @@ function normalizeCreateMigrationGrantRequest(
       error: error instanceof Error ? error.message : "plan is invalid",
       code,
       status: 400,
+      ...(error instanceof MigrationPlanError && error.auditReason
+        ? { auditDetail: error.auditReason }
+        : {}),
     };
   }
 
@@ -423,7 +429,14 @@ function createGrantAuditEntry(
       audience: grant.audience,
       allowedPairCount: String(grant.allowedPairs.length),
       allowedPairHash: migrationAllowedPairHash(grant.allowedPairs),
-      planEntries: String(grant.plan.manifests.length),
+      planEntries: String(migrationPlanEntryCount(grant)),
+      // Only on v2, so a v1 grant's audit row is unchanged.
+      ...(grant.plan.v === 2
+        ? {
+            planVersion: "2",
+            backfillEntries: String(grant.plan.backfills.length),
+          }
+        : {}),
       notAfter: grant.notAfter,
     },
     timestamp: new Date().toISOString(),
@@ -438,12 +451,20 @@ function toMigrationGrantResponse(grant: MigrationGrant): MigrationGrantResponse
     planDigest: grant.planDigest,
     audience: grant.audience,
     allowedPairs: grant.allowedPairs.map((pair) => ({ ...pair })),
-    planEntries: grant.plan.manifests.length,
+    planEntries: migrationPlanEntryCount(grant),
     notAfter: grant.notAfter,
     createdBy: grant.createdBy,
     createdAt: grant.createdAt,
     revokedAt: grant.revokedAt ?? null,
   };
+}
+
+/** v1 manifests plus, for a v2 plan, its backfill entries. */
+function migrationPlanEntryCount(grant: MigrationGrant): number {
+  return (
+    grant.plan.manifests.length +
+    (grant.plan.v === 2 ? grant.plan.backfills.length : 0)
+  );
 }
 
 function hasExactKeys(

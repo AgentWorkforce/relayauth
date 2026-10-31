@@ -217,6 +217,86 @@ describe("TokenVerifier", () => {
       }
     });
 
+    it("accepts the v2 commit in meta.upload and the base-read only in meta.read (#86 d4e0e040)", async () => {
+      const { privateKey, jwk } = await generateRS256KeyPair();
+      const kid = "migration-v2-key";
+      globalThis.fetch = mockFetch([{ ...jwk, kid, use: "sig", alg: "RS256" }]);
+      const shared = {
+        v: 2,
+        grant_id: "mgr_00000000000000000000000000000000",
+        plan_digest: "a".repeat(64),
+        key: "v1/ws=ws_a/m=machine-a/h=codex/d=2026/10/30/s=session-a/manifest.json",
+        org_id: "org_a",
+        workspace_id: "ws_a",
+        source_user_id: "user_a",
+        session: {
+          machine_id: "machine-a",
+          harness: "codex",
+          session_id: "session-a",
+          started_at: "2026-10-30T00:00:00.000Z",
+        },
+        entry_sha256: "c".repeat(64),
+      };
+      const base = {
+        revision: 7,
+        version: "\"etag\"",
+        owner: "machine-a",
+        writer: "machine-a",
+        chunk_count: 4,
+        epoch: 0,
+        content_sha256: "d".repeat(64),
+      };
+      const read = { ...shared, kind: "backfill_base_read" };
+      const commit = { ...shared, kind: "backfill", backfill_sha256: "e".repeat(64), base };
+      const v1 = {
+        grant_id: shared.grant_id,
+        plan_digest: shared.plan_digest,
+        key: shared.key,
+        org_id: "org_a",
+        workspace_id: "ws_a",
+        source_user_id: "user_a",
+        session: shared.session,
+        content_sha256: "b".repeat(64),
+        entry_sha256: "c".repeat(64),
+      };
+      const verifier = new TokenVerifier({
+        jwksUrl: "https://auth.test/.well-known/jwks.json",
+      });
+      const sign = (meta: Record<string, unknown>) =>
+        signToken({ alg: "RS256", typ: "JWT", kid }, { ...validClaims, meta } as never, privateKey, "RS256");
+
+      assert.deepEqual((await verifier.verify(await sign({ upload: commit }))).meta?.upload, commit);
+      assert.deepEqual((await verifier.verify(await sign({ read }))).meta?.read, read);
+
+      const refused: Array<Record<string, unknown>> = [
+        // Token-class confusion: each identity only under its own meta key.
+        { upload: read },
+        { read: commit },
+        { read: v1 },
+        { read, upload: commit },
+        { read, upload: v1 },
+        // Malformed shapes.
+        { upload: { ...commit, kind: "backfill_base_read" } },
+        { read: { ...read, kind: "backfill" } },
+        { read: { ...read, v: 1 } },
+        { read: { ...read, base } },
+        { upload: { ...commit, base: { ...base, owner: "migration:mgr_x" } } },
+        { upload: { ...commit, base: { ...base, extra: 1 } } },
+        { upload: { ...commit, base: { ...base, revision: 0 } } },
+        { upload: { ...commit, base: { ...base, epoch: -1 } } },
+        { upload: { ...commit, base: { ...base, chunk_count: 1.5 } } },
+        { upload: { ...commit, base: { ...base, version: "" } } },
+        { upload: { ...commit, backfill_sha256: "E".repeat(64) } },
+        { read: { ...read, content_sha256: "b".repeat(64) } },
+        { read: { ...read, org_id: "relay_org_a" } },
+        { read: { ...read, client_field: "x" } },
+      ];
+      for (const meta of refused) {
+        const token = await sign(meta);
+        await assert.rejects(() => verifier.verify(token), RelayAuthError);
+      }
+    });
+
     it("rejects a token with invalid signature", async () => {
       const { jwk } = await generateRS256KeyPair();
       const { privateKey: wrongKey } = await generateRS256KeyPair();
