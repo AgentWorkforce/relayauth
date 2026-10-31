@@ -7,6 +7,16 @@ import { observerBus } from "../lib/events.js";
 
 const observerApp = new Hono<AppEnv>();
 
+// The stream is unauthenticated and spans every org (identities, sponsors,
+// granted and requested scopes), so it is a local demo tool that must be
+// switched on explicitly. Anything but "true" answers as if it did not exist.
+observerApp.use("*", async (c, next) => {
+  if (c.env?.RELAYAUTH_OBSERVER_ENABLED !== "true") {
+    return c.json({ error: "not_found" }, 404);
+  }
+  await next();
+});
+
 observerApp.get("/events", (c) => {
   const filter = {
     orgId: normalizeQueryValue(c.req.query("orgId")),

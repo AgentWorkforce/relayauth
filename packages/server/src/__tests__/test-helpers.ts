@@ -27,6 +27,7 @@ type TestBindings = Pick<
   AppEnv["Bindings"],
   "INTERNAL_SECRET" | "RELAYAUTH_SIGNING_KEY_PEM" | "RELAYAUTH_SIGNING_KEY_PEM_PUBLIC"
   | "RELAYAUTH_SPONSOR_FEDERATIONS"
+  | "RELAYAUTH_OBSERVER_ENABLED"
 >;
 
 type TestStorage = AuthStorage & Partial<ReturnType<typeof createSqliteStorage>>;
@@ -230,6 +231,9 @@ export function createTestApp(
       bindingsOverrides.RELAYAUTH_SIGNING_KEY_PEM_PUBLIC ?? TEST_RS256_PUBLIC_KEY_PEM,
     ...(bindingsOverrides.RELAYAUTH_SPONSOR_FEDERATIONS !== undefined
       ? { RELAYAUTH_SPONSOR_FEDERATIONS: bindingsOverrides.RELAYAUTH_SPONSOR_FEDERATIONS }
+      : {}),
+    ...(bindingsOverrides.RELAYAUTH_OBSERVER_ENABLED !== undefined
+      ? { RELAYAUTH_OBSERVER_ENABLED: bindingsOverrides.RELAYAUTH_OBSERVER_ENABLED }
       : {}),
   };
 
