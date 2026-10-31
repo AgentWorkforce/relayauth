@@ -423,7 +423,14 @@ function createGrantAuditEntry(
       audience: grant.audience,
       allowedPairCount: String(grant.allowedPairs.length),
       allowedPairHash: migrationAllowedPairHash(grant.allowedPairs),
-      planEntries: String(grant.plan.manifests.length),
+      planEntries: String(migrationPlanEntryCount(grant)),
+      // Only on v2, so a v1 grant's audit row is unchanged.
+      ...(grant.plan.v === 2
+        ? {
+            planVersion: "2",
+            backfillEntries: String(grant.plan.backfills.length),
+          }
+        : {}),
       notAfter: grant.notAfter,
     },
     timestamp: new Date().toISOString(),
@@ -438,12 +445,20 @@ function toMigrationGrantResponse(grant: MigrationGrant): MigrationGrantResponse
     planDigest: grant.planDigest,
     audience: grant.audience,
     allowedPairs: grant.allowedPairs.map((pair) => ({ ...pair })),
-    planEntries: grant.plan.manifests.length,
+    planEntries: migrationPlanEntryCount(grant),
     notAfter: grant.notAfter,
     createdBy: grant.createdBy,
     createdAt: grant.createdAt,
     revokedAt: grant.revokedAt ?? null,
   };
+}
+
+/** v1 manifests plus, for a v2 plan, its backfill entries. */
+function migrationPlanEntryCount(grant: MigrationGrant): number {
+  return (
+    grant.plan.manifests.length +
+    (grant.plan.v === 2 ? grant.plan.backfills.length : 0)
+  );
 }
 
 function hasExactKeys(

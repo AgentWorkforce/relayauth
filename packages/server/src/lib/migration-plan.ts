@@ -61,11 +61,83 @@ export type MigrationPlanEntry = {
   raw_bytes: number;
 };
 
-export type MigrationGrantPlan = {
+export type MigrationBackfillChunk = {
+  start_offset: number;
+  bytes: number;
+  sha256: string;
+  records: number;
+};
+
+/**
+ * Plan entry v2 (96BullSessions #79 data contract, #86 issuer spec): one
+ * sealed backfill epoch to append to a live ndjson manifest. Chunk positions
+ * are relative (offsets from 0, no seq, no epoch); the live base is bound at
+ * mint time, not in the plan.
+ */
+export type MigrationBackfillEntry = {
+  v: 2;
+  kind: "backfill";
+  grant_id: string;
+  key: string;
+  org_id: string;
+  workspace_id: string;
+  source_user_id: string;
+  session: MigrationPlanSession;
+  format: "ndjson";
+  chunks: MigrationBackfillChunk[];
+  backfill_sha256: string;
+  raw_bytes: number;
+};
+
+export type MigrationGrantPlanV1 = {
   v: 1;
   grant_id: string;
   exported_at: string;
   manifests: MigrationPlanEntry[];
+};
+
+/** Only when there is at least one backfill; otherwise the plan is v1. */
+export type MigrationGrantPlanV2 = {
+  v: 2;
+  grant_id: string;
+  exported_at: string;
+  manifests: MigrationPlanEntry[];
+  backfills: MigrationBackfillEntry[];
+};
+
+export type MigrationGrantPlan = MigrationGrantPlanV1 | MigrationGrantPlanV2;
+
+/** The live manifest a backfill appends to, as the courier read it. */
+export type MigrationBackfillBase = {
+  revision: number;
+  version: string;
+  owner: string;
+  writer: string;
+  chunk_count: number;
+  epoch: number;
+  content_sha256: string;
+};
+
+export type MigrationBackfillBaseReadIdentity = {
+  v: 2;
+  kind: "backfill_base_read";
+  grant_id: string;
+  plan_digest: string;
+  key: string;
+  org_id: string;
+  workspace_id: string;
+  source_user_id: string;
+  session: MigrationPlanSession;
+  entry_sha256: string;
+};
+
+export type MigrationBackfillUploadIdentity = Omit<
+  MigrationBackfillBaseReadIdentity,
+  "kind"
+> & {
+  kind: "backfill";
+  backfill_sha256: string;
+  base: MigrationBackfillBase;
 };
 
 export type MigrationUploadIdentity = {
@@ -165,8 +237,9 @@ export function deriveMigrationGrantPlan(input: {
     throw new MigrationPlanError("invalid_plan", "grant id is malformed");
   }
   const orgId = canonicalMigrationId(input.orgId, "organization id");
-  const rawPlan = objectWithExactKeys(
+  const rawPlan = objectWithAllowedKeys(
     input.plan,
+    ["exported_at", "manifests", "backfills"],
     ["exported_at", "manifests"],
     "plan",
   );
@@ -182,8 +255,32 @@ export function deriveMigrationGrantPlan(input: {
     );
   }
 
+  // Absent and empty `backfills` are the same v1 plan with the same digest.
+  if (
+    rawPlan.backfills !== undefined &&
+    (!Array.isArray(rawPlan.backfills) ||
+      rawPlan.backfills.length > MAX_MIGRATION_GRANT_ENTRIES)
+  ) {
+    throw new MigrationPlanError(
+      "invalid_plan",
+      `plan.backfills must contain at most ${MAX_MIGRATION_GRANT_ENTRIES} entries`,
+    );
+  }
+  const rawBackfills: unknown[] = Array.isArray(rawPlan.backfills)
+    ? rawPlan.backfills
+    : [];
+  if (
+    rawPlan.manifests.length + rawBackfills.length >
+    MAX_MIGRATION_GRANT_ENTRIES
+  ) {
+    throw new MigrationPlanError(
+      "invalid_plan",
+      `plan.manifests and plan.backfills together must contain at most ${MAX_MIGRATION_GRANT_ENTRIES} entries`,
+    );
+  }
+
   let totalChunks = 0;
-  for (const rawEntry of rawPlan.manifests) {
+  for (const rawEntry of [...rawPlan.manifests, ...rawBackfills]) {
     if (rawEntry && typeof rawEntry === "object" && !Array.isArray(rawEntry)) {
       const rawChunks = (rawEntry as Record<string, unknown>).chunks;
       if (Array.isArray(rawChunks)) {
@@ -201,23 +298,32 @@ export function deriveMigrationGrantPlan(input: {
   const manifests = rawPlan.manifests.map((value, index) =>
     normalizePlanEntry(value, index, input.grantId, orgId),
   );
-  manifests.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  if (new Set(manifests.map((entry) => entry.key)).size !== manifests.length) {
+  manifests.sort(compareByKey);
+  const backfills = rawBackfills.map((value, index) =>
+    normalizeBackfillEntry(value, index, input.grantId, orgId),
+  );
+  backfills.sort(compareByKey);
+  const allKeys = [...manifests, ...backfills].map((entry) => entry.key);
+  if (new Set(allKeys).size !== allKeys.length) {
     throw new MigrationPlanError(
       "invalid_plan",
-      "plan lists a manifest key more than once",
+      "plan lists a manifest key more than once across manifests and backfills",
     );
   }
 
-  const plan: MigrationGrantPlan = {
-    v: 1,
-    grant_id: input.grantId,
-    exported_at: exportedAt,
-    manifests,
-  };
+  const plan: MigrationGrantPlan =
+    backfills.length === 0
+      ? { v: 1, grant_id: input.grantId, exported_at: exportedAt, manifests }
+      : {
+          v: 2,
+          grant_id: input.grantId,
+          exported_at: exportedAt,
+          manifests,
+          backfills,
+        };
   const planDigest = migrationSha256(canonicalMigrationJson(plan));
   const allowedPairs = normalizeMigrationGrantPairs(
-    manifests.map((entry) => ({
+    [...manifests, ...backfills].map((entry) => ({
       sourceUserId: entry.source_user_id,
       workspaceId: entry.workspace_id,
     })),
@@ -259,12 +365,17 @@ export function verifyStoredMigrationGrantPlan(input: {
   const stored = input.plan;
   if (
     !stored ||
-    stored.v !== 1 ||
+    (stored.v !== 1 && stored.v !== 2) ||
     stored.grant_id !== input.grantId ||
-    !Array.isArray(stored.manifests)
+    !Array.isArray(stored.manifests) ||
+    (stored.v === 2 && !Array.isArray(stored.backfills))
   ) {
     throw new MigrationPlanError("invalid_plan", "stored plan is malformed");
   }
+  // Rebuild the client request from the stored plan and re-derive it, so every
+  // derived field (grant ids, content and backfill digests, raw bytes, the
+  // plan version) is recomputed rather than trusted. A stored v2 plan with no
+  // backfills re-derives as v1 and therefore fails the comparison below.
   const derived = deriveMigrationGrantPlan({
     grantId: input.grantId,
     orgId: input.orgId,
@@ -279,6 +390,21 @@ export function verifyStoredMigrationGrantPlan(input: {
         state: entry.state,
         chunks: entry.chunks,
       })),
+      ...(stored.v === 2
+        ? {
+            backfills: stored.backfills.map((entry) => ({
+              v: entry.v,
+              kind: entry.kind,
+              key: entry.key,
+              org_id: entry.org_id,
+              workspace_id: entry.workspace_id,
+              source_user_id: entry.source_user_id,
+              session: entry.session,
+              format: entry.format,
+              chunks: entry.chunks,
+            })),
+          }
+        : {}),
     },
   });
   if (
@@ -321,33 +447,145 @@ export function migrationUploadIdentity(
   };
 }
 
-function normalizePlanEntry(
+/**
+ * The signed v2 base-read capability (#86 §4): binds one org, source user,
+ * workspace, manifest key and session, one grant and one plan. Every field
+ * comes from the stored entry and the grant.
+ */
+export function migrationBackfillBaseReadIdentity(
+  entry: MigrationBackfillEntry,
+  planDigest: string,
+): MigrationBackfillBaseReadIdentity {
+  return {
+    v: 2,
+    kind: "backfill_base_read",
+    grant_id: entry.grant_id,
+    plan_digest: planDigest,
+    key: entry.key,
+    org_id: entry.org_id,
+    workspace_id: entry.workspace_id,
+    source_user_id: entry.source_user_id,
+    session: { ...entry.session },
+    entry_sha256: migrationSha256(canonicalMigrationJson(entry)),
+  };
+}
+
+/**
+ * The signed v2 commit identity (#86 §5). Every field except `base` comes
+ * from the stored entry; `base` is the request's, shape-checked only.
+ */
+export function migrationBackfillUploadIdentity(
+  entry: MigrationBackfillEntry,
+  planDigest: string,
+  base: MigrationBackfillBase,
+): MigrationBackfillUploadIdentity {
+  return {
+    ...migrationBackfillBaseReadIdentity(entry, planDigest),
+    kind: "backfill",
+    backfill_sha256: entry.backfill_sha256,
+    base: { ...base },
+  };
+}
+
+const MAX_BACKFILL_BASE_STRING_LENGTH = 512;
+/**
+ * The appended chunks take seq = chunk_count + i, with i below the per-entry
+ * chunk cap, so the highest seq stays a safe integer.
+ */
+const MAX_MIGRATION_BACKFILL_BASE_CHUNK_COUNT =
+  Number.MAX_SAFE_INTEGER - MAX_MIGRATION_PLAN_CHUNKS_PER_ENTRY;
+const MIGRATION_OWNER_PREFIX = "migration:";
+
+/**
+ * Shape-only check of a mint request's `base` (#86 §5). The issuer cannot
+ * vouch for it; the ingest compares it with storage at commit.
+ */
+export function normalizeMigrationBackfillBase(
   value: unknown,
-  index: number,
-  grantId: string,
-  orgId: string,
-): MigrationPlanEntry {
-  const name = `plan.manifests[${index}]`;
+): MigrationBackfillBase {
   const raw = objectWithExactKeys(
     value,
     [
-      "key",
-      "org_id",
-      "workspace_id",
-      "source_user_id",
-      "session",
-      "state",
-      "chunks",
+      "revision",
+      "version",
+      "owner",
+      "writer",
+      "chunk_count",
+      "epoch",
+      "content_sha256",
     ],
-    name,
+    "upload.base",
   );
-  const entryOrg = canonicalMigrationId(raw.org_id, `${name}.org_id`);
-  if (entryOrg !== orgId) {
+  // PROTOTYPE bounds pending the amended #86: the commit writes revision + 1
+  // and epoch + 1, so both must stay representable (a safe integer; a
+  // manifest chunk epoch is a uint32).
+  const revision = uint(
+    raw.revision,
+    "upload.base.revision",
+    Number.MAX_SAFE_INTEGER - 1,
+  );
+  if (revision < 1) {
     throw new MigrationPlanError(
-      "plan_org_mismatch",
-      `${name}.org_id is outside the caller's organization`,
+      "invalid_plan",
+      "upload.base.revision must be at least 1",
     );
   }
+  const text = (field: string): string => {
+    const candidate = raw[field];
+    if (
+      typeof candidate !== "string" ||
+      candidate.length === 0 ||
+      candidate.length > MAX_BACKFILL_BASE_STRING_LENGTH
+    ) {
+      throw new MigrationPlanError(
+        "invalid_plan",
+        `upload.base.${field} must be a non-empty string of at most ${MAX_BACKFILL_BASE_STRING_LENGTH} characters`,
+      );
+    }
+    return candidate;
+  };
+  const owner = text("owner");
+  if (owner.startsWith(MIGRATION_OWNER_PREFIX)) {
+    throw new MigrationPlanError(
+      "invalid_plan",
+      "upload.base.owner must be the live owner, not a migration owner",
+    );
+  }
+  if (typeof raw.content_sha256 !== "string" || !HEX_64.test(raw.content_sha256)) {
+    throw new MigrationPlanError(
+      "invalid_plan",
+      "upload.base.content_sha256 is malformed",
+    );
+  }
+  return {
+    revision,
+    version: text("version"),
+    owner,
+    writer: text("writer"),
+    chunk_count: uint(
+      raw.chunk_count,
+      "upload.base.chunk_count",
+      MAX_MIGRATION_BACKFILL_BASE_CHUNK_COUNT,
+    ),
+    epoch: uint(raw.epoch, "upload.base.epoch", 0xffff_fffe),
+    content_sha256: raw.content_sha256,
+  };
+}
+
+function compareByKey(a: { key: string }, b: { key: string }): number {
+  return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+}
+
+/** Key, workspace and session checks shared by v1 and v2 entries. */
+function normalizeEntryLocation(
+  raw: Record<string, unknown>,
+  name: string,
+): {
+  key: string;
+  workspaceId: string;
+  sourceUserId: string;
+  session: MigrationPlanSession;
+} {
   const workspaceId = canonicalMigrationId(
     raw.workspace_id,
     `${name}.workspace_id`,
@@ -356,9 +594,6 @@ function normalizePlanEntry(
     raw.source_user_id,
     `${name}.source_user_id`,
   );
-  if (raw.state !== "open" && raw.state !== "closed") {
-    throw new MigrationPlanError("invalid_plan", `${name}.state is malformed`);
-  }
   const sessionRaw = objectWithExactKeys(
     raw.session,
     ["machine_id", "harness", "session_id", "started_at"],
@@ -399,6 +634,143 @@ function normalizePlanEntry(
       `${name}.key does not match its workspace and session`,
     );
   }
+  return { key, workspaceId, sourceUserId, session };
+}
+
+function normalizeBackfillEntry(
+  value: unknown,
+  index: number,
+  grantId: string,
+  orgId: string,
+): MigrationBackfillEntry {
+  const name = `plan.backfills[${index}]`;
+  // Exactly the #86 §1 input keys: a client-supplied grant_id,
+  // backfill_sha256 or raw_bytes is refused, never trusted.
+  const raw = objectWithExactKeys(
+    value,
+    [
+      "v",
+      "kind",
+      "key",
+      "org_id",
+      "workspace_id",
+      "source_user_id",
+      "session",
+      "format",
+      "chunks",
+    ],
+    name,
+  );
+  if (raw.v !== 2 || raw.kind !== "backfill") {
+    throw new MigrationPlanError(
+      "invalid_plan",
+      `${name} must be a v2 backfill entry`,
+    );
+  }
+  if (canonicalMigrationId(raw.org_id, `${name}.org_id`) !== orgId) {
+    throw new MigrationPlanError(
+      "invalid_plan",
+      `${name}.org_id is outside the caller's organization`,
+    );
+  }
+  const location = normalizeEntryLocation(raw, name);
+  if (raw.format !== "ndjson") {
+    throw new MigrationPlanError("invalid_plan", `${name}.format must be ndjson`);
+  }
+  if (
+    !Array.isArray(raw.chunks) ||
+    raw.chunks.length === 0 ||
+    raw.chunks.length > MAX_MIGRATION_PLAN_CHUNKS_PER_ENTRY
+  ) {
+    throw new MigrationPlanError(
+      "invalid_plan",
+      `${name}.chunks must contain 1 to ${MAX_MIGRATION_PLAN_CHUNKS_PER_ENTRY} chunks`,
+    );
+  }
+  let offset = 0;
+  const chunks = raw.chunks.map((chunk, chunkIndex): MigrationBackfillChunk => {
+    const chunkName = `${name}.chunks[${chunkIndex}]`;
+    const rawChunk = objectWithExactKeys(
+      chunk,
+      ["start_offset", "bytes", "sha256", "records"],
+      chunkName,
+    );
+    const startOffset = uint(rawChunk.start_offset, `${chunkName}.start_offset`);
+    if (startOffset !== offset) {
+      throw new MigrationPlanError(
+        "invalid_plan",
+        `${chunkName}.start_offset must be ${offset}`,
+      );
+    }
+    const bytes = uint(rawChunk.bytes, `${chunkName}.bytes`);
+    if (bytes === 0) {
+      throw new MigrationPlanError("invalid_plan", `${chunkName}.bytes must be positive`);
+    }
+    if (typeof rawChunk.sha256 !== "string" || !HEX_64.test(rawChunk.sha256)) {
+      throw new MigrationPlanError("invalid_plan", `${chunkName}.sha256 is malformed`);
+    }
+    const records = uint(rawChunk.records, `${chunkName}.records`);
+    offset += bytes;
+    if (!Number.isSafeInteger(offset)) {
+      throw new MigrationPlanError("invalid_plan", `${name}.raw_bytes overflows`);
+    }
+    return { start_offset: startOffset, bytes, sha256: rawChunk.sha256, records };
+  });
+  return {
+    v: 2,
+    kind: "backfill",
+    grant_id: grantId,
+    key: location.key,
+    org_id: orgId,
+    workspace_id: location.workspaceId,
+    source_user_id: location.sourceUserId,
+    session: location.session,
+    format: "ndjson",
+    chunks,
+    // #46 backfillDigest: the manifest v1 hash chain with every epoch 0.
+    backfill_sha256: migrationContentSha256(
+      chunks.map((chunk) => ({ ...chunk, epoch: 0 })),
+    ),
+    raw_bytes: offset,
+  };
+}
+
+function normalizePlanEntry(
+  value: unknown,
+  index: number,
+  grantId: string,
+  orgId: string,
+): MigrationPlanEntry {
+  const name = `plan.manifests[${index}]`;
+  const raw = objectWithExactKeys(
+    value,
+    [
+      "key",
+      "org_id",
+      "workspace_id",
+      "source_user_id",
+      "session",
+      "state",
+      "chunks",
+    ],
+    name,
+  );
+  const entryOrg = canonicalMigrationId(raw.org_id, `${name}.org_id`);
+  if (entryOrg !== orgId) {
+    throw new MigrationPlanError(
+      "plan_org_mismatch",
+      `${name}.org_id is outside the caller's organization`,
+    );
+  }
+  if (raw.state !== "open" && raw.state !== "closed") {
+    throw new MigrationPlanError("invalid_plan", `${name}.state is malformed`);
+  }
+  const {
+    key,
+    workspaceId,
+    sourceUserId,
+    session,
+  } = normalizeEntryLocation(raw, name);
   if (
     !Array.isArray(raw.chunks) ||
     raw.chunks.length === 0 ||

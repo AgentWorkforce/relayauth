@@ -541,18 +541,49 @@ function isTokenMetadata(value: unknown): boolean {
   );
 }
 
+const V1_UPLOAD_KEYS =
+  "content_sha256,entry_sha256,grant_id,key,org_id,plan_digest,session,source_user_id,workspace_id";
+const V2_BASE_READ_KEYS =
+  "entry_sha256,grant_id,key,kind,org_id,plan_digest,session,source_user_id,v,workspace_id";
+const V2_COMMIT_KEYS =
+  "backfill_sha256,base,entry_sha256,grant_id,key,kind,org_id,plan_digest,session,source_user_id,v,workspace_id";
+const V2_BASE_KEYS =
+  "chunk_count,content_sha256,epoch,owner,revision,version,writer";
+
+/**
+ * Exactly three shapes (96BullSessions #86 §7): the v1 upload identity, the
+ * v2 base-read capability and the v2 backfill commit identity. Any other key
+ * set, or a v2 shape with the other shape's `kind`, is malformed.
+ */
 function isMigrationUploadIdentity(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
   }
   const upload = value as Record<string, unknown>;
-  const keys = Object.keys(upload).sort();
-  if (
-    keys.join(",") !==
-    "content_sha256,entry_sha256,grant_id,key,org_id,plan_digest,session,source_user_id,workspace_id"
-  ) {
-    return false;
+  const keys = Object.keys(upload).sort().join(",");
+  if (keys === V1_UPLOAD_KEYS) {
+    return isMigrationIdentityCommon(upload) && isHexSha256(upload.content_sha256);
   }
+  if (keys === V2_BASE_READ_KEYS) {
+    return (
+      upload.v === 2 &&
+      upload.kind === "backfill_base_read" &&
+      isMigrationIdentityCommon(upload)
+    );
+  }
+  if (keys === V2_COMMIT_KEYS) {
+    return (
+      upload.v === 2 &&
+      upload.kind === "backfill" &&
+      isMigrationIdentityCommon(upload) &&
+      isHexSha256(upload.backfill_sha256) &&
+      isMigrationBackfillBase(upload.base)
+    );
+  }
+  return false;
+}
+
+function isMigrationIdentityCommon(upload: Record<string, unknown>): boolean {
   const session = upload.session;
   const sessionRecord =
     session && typeof session === "object" && !Array.isArray(session)
@@ -567,12 +598,34 @@ function isMigrationUploadIdentity(value: unknown): boolean {
     isCanonicalMigrationIdentity(upload.org_id) &&
     isCanonicalMigrationIdentity(upload.workspace_id) &&
     isCanonicalMigrationIdentity(upload.source_user_id) &&
-    isHexSha256(upload.content_sha256) &&
     isHexSha256(upload.entry_sha256) &&
     sessionRecord !== null &&
     Object.keys(sessionRecord).sort().join(",") ===
       "harness,machine_id,session_id,started_at" &&
     Object.values(sessionRecord).every((entry) => typeof entry === "string")
+  );
+}
+
+function isMigrationBackfillBase(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const base = value as Record<string, unknown>;
+  const isUint = (entry: unknown) =>
+    typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0;
+  const isText = (entry: unknown) =>
+    typeof entry === "string" && entry.length > 0 && entry.length <= 512;
+  return (
+    Object.keys(base).sort().join(",") === V2_BASE_KEYS &&
+    isUint(base.revision) &&
+    (base.revision as number) >= 1 &&
+    isUint(base.chunk_count) &&
+    isUint(base.epoch) &&
+    isText(base.version) &&
+    isText(base.owner) &&
+    !(base.owner as string).startsWith("migration:") &&
+    isText(base.writer) &&
+    isHexSha256(base.content_sha256)
   );
 }
 

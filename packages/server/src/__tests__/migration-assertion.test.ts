@@ -2,10 +2,14 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 
+import { TokenVerifier } from "@relayauth/sdk";
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 
 import { extractPrefix, generateApiKey, hashApiKey } from "../lib/api-keys.js";
 import {
+  canonicalMigrationJson,
+  migrationBackfillBaseReadIdentity,
+  migrationBackfillUploadIdentity,
   deriveMigrationGrantPlan,
   MAX_MIGRATION_GRANT_SERIALIZED_BYTES,
   MAX_MIGRATION_GRANT_SOURCE_USERS,
@@ -743,4 +747,252 @@ test("migration grant storage verifies the canonical persisted plan", async (t) 
       }
     });
   }
+});
+
+// --- Plan entry v2 (PROTOTYPE: 96BullSessions #86 is on review HOLD) -------
+
+const LIVE_KEY =
+  "v1/ws=ws_alice/m=machine-live/h=claude/d=2026/10/30/s=session-live/manifest.json";
+const LIVE_BASE = {
+  revision: 7,
+  version: "\"5f3c-live-v7\"",
+  owner: "machine-live",
+  writer: "machine-live",
+  chunk_count: 4,
+  epoch: 0,
+  content_sha256: "0f0d280d26f82b57da5f44bac5284c5941b62479ad959a44dff869f24d3904e1",
+};
+
+function liveBackfill(overrides: Record<string, unknown> = {}) {
+  return {
+    v: 2,
+    kind: "backfill",
+    key: LIVE_KEY,
+    org_id: ORG,
+    workspace_id: "ws_alice",
+    source_user_id: "user_alice",
+    session: {
+      machine_id: "machine-live",
+      harness: "claude",
+      session_id: "session-live",
+      started_at: "2026-10-30T08:00:00.000Z",
+    },
+    format: "ndjson",
+    chunks: [
+      { start_offset: 0, bytes: 2048, sha256: "f".repeat(64), records: 12 },
+      { start_offset: 2048, bytes: 777, sha256: "e".repeat(64), records: 3 },
+    ],
+    ...overrides,
+  };
+}
+
+function v2PlanBody() {
+  return { ...plan(), backfills: [liveBackfill()] };
+}
+
+async function jwksVerifier(app: TestApp, audience: string[]) {
+  const jwks = await (await app.request("/.well-known/jwks.json", undefined, app.bindings)).json();
+  return new TokenVerifier({
+    jwksUrl: `data:application/json,${encodeURIComponent(JSON.stringify(jwks))}`,
+    audience,
+  });
+}
+
+test("v2 prototype: grant creation stores v1 byte for byte for absent and empty backfills", async () => {
+  const { app, migrationKey } = await createHarness();
+  const absent = await createGrant(app, migrationKey.id);
+  const empty = await createGrant(app, migrationKey.id, {
+    plan: { ...plan(), backfills: [] },
+  });
+  const rows = await Promise.all(
+    [absent, empty].map((grant) =>
+      app.storage.DB.prepare(
+        "SELECT plan_json FROM migration_grants WHERE grant_id = ?",
+      ).bind(grant.grantId).first<{ plan_json: string }>(),
+    ),
+  );
+  for (const [grant, row] of [[absent, rows[0]], [empty, rows[1]]] as const) {
+    const expected = deriveMigrationGrantPlan({ grantId: grant.grantId, orgId: ORG, plan: plan() });
+    assert.equal(grant.planDigest, expected.planDigest);
+    assert.equal(
+      row?.plan_json,
+      canonicalMigrationJson(expected.plan),
+      "stored plan_json is the canonical v1 plan",
+    );
+    const stored = JSON.parse(row!.plan_json) as Record<string, unknown>;
+    assert.equal(stored.v, 1);
+    assert.equal("backfills" in stored, false);
+    assert.equal(grant.planEntries, 2);
+  }
+  const audits = await app.storage.DB.prepare(
+    "SELECT metadata_json FROM audit_logs WHERE action = 'migration_grant.created' AND result = 'allowed'",
+  ).all<{ metadata_json: string }>();
+  for (const row of audits.results ?? []) {
+    const metadata = JSON.parse(row.metadata_json) as Record<string, string>;
+    assert.equal("planVersion" in metadata, false);
+    assert.equal("backfillEntries" in metadata, false);
+  }
+});
+
+test("v2 prototype: a v2 grant mints the base-read capability and the commit identity", async () => {
+  const { app, migrationKey } = await createHarness();
+  const grant = await createGrant(app, migrationKey.id, { plan: v2PlanBody() });
+  assert.equal(grant.planEntries, 3);
+  const stored = await app.storage.migrationGrants!.get(grant.grantId);
+  assert.equal(stored?.plan.v, 2);
+  const entry = stored!.plan.v === 2 ? stored!.plan.backfills[0]! : undefined;
+  assert.ok(entry);
+
+  // Base-read capability: its own token class.
+  const readResponse = await assertJsonResponse<AssertionResponse>(
+    await mint(app, migrationKey.key, mintBody(grant.grantId, {
+      upload: { key: LIVE_KEY, kind: "backfill_base_read" },
+    })),
+    201,
+  );
+  assert.equal(verifySignature(readResponse.accessToken), true);
+  assert.equal(readResponse.refreshToken, undefined);
+  const read = decodeClaims(readResponse.accessToken);
+  assert.equal(read.sub, "agent_relayhistory_migration_base_read");
+  assert.deepEqual(read.aud, [`${AUDIENCE}/v1/pipeline/manifests/base`]);
+  assert.deepEqual(read.scopes, ["rth:migration-base:read"]);
+  assert.equal(read.meta?.tokenClass, "migration_base_read");
+  assert.match(read.jti, /^mbr_[0-9a-f]{32}$/u);
+  assert.ok(read.exp - read.iat <= 30);
+  assert.equal(read.org, ORG);
+  assert.equal(read.wks, "ws_alice");
+  assert.equal(read.sponsorId, "user_alice");
+  assert.deepEqual(read.meta?.upload, migrationBackfillBaseReadIdentity(entry!, grant.planDigest));
+
+  // Commit identity: the upload assertion's class, with the request's base.
+  const commitResponse = await assertJsonResponse<AssertionResponse>(
+    await mint(app, migrationKey.key, mintBody(grant.grantId, {
+      upload: { key: LIVE_KEY, base: LIVE_BASE },
+    })),
+    201,
+  );
+  const commit = decodeClaims(commitResponse.accessToken);
+  assert.equal(commit.sub, "agent_relayhistory_migration");
+  assert.deepEqual(commit.aud, [AUDIENCE]);
+  assert.deepEqual(commit.scopes, ["rth:sync"]);
+  assert.equal(commit.meta?.tokenClass, "migration_assertion");
+  assert.match(commit.jti, /^tok_/u);
+  assert.deepEqual(
+    commit.meta?.upload,
+    migrationBackfillUploadIdentity(entry!, grant.planDigest, LIVE_BASE),
+  );
+
+  // A v1 manifest of the same v2 plan still signs the v1 identity.
+  const v1Response = await assertJsonResponse<AssertionResponse>(
+    await mint(app, migrationKey.key, mintBody(grant.grantId)),
+    201,
+  );
+  const v1Claims = decodeClaims(v1Response.accessToken);
+  assert.equal("v" in (v1Claims.meta?.upload as object), false);
+  assert.equal((v1Claims.meta?.upload as { plan_digest: string }).plan_digest, grant.planDigest);
+
+  // Issuer audit (#86 §6): kind, key hash, entry digest, base revision only.
+  const rows = await app.storage.DB.prepare(
+    "SELECT resource, metadata_json FROM audit_logs WHERE action = 'token.issued' AND result = 'allowed' ORDER BY timestamp",
+  ).all<{ resource: string; metadata_json: string }>();
+  const audits = (rows.results ?? []).map((row) => ({
+    resource: row.resource,
+    metadata: JSON.parse(row.metadata_json) as Record<string, string>,
+  }));
+  const byKind = Object.fromEntries(audits.map((a) => [a.metadata.upload_kind, a]));
+  assert.equal(byKind.backfill_base_read?.resource, "migration-base-read");
+  assert.equal(byKind.backfill?.resource, "migration-assertion");
+  assert.equal(byKind.v1?.resource, "migration-assertion");
+  assert.equal(byKind.backfill?.metadata.base_revision, "7");
+  assert.equal(byKind.backfill_base_read?.metadata.base_revision, undefined);
+  for (const audit of audits) {
+    const text = JSON.stringify(audit.metadata);
+    assert.equal(text.includes(LIVE_BASE.content_sha256), false, "no base content in audit");
+    assert.equal(text.includes("5f3c-live-v7"), false, "no base version in audit");
+    assert.equal(text.includes(readResponse.accessToken), false);
+  }
+
+  // Two-way token/audience matrix at the verifier: an upload verifier
+  // (pinned to the grant origin) refuses the base-read capability, and a
+  // base-route verifier refuses every upload assertion.
+  const uploadVerifier = await jwksVerifier(app, [AUDIENCE]);
+  const baseVerifier = await jwksVerifier(app, [`${AUDIENCE}/v1/pipeline/manifests/base`]);
+  await assert.rejects(uploadVerifier.verify(readResponse.accessToken));
+  assert.equal((await baseVerifier.verify(readResponse.accessToken)).sub, read.sub);
+  for (const token of [commitResponse.accessToken, v1Response.accessToken]) {
+    assert.equal((await uploadVerifier.verify(token)).sub, "agent_relayhistory_migration");
+    await assert.rejects(baseVerifier.verify(token));
+  }
+  // Nor does RelayAuth itself accept the capability as a credential.
+  assert.equal(
+    (await request(app, "POST", "/v1/tokens/refresh", { refreshToken: readResponse.accessToken }, {})).status,
+    401,
+  );
+  const asBearer = await request(app, "POST", "/v1/migration-grants", grantBody(migrationKey.id), {
+    Authorization: `Bearer ${readResponse.accessToken}`,
+  });
+  assert.ok(asBearer.status === 401 || asBearer.status === 403, String(asBearer.status));
+});
+
+test("v2 prototype: each upload form only reaches its own list, pair and shape", async (t) => {
+  const { app, migrationKey } = await createHarness();
+  const grant = await createGrant(app, migrationKey.id, { plan: v2PlanBody() });
+  const v1Only = await createGrant(app, migrationKey.id);
+  const cases: Array<[string, string, Record<string, unknown>, number, string]> = [
+    ["v1 form on a backfill key", grant.grantId, { upload: { key: LIVE_KEY } }, 403, "migration_upload_not_allowed"],
+    ["base-read on a v1 key", grant.grantId, { upload: { key: ALICE_KEY, kind: "backfill_base_read" } }, 403, "migration_upload_not_allowed"],
+    ["commit on a v1 key", grant.grantId, { upload: { key: ALICE_KEY, base: LIVE_BASE } }, 403, "migration_upload_not_allowed"],
+    ["base-read on a v1 plan", v1Only.grantId, { upload: { key: LIVE_KEY, kind: "backfill_base_read" } }, 403, "migration_upload_not_allowed"],
+    ["backfill key for another pair", grant.grantId, { sourceUserId: "user_bob", workspaceId: "ws_bob", upload: { key: LIVE_KEY, kind: "backfill_base_read" } }, 403, "migration_pair_not_allowed"],
+    ["unknown kind", grant.grantId, { upload: { key: LIVE_KEY, kind: "backfill" } }, 400, "invalid_upload_selector"],
+    ["kind and base together", grant.grantId, { upload: { key: LIVE_KEY, kind: "backfill_base_read", base: LIVE_BASE } }, 400, "invalid_upload_selector"],
+    ["tenant override", grant.grantId, { upload: { key: LIVE_KEY, kind: "backfill_base_read", org_id: "org_other" } }, 400, "invalid_upload_selector"],
+    ["identity field", grant.grantId, { upload: { key: LIVE_KEY, base: LIVE_BASE, entry_sha256: "0".repeat(64) } }, 400, "invalid_upload_selector"],
+    ["migration owner base", grant.grantId, { upload: { key: LIVE_KEY, base: { ...LIVE_BASE, owner: `migration:${grant.grantId}` } } }, 400, "invalid_upload_selector"],
+    ["unsafe revision", grant.grantId, { upload: { key: LIVE_KEY, base: { ...LIVE_BASE, revision: Number.MAX_SAFE_INTEGER } } }, 400, "invalid_upload_selector"],
+    ["extra base key", grant.grantId, { upload: { key: LIVE_KEY, base: { ...LIVE_BASE, format: "ndjson" } } }, 400, "invalid_upload_selector"],
+  ];
+  for (const [name, grantId, override, status, code] of cases) {
+    await t.test(name, async () => {
+      await expectError(await mint(app, migrationKey.key, mintBody(grantId, override)), status, code);
+    });
+  }
+  const denied = await app.storage.DB.prepare(
+    "SELECT COUNT(*) AS count FROM audit_logs WHERE resource = 'migration-assertion' AND result = 'denied'",
+  ).first<{ count: number }>();
+  assert.equal(denied?.count, cases.length, "every refusal is audited");
+  const tokens = await app.storage.DB.prepare("SELECT COUNT(*) AS count FROM tokens").first<{ count: number }>();
+  assert.equal(tokens?.count, 0);
+});
+
+test("v2 prototype: grant creation refuses malformed backfills and cross-list keys", async (t) => {
+  const { app, migrationKey } = await createHarness();
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["supplied backfill_sha256", liveBackfill({ backfill_sha256: "0".repeat(64) })],
+    ["missing records", liveBackfill({ chunks: [{ start_offset: 0, bytes: 1, sha256: "f".repeat(64) }] })],
+    ["key also a v1 manifest", liveBackfill({
+      key: ALICE_KEY,
+      session: { machine_id: "machine-a", harness: "codex", session_id: "session-a", started_at: "2026-10-30T00:00:00.000Z" },
+    })],
+  ];
+  for (const [name, backfill] of cases) {
+    await t.test(name, async () => {
+      await expectError(
+        await request(app, "POST", "/v1/migration-grants", grantBody(migrationKey.id, {
+          plan: { ...plan(), backfills: [backfill] },
+        }), adminHeaders()),
+        400,
+        "invalid_plan",
+      );
+    });
+  }
+  await t.test("backfill source user must be an active human", async () => {
+    await expectError(
+      await request(app, "POST", "/v1/migration-grants", grantBody(migrationKey.id, {
+        plan: { ...plan(), backfills: [liveBackfill({ source_user_id: "agent_not_human" })] },
+      }), adminHeaders()),
+      403,
+      "source_user_not_human",
+    );
+  });
 });
