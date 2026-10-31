@@ -20,7 +20,15 @@ import {
   storageOverloadResponse,
   toStorageCapacityExhaustedError,
 } from "./lib/storage-retry.js";
-import { DEFAULT_BOOTSTRAP_API_KEY_ORG, ensureBootstrapApiKey } from "./lib/bootstrap-api-key.js";
+import {
+  DEFAULT_BOOTSTRAP_API_KEY_ORG,
+  ensureBootstrapApiKey,
+  SESSION_DIRECTORY_BOOTSTRAP_API_KEY_NAME,
+} from "./lib/bootstrap-api-key.js";
+import {
+  assertSessionDirectoryIssuerConfig,
+  SESSION_DIRECTORY_SEARCH_MINT_SCOPE,
+} from "./lib/session-directory-issuer.js";
 import { assertSigningKeyConfig } from "./lib/signing-keys.js";
 import { apiKeyAuth } from "./middleware/api-key-auth.js";
 import { SponsorOidcService } from "./lib/sponsor-binding.js";
@@ -522,6 +530,24 @@ export async function startServer(options: StartServerOptions = {}) {
       options.config?.RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS
       ?? readEnvOrFile("RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS"),
     RELAYAUTH_ISSUER: options.config?.RELAYAUTH_ISSUER ?? process.env.RELAYAUTH_ISSUER,
+    RELAYAUTH_SESSION_DIRECTORY_ISSUANCE:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_ISSUANCE
+      ?? process.env.RELAYAUTH_SESSION_DIRECTORY_ISSUANCE,
+    RELAYAUTH_SESSION_DIRECTORY_ISSUER:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_ISSUER
+      ?? process.env.RELAYAUTH_SESSION_DIRECTORY_ISSUER,
+    RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM
+      ?? readEnvOrFile("RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM"),
+    RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT
+      ?? readEnvOrFile("RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT"),
+    RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS
+      ?? readEnvOrFile("RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS"),
+    RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES:
+      options.config?.RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES
+      ?? process.env.RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES,
     RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN:
       options.config?.RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN
       ?? process.env.RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN,
@@ -529,6 +555,8 @@ export async function startServer(options: StartServerOptions = {}) {
       options.config?.RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID
       ?? process.env.RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID,
     RELAYAUTH_ENV_STAGE: options.config?.RELAYAUTH_ENV_STAGE ?? process.env.RELAYAUTH_ENV_STAGE,
+    RELAYAUTH_OBSERVER_ENABLED:
+      options.config?.RELAYAUTH_OBSERVER_ENABLED ?? process.env.RELAYAUTH_OBSERVER_ENABLED,
     RELAYAUTH_SPONSOR_FEDERATIONS:
       options.config?.RELAYAUTH_SPONSOR_FEDERATIONS ?? process.env.RELAYAUTH_SPONSOR_FEDERATIONS,
     RELAYAUTH_IDENTITY_CREATE_RATE_LIMIT:
@@ -549,25 +577,46 @@ export async function startServer(options: StartServerOptions = {}) {
   // or an explicit public key that does not match the private key) rather
   // than signing with one key while advertising another.
   await assertSigningKeyConfig(config);
+  await assertSessionDirectoryIssuerConfig(config);
 
-  const bootstrapApiKey = options.bootstrapApiKey ?? readEnvOrFile("RELAYAUTH_BOOTSTRAP_API_KEY");
-  if (bootstrapApiKey) {
+  const requestedBootstrapOrg = (options.bootstrapApiKeyOrgId ?? process.env.RELAYAUTH_BOOTSTRAP_API_KEY_ORG)?.trim()
+    || DEFAULT_BOOTSTRAP_API_KEY_ORG;
+  const bootstrapKeys = [
+    {
+      label: "bootstrap api key",
+      setting: "RELAYAUTH_BOOTSTRAP_API_KEY",
+      value: options.bootstrapApiKey ?? readEnvOrFile("RELAYAUTH_BOOTSTRAP_API_KEY"),
+    },
+    {
+      label: "session directory bootstrap api key",
+      setting: "RELAYAUTH_SESSION_DIRECTORY_BOOTSTRAP_API_KEY",
+      value: readEnvOrFile("RELAYAUTH_SESSION_DIRECTORY_BOOTSTRAP_API_KEY"),
+      scope: SESSION_DIRECTORY_SEARCH_MINT_SCOPE,
+      name: SESSION_DIRECTORY_BOOTSTRAP_API_KEY_NAME,
+      exactScope: true,
+    },
+  ];
+  for (const { label, setting, value, scope, name, exactScope } of bootstrapKeys) {
+    if (!value) continue;
     // Never log the key or its prefix: the record id is enough to find it.
-    const requestedOrg = (options.bootstrapApiKeyOrgId ?? process.env.RELAYAUTH_BOOTSTRAP_API_KEY_ORG)?.trim()
-      || DEFAULT_BOOTSTRAP_API_KEY_ORG;
-    const result = await ensureBootstrapApiKey(storage, bootstrapApiKey, { orgId: requestedOrg });
+    const result = await ensureBootstrapApiKey(storage, value, {
+      orgId: requestedBootstrapOrg,
+      scope,
+      name,
+      exactScope,
+    });
     if (result.status === "created" || result.status === "exists") {
-      console.log(`relayauth bootstrap api key ${result.status}`, { id: result.id });
+      console.log(`relayauth ${label} ${result.status}`, { id: result.id });
       if (result.status === "exists" && result.orgMismatch) {
         console.warn(
-          "relayauth bootstrap api key already exists in a different org than "
+          `relayauth ${label} already exists in a different org than `
             + "RELAYAUTH_BOOTSTRAP_API_KEY_ORG; it was left unchanged (rotate the key to move it)",
           { id: result.id, ...result.orgMismatch },
         );
       }
     } else {
       console.warn(
-        `relayauth bootstrap api key not usable (${result.status}); rotate RELAYAUTH_BOOTSTRAP_API_KEY_FILE to a new value`,
+        `relayauth ${label} not usable (${result.status}); rotate ${setting}_FILE to a new value`,
         { id: result.id },
       );
     }

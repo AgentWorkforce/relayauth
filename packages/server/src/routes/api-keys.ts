@@ -3,6 +3,7 @@ import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env.js";
 import { extractPrefix, generateApiKey, hashApiKey } from "../lib/api-keys.js";
 import { authenticateAndAuthorizeFromContext } from "../lib/auth.js";
+import { firstUndelegableBrokerScope } from "../lib/broker-scopes.js";
 import { isStorageError } from "../storage/index.js";
 import type { StoredApiKey } from "../storage/api-key-types.js";
 
@@ -61,6 +62,27 @@ apiKeys.post("/", async (c) => {
   // with scopes broader than its own grant. validateSubset throws a RelayAuthError
   // with code="scope_escalation" when any requested scope is not covered by the
   // caller's scopes.
+  // Broker scopes are delegable only by a caller holding the exact literal;
+  // `manage`/`*` covers them in validateSubset but must not here.
+  const undelegable = firstUndelegableBrokerScope(
+    {
+      scopes: auth.claims.scopes,
+      isPlainApiKey:
+        c.get("apiKeyVia") === "api_key"
+        && auth.claims.meta?.apiKeyKind === "api_key",
+    },
+    scopes,
+  );
+  if (undelegable) {
+    return c.json(
+      {
+        error: `scope ${undelegable} can only be delegated by a key that holds it exactly`,
+        code: "scope_escalation",
+      },
+      403,
+    );
+  }
+
   try {
     validateSubset(auth.claims.scopes, scopes);
   } catch (error) {

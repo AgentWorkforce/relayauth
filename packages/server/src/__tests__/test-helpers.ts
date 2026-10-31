@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { extractPrefix, generateApiKey, hashApiKey } from "../lib/api-keys.js";
 import crypto from "node:crypto";
 import type {
   AgentIdentity,
@@ -37,6 +38,13 @@ type TestBindings = Pick<
   | "RELAYAUTH_STORAGE_CAPACITY_SHED_RATIO"
   | "RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN"
   | "RELAYAUTH_ISSUER"
+  | "RELAYAUTH_SESSION_DIRECTORY_ISSUANCE"
+  | "RELAYAUTH_SESSION_DIRECTORY_ISSUER"
+  | "RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM"
+  | "RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT"
+  | "RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS"
+  | "RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES"
+  | "RELAYAUTH_OBSERVER_ENABLED"
   | "BASE_URL"
 >;
 
@@ -51,6 +59,13 @@ const PASS_THROUGH_TEST_BINDINGS = [
   "RELAYAUTH_ALLOW_PRIVATE_HTTP_HISTORY_ORIGIN",
   "RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID",
   "RELAYAUTH_ISSUER",
+  "RELAYAUTH_SESSION_DIRECTORY_ISSUANCE",
+  "RELAYAUTH_SESSION_DIRECTORY_ISSUER",
+  "RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM",
+  "RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT",
+  "RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS",
+  "RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES",
+  "RELAYAUTH_OBSERVER_ENABLED",
   "BASE_URL",
 ] as const satisfies readonly (keyof TestBindings)[];
 
@@ -343,6 +358,25 @@ export async function seedStoredIdentity(
   identity: StoredIdentity,
 ): Promise<StoredIdentity> {
   return resolveStorage(target).identities.create(identity);
+}
+
+/**
+ * Seeds a plain API key directly in storage, the way an operator provisions a
+ * broker key out of band. Returns the stored record and the raw key value.
+ */
+export async function seedPlainApiKey(
+  target: SqlTarget,
+  { orgId, name, scopes }: { orgId: string; name: string; scopes: string[] },
+) {
+  const key = generateApiKey();
+  const apiKey = await resolveStorage(target).apiKeys.create({
+    orgId,
+    name,
+    prefix: extractPrefix(key),
+    keyHash: hashApiKey(key),
+    scopes,
+  });
+  return { apiKey, key };
 }
 
 export async function seedStoredIdentities(

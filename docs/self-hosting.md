@@ -116,6 +116,41 @@ accepts only that dedicated key over `x-api-key` (a bearer token carrying the
 scope is refused with `assertion_key_required`), so couriers and other callers
 cannot choose a `machineId`. Never hand the assertion key to a courier.
 
+## Session directory search issuer
+
+RelayAuth can mint 60-second tokens for one PostgREST RPC,
+`sessions.search_session_directory`, under a second issuer with its own key. The
+design is in 96BullSessions `docs/session-directory-tenant-issuer.md`. It is off
+by default.
+
+| Setting | Meaning |
+| --- | --- |
+| `RELAYAUTH_SESSION_DIRECTORY_ISSUANCE` | Exactly `true` enables minting. |
+| `RELAYAUTH_SESSION_DIRECTORY_ISSUER` | The `iss` of these tokens. Must differ from `RELAYAUTH_ISSUER`. |
+| `RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM[_FILE]` | PKCS#8 RSA key. Must not be a general signing key. |
+| `RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT[_FILE]`, `_PREVIOUS[_FILE]` | Verify-only rotation slots, as for the general key. |
+| `RELAYAUTH_SESSION_DIRECTORY_BOOTSTRAP_API_KEY[_FILE]` | Value of the minting API key, created at boot with only the mint scope. Same rules as the bootstrap key above. |
+| `RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES` | Accepted subject token audiences, comma-separated. Defaults to `relayhistory`. |
+
+RelayAuth refuses to start if the issuer or any key overlaps the general issuer,
+or if issuance is on without an issuer and key.
+
+`POST /v1/tokens/session-directory-search` takes `x-api-key` with a key whose
+only scope is `relayauth:assertion:create:session-directory-search`. Like every
+`relayauth:assertion:*` scope, it can only be granted by a caller holding that
+exact scope, so an org admin cannot create such a key; the first one comes from
+the bootstrap setting above. The body is
+`{ "subjectToken": "...", "workspaceId": "..." }`. The org and workspace come
+from the verified subject token, which must be an unrevoked access token with
+`rth:read`, an accepted audience and a workspace. There is no refresh token.
+
+Keys are published at `/.well-known/session-directory/jwks.json`. PostgREST reads
+its keys from `jwt-secret`, not a URL, so a rotation must update that file and
+reload PostgREST config between each step.
+
+The API key and subject token travel in the request. Do not call this endpoint
+over a plain-http in-cluster Service until RelayAuth has TLS.
+
 ## Docker
 
 Release images are published for Linux amd64 and arm64 at

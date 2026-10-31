@@ -33,6 +33,7 @@ import {
   listRevokedTokenIds,
   seedActiveTokens,
   seedStoredIdentity,
+  seedPlainApiKey,
   seedWorkspaceContext,
   TEST_RS256_PRIVATE_KEY_PEM,
   TEST_RS256_PUBLIC_KEY_PEM,
@@ -2236,11 +2237,18 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
     assertionScope,
   ];
 
+  // Broker keys are provisioned out of band (bootstrap file, operator
+  // insert); no API caller can delegate the broker literal.
   async function issueAssertionKey(
     app: ReturnType<typeof createTestApp>,
-    headers: HeadersInit,
+    _headers?: HeadersInit,
+    scopes: string[] = [assertionScope],
   ) {
-    return issueApiKey(app, headers, [assertionScope]);
+    return seedPlainApiKey(app, {
+      orgId: "org_tokens_route",
+      name: "relayhistory-broker",
+      scopes,
+    });
   }
 
   await t.test(
@@ -2405,6 +2413,187 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
 
       await assertJsonResponse<ErrorBody>(response, 403, (body) => {
         assert.equal(body.code, "assertion_key_required");
+      });
+    },
+  );
+
+  for (const adminScopes of [
+    ["relayauth:*:manage:*", "relayauth:*:read:*"],
+    ["*"],
+  ]) {
+    await t.test(
+      `does not let an implied grant (${adminScopes.join(" ")}) mint another org's assertion`,
+      async () => {
+        const { app, authHeaders } = await createHarness({
+          authClaims: { scopes: ["*"] },
+        });
+        // An org admin key: its grant covers the assertion scope only by
+        // implication, never by holding the broker literal.
+        const adminKey = await issueApiKey(app, authHeaders, adminScopes);
+
+        const response = await requestRoute(
+          app,
+          "POST",
+          "/v1/tokens/relayhistory-assertion",
+          {
+            body: {
+              orgId: "org_victim",
+              workspaceId: "ws_victim",
+              sponsorId: "user_attacker",
+              scopes: ["rth:read"],
+            },
+            headers: { "x-api-key": adminKey.key },
+          },
+        );
+
+        await assertJsonResponse<ErrorBody>(response, 403);
+        assert.equal(await countStoredTokens(app), 0);
+      },
+    );
+  }
+
+  await t.test(
+    "does not let an org admin mint a workspace token carrying the broker scope",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: ["relayauth:*:manage:*", "relayauth:*:read:*"],
+        },
+      });
+
+      const response = await requestRoute(app, "POST", "/v1/tokens/workspace", {
+        body: { workspaceId: "ws_attacker", scopes: [assertionScope] },
+        headers: authHeaders,
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+        assert.equal(body.code, "scope_escalation");
+      });
+    },
+  );
+
+  await t.test(
+    "refuses a workspace token even when it holds the broker literal",
+    async () => {
+      const { app } = await createHarness();
+      const brokerKey = await issueAssertionKey(app, undefined, [
+        "relayauth:api-key:manage:*",
+        assertionScope,
+      ]);
+      const issued = await requestRoute(app, "POST", "/v1/tokens/workspace", {
+        body: { workspaceId: "ws_broker", scopes: [assertionScope] },
+        headers: { "x-api-key": brokerKey.key },
+      });
+      const { key } = await assertJsonResponse<{ key: string }>(issued, 201);
+
+      const response = await requestRoute(
+        app,
+        "POST",
+        "/v1/tokens/relayhistory-assertion",
+        {
+          body: {
+            orgId: "org_victim",
+            workspaceId: "ws_victim",
+            sponsorId: "user_attacker",
+            scopes: ["rth:read"],
+          },
+          headers: { "x-api-key": key },
+        },
+      );
+
+      await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+        assert.equal(body.code, "assertion_key_required");
+      });
+    },
+  );
+
+  await t.test(
+    "does not let a bearer token that carries the broker literal delegate it",
+    async () => {
+      // Identity scopes are freely assignable within an org, so a JWT holding
+      // the literal proves nothing about broker authority.
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: ["relayauth:api-key:manage:*", assertionScope],
+        },
+      });
+
+      for (const [path, body] of [
+        ["/v1/api-keys", { name: "jwt-to-broker", scopes: [assertionScope] }],
+        ["/v1/tokens/workspace", { workspaceId: "ws_attacker", scopes: [assertionScope] }],
+      ] as const) {
+        const response = await requestRoute(app, "POST", path, {
+          body,
+          headers: authHeaders,
+        });
+        await assertJsonResponse<ErrorBody>(response, 403, (error) => {
+          assert.equal(error.code, "scope_escalation", path);
+        });
+      }
+    },
+  );
+
+  await t.test(
+    "does not let a workspace token that carries the broker literal delegate it",
+    async () => {
+      const { app } = await createHarness();
+      const brokerScopes = ["relayauth:api-key:manage:*", assertionScope];
+      const brokerKey = await issueAssertionKey(app, undefined, brokerScopes);
+      const issued = await requestRoute(app, "POST", "/v1/tokens/workspace", {
+        body: { workspaceId: "ws_broker", scopes: brokerScopes },
+        headers: { "x-api-key": brokerKey.key },
+      });
+      const { key } = await assertJsonResponse<{ key: string }>(issued, 201);
+
+      for (const [path, body] of [
+        ["/v1/api-keys", { name: "workspace-to-broker", scopes: [assertionScope] }],
+        ["/v1/tokens/workspace", { workspaceId: "ws_other", scopes: [assertionScope] }],
+      ] as const) {
+        const response = await requestRoute(app, "POST", path, {
+          body,
+          headers: { "x-api-key": key },
+        });
+        await assertJsonResponse<ErrorBody>(response, 403, (error) => {
+          assert.equal(error.code, "scope_escalation", path);
+        });
+      }
+    },
+  );
+
+  await t.test(
+    "lets a plain broker api key delegate its own literal",
+    async () => {
+      const { app } = await createHarness();
+      const brokerKey = await issueAssertionKey(app, undefined, [
+        "relayauth:api-key:manage:*",
+        assertionScope,
+      ]);
+
+      const response = await requestRoute(app, "POST", "/v1/api-keys", {
+        body: { name: "rotated-broker", scopes: [assertionScope] },
+        headers: { "x-api-key": brokerKey.key },
+      });
+
+      await assertJsonResponse(response, 201);
+    },
+  );
+
+  await t.test(
+    "does not let an org admin delegate the broker scope onto a new api key",
+    async () => {
+      const { app, authHeaders } = await createHarness({
+        authClaims: {
+          scopes: ["relayauth:*:manage:*", "relayauth:*:read:*"],
+        },
+      });
+
+      const response = await requestRoute(app, "POST", "/v1/api-keys", {
+        body: { name: "escalate-to-broker", scopes: [assertionScope] },
+        headers: authHeaders,
+      });
+
+      await assertJsonResponse<ErrorBody>(response, 403, (body) => {
+        assert.equal(body.code, "scope_escalation");
       });
     },
   );
@@ -2744,7 +2933,13 @@ test("POST /v1/tokens/relayhistory-assertion machineId claim", async (t) => {
       },
       bindings,
     });
-    const assertionKey = await issueApiKey(app, authHeaders, [assertionScope]);
+    // Broker keys are provisioned out of band. Current main deliberately
+    // refuses bearer/admin callers that try to delegate this literal scope.
+    const assertionKey = await seedPlainApiKey(app, {
+      orgId: "org_tokens_route",
+      name: "relayhistory-machine-binding-broker",
+      scopes: [assertionScope],
+    });
     const mint = (body: Record<string, unknown>, headers?: HeadersInit) =>
       requestRoute(app, "POST", "/v1/tokens/relayhistory-assertion", {
         body,

@@ -216,6 +216,14 @@ export async function authenticateFromContext(
   return auth;
 }
 
+/** Whether a token verified elsewhere is revoked, directly or through its workspace token. */
+export async function isVerifiedTokenRevoked(
+  storage: AuthStorage,
+  claims: RelayAuthTokenClaims,
+): Promise<boolean> {
+  return await isBearerTokenInactive(storage, claims) || await isWorkspaceLineageRevoked(storage, claims);
+}
+
 /**
  * Context-aware variant of `authenticateAndAuthorize`. See
  * `authenticateFromContext` for rationale.

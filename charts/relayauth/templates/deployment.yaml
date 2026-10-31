@@ -68,6 +68,18 @@ spec:
             - name: RELAYAUTH_ALLOW_RELAYHISTORY_ASSERTION_WITHOUT_MACHINE_ID
               value: "true"
             {{- end }}
+            {{- if (.Values.sessionDirectory).issuance }}
+            - name: RELAYAUTH_SESSION_DIRECTORY_ISSUANCE
+              value: "true"
+            {{- end }}
+            {{- with (.Values.sessionDirectory).issuer }}
+            - name: RELAYAUTH_SESSION_DIRECTORY_ISSUER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with (.Values.sessionDirectory).subjectAudiences }}
+            - name: RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.allowedOrigins }}
             - name: ALLOWED_ORIGINS
               value: {{ . | quote }}
@@ -86,6 +98,22 @@ spec:
             {{- end }}
             {{- with $keys.signingKeyPrevious }}
             - name: RELAYAUTH_SIGNING_KEY_PEM_PREVIOUS_FILE
+              value: /run/secrets/relayauth/{{ . }}
+            {{- end }}
+            {{- with $keys.sessionDirectorySigningKey }}
+            - name: RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_FILE
+              value: /run/secrets/relayauth/{{ . }}
+            {{- end }}
+            {{- with $keys.sessionDirectorySigningKeyNext }}
+            - name: RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_NEXT_FILE
+              value: /run/secrets/relayauth/{{ . }}
+            {{- end }}
+            {{- with $keys.sessionDirectorySigningKeyPrevious }}
+            - name: RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS_FILE
+              value: /run/secrets/relayauth/{{ . }}
+            {{- end }}
+            {{- with $keys.sessionDirectoryBootstrapApiKey }}
+            - name: RELAYAUTH_SESSION_DIRECTORY_BOOTSTRAP_API_KEY_FILE
               value: /run/secrets/relayauth/{{ . }}
             {{- end }}
             {{- with $keys.bootstrapApiKey }}
