@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { extractPrefix, generateApiKey, hashApiKey } from "../lib/api-keys.js";
 import crypto from "node:crypto";
 import type {
   AgentIdentity,
@@ -344,6 +345,25 @@ export async function seedStoredIdentity(
   identity: StoredIdentity,
 ): Promise<StoredIdentity> {
   return resolveStorage(target).identities.create(identity);
+}
+
+/**
+ * Seeds a plain API key directly in storage, the way an operator provisions a
+ * broker key out of band. Returns the stored record and the raw key value.
+ */
+export async function seedPlainApiKey(
+  target: SqlTarget,
+  { orgId, name, scopes }: { orgId: string; name: string; scopes: string[] },
+) {
+  const key = generateApiKey();
+  const apiKey = await resolveStorage(target).apiKeys.create({
+    orgId,
+    name,
+    prefix: extractPrefix(key),
+    keyHash: hashApiKey(key),
+    scopes,
+  });
+  return { apiKey, key };
 }
 
 export async function seedStoredIdentities(
