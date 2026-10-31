@@ -64,6 +64,7 @@ async function platformKey(app: App) {
 test("the platform scope and helper are exported for hosted operators", () => {
   assert.equal(server.PLATFORM_BOOTSTRAP_SCOPE, PLATFORM_BOOTSTRAP_SCOPE);
   assert.equal(typeof server.ensurePlatformBootstrapApiKey, "function");
+  assert.equal(typeof server.findActiveExactScopeApiKey, "function");
   assert.equal(server.isPlatformScope(PLATFORM_BOOTSTRAP_SCOPE), true);
   assert.deepEqual(Object.keys(server.DEDICATED_API_KEY_TYPES), ["session-directory-search"]);
 });

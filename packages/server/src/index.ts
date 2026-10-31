@@ -38,6 +38,7 @@ export type {
 export {
   DEDICATED_API_KEY_TYPES,
   ensurePlatformBootstrapApiKey,
+  findActiveExactScopeApiKey,
   isPlatformScope,
   PLATFORM_BOOTSTRAP_API_KEY_NAME,
   PLATFORM_BOOTSTRAP_SCOPE,
