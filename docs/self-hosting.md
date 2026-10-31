@@ -108,10 +108,33 @@ or if issuance is on without an issuer and key.
 only scope is `relayauth:assertion:create:session-directory-search`. Like every
 `relayauth:assertion:*` scope, it can only be granted by a caller holding that
 exact scope, so an org admin cannot create such a key; the first one comes from
-the bootstrap setting above. The body is
+the bootstrap setting above, or from the platform bootstrap key below. The body is
 `{ "subjectToken": "...", "workspaceId": "..." }`. The org and workspace come
 from the verified subject token, which must be an unrevoked access token with
 `rth:read`, an accepted audience and a workspace. There is no refresh token.
+
+### Platform bootstrap key (deployments without a boot step)
+
+A deployment that cannot run the boot-time settings above (for example a
+serverless worker) creates the minting key through
+`POST /v1/platform/dedicated-api-keys` with `{ "type": "session-directory-search" }`.
+
+- The caller must be a plain API key whose only scope is
+  `relayauth:platform:create:dedicated-api-key`. `*`, `relayauth:*:manage:*`,
+  bearer tokens, identity JWTs and workspace tokens are refused, and every
+  refusal from an authenticated caller is written to the audit log.
+- No API route can create or delegate a `relayauth:platform:*` scope, not even
+  for a key that holds it. The operator creates the one platform key per
+  environment with `ensurePlatformBootstrapApiKey(storage, { orgId, operator })`
+  from `@relayauth/server`, which stores only the hash, writes an audit entry
+  and returns the plaintext once.
+- The request names a type from `DEDICATED_API_KEY_TYPES`, never scopes. The
+  key is created in the platform key's org with exactly that type's one scope.
+  A re-run returns `200` with `status: "exists"` and no plaintext, and writes
+  nothing. To replace a lost value, revoke the key and run again.
+- The platform key cannot mint search tokens, and creating the minting key does
+  not turn issuance on: `RELAYAUTH_SESSION_DIRECTORY_ISSUANCE` still gates the
+  endpoint.
 
 Keys are published at `/.well-known/session-directory/jwks.json`. PostgREST reads
 its keys from `jwt-secret`, not a URL, so a rotation must update that file and

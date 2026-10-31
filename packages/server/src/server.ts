@@ -43,6 +43,7 @@ import jwks from "./routes/jwks.js";
 import identityActivity from "./routes/identity-activity.js";
 import identities from "./routes/identities.js";
 import observerApp from "./routes/observer.js";
+import platform from "./routes/platform.js";
 import policies from "./routes/policies.js";
 import roleAssignments from "./routes/role-assignments.js";
 import roles from "./routes/roles.js";
@@ -383,6 +384,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.use("/v1/tokens/*", apiKeyAuth());
   app.use("/v1/api-keys", apiKeyAuth());
   app.use("/v1/api-keys/*", apiKeyAuth());
+  app.use("/v1/platform/*", apiKeyAuth());
   // Finalization deliberately authenticates only with its one-time bearer
   // capability. API-key middleware belongs on grant creation alone so a
   // capability is never interpreted as an API key.
@@ -462,6 +464,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.route("/v1/identities", identities);
   app.route("/v1/identities", roleAssignments);
   app.route("/v1/observer", observerApp);
+  app.route("/v1/platform", platform);
   app.route("/v1/policies", policies);
   app.route("/v1/roles", roles);
   app.route("/v1/stats", dashboardStats);

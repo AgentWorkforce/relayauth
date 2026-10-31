@@ -33,3 +33,17 @@ export type {
   SponsorFederationConfig,
   SponsorFederationMap,
 } from "./lib/sponsor-binding.js";
+// Operator step for the platform bootstrap key, and the allowlist of the
+// dedicated keys that key may create via POST /v1/platform/dedicated-api-keys.
+export {
+  DEDICATED_API_KEY_TYPES,
+  ensurePlatformBootstrapApiKey,
+  isPlatformScope,
+  PLATFORM_BOOTSTRAP_API_KEY_NAME,
+  PLATFORM_BOOTSTRAP_SCOPE,
+} from "./lib/platform-api-keys.js";
+export type {
+  DedicatedApiKeyType,
+  EnsureExactScopeApiKeyResult,
+} from "./lib/platform-api-keys.js";
+export { SESSION_DIRECTORY_SEARCH_MINT_SCOPE } from "./lib/session-directory-issuer.js";

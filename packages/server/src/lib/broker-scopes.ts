@@ -15,6 +15,17 @@ export function isBrokerScope(scope: string): boolean {
   return parts[0] === "relayauth" && parts[1] === "assertion";
 }
 
+/**
+ * Platform scopes (`relayauth:platform:*`) are held by operator-provisioned
+ * keys only. Like broker scopes they are satisfied only by the exact literal,
+ * and unlike broker scopes they are never delegable through the API, not even
+ * by a key that holds them: the operator step is the only way to create one.
+ */
+export function isPlatformScope(scope: string): boolean {
+  const parts = scope.split(":");
+  return parts[0] === "relayauth" && parts[1] === "platform";
+}
+
 /** Scope matcher for broker routes: exact literal only, no implication. */
 export function matchBrokerScopeExactly(
   requiredScope: string,
@@ -31,6 +42,8 @@ export function matchBrokerScopeExactly(
  * Bearer tokens do not count: identity scopes are freely assignable within an
  * org, so a JWT carrying the literal proves nothing about broker authority.
  * Workspace tokens do not count either, for the same reason.
+ *
+ * Platform scopes are never delegable, whoever the caller is.
  */
 export function firstUndelegableBrokerScope(
   caller: { scopes: string[]; isPlainApiKey: boolean },
@@ -38,6 +51,7 @@ export function firstUndelegableBrokerScope(
 ): string | undefined {
   return requestedScopes.find(
     (scope) =>
+      isPlatformScope(scope) ||
       isBrokerScope(scope) &&
       !(caller.isPlainApiKey && caller.scopes.includes(scope)),
   );
