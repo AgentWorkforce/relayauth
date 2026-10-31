@@ -2526,6 +2526,33 @@ test("POST /v1/tokens/relayhistory-assertion", async (t) => {
   );
 
   await t.test(
+    "does not let a workspace token that carries the broker literal delegate it",
+    async () => {
+      const { app } = await createHarness();
+      const brokerScopes = ["relayauth:api-key:manage:*", assertionScope];
+      const brokerKey = await issueAssertionKey(app, undefined, brokerScopes);
+      const issued = await requestRoute(app, "POST", "/v1/tokens/workspace", {
+        body: { workspaceId: "ws_broker", scopes: brokerScopes },
+        headers: { "x-api-key": brokerKey.key },
+      });
+      const { key } = await assertJsonResponse<{ key: string }>(issued, 201);
+
+      for (const [path, body] of [
+        ["/v1/api-keys", { name: "workspace-to-broker", scopes: [assertionScope] }],
+        ["/v1/tokens/workspace", { workspaceId: "ws_other", scopes: [assertionScope] }],
+      ] as const) {
+        const response = await requestRoute(app, "POST", path, {
+          body,
+          headers: { "x-api-key": key },
+        });
+        await assertJsonResponse<ErrorBody>(response, 403, (error) => {
+          assert.equal(error.code, "scope_escalation", path);
+        });
+      }
+    },
+  );
+
+  await t.test(
     "lets a plain broker api key delegate its own literal",
     async () => {
       const { app } = await createHarness();
