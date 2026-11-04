@@ -1,6 +1,7 @@
 {
   "name": "relayauth",
   "version": "0.2.32",
+  "license": "Apache-2.0",
   "description": "CLI for relayauth",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
