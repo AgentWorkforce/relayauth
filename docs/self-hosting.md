@@ -149,6 +149,40 @@ reload PostgREST config between each step.
 The API key and subject token travel in the request. Do not call this endpoint
 over a plain-http in-cluster Service until RelayAuth has TLS.
 
+## Relaycast credential issuance
+
+RelayAuth can act as the credential authority for a relaycast deployment: it
+holds the `ar_` credential tag keyring, mints `ar_ws_` workspace keys, and
+pushes each minted key into relaycast through the engine's caller-minted
+internal contract (`POST /internal/workspaces/:id/api-key`). It is off by
+default; setting all three bindings below enables the `/v1/relaycast` routes,
+and a partial set fails closed — RelayAuth refuses to start.
+
+| Setting | Meaning |
+| --- | --- |
+| `RELAYAUTH_RELAYCAST_CREDENTIAL_KEYRING[_FILE]` | The `ar_` tag keyring as JSON `{"current":"<version>","keys":{"<version>":"<secret>"}}`. Must match the keyring relaycast verifies with. |
+| `RELAYAUTH_RELAYCAST_URL` | Base URL of the relaycast engine (e.g. `http://relaycast:8080`). |
+| `RELAYAUTH_RELAYCAST_INTERNAL_SECRET[_FILE]` | Bearer for relaycast's `/internal` admin API (its `RELAYCAST_INTERNAL_SECRET`). |
+| `RELAYAUTH_RELAYCAST_SERVICE_API_KEY[_FILE]` | Value of the admin API key, created at boot with only the `relayauth:relaycast:manage:*` scope. Same rules as the bootstrap key above. |
+
+All three routes require `x-api-key` (or a bearer token) carrying
+`relayauth:relaycast:manage:*`; none is public.
+
+- `POST /v1/relaycast/workspaces` — body `{ "workspace_id": "..." }` may carry
+  a caller-chosen 64-bit snowflake; omitted, RelayAuth allocates one. It mints
+  an `ar_ws_` key, pushes it at `key_generation: 1`, and answers
+  `{ "workspace_id", "api_key", "api_key_generation" }` — the key is revealed
+  in this response only and is never stored.
+- `GET /v1/relaycast/credential-tags/:workspaceId` — answers
+  `{ "workspace_id", "tags" }`: every tag the keyring signs for the workspace,
+  the current version first. Responses are `Cache-Control: immutable`; a tag
+  list stays correct because rotation only appends keyring versions.
+- `POST /v1/relaycast/workspaces/:id/api-key` — rotates. Body
+  `{ "key_generation": N, "grace_ms": ... }` pushes a freshly minted `ar_ws_`
+  at the caller's next generation (relaycast's CAS rejects a stale generation
+  with 409 `stale_key_generation`); `grace_ms` keeps the superseded key
+  authenticating for that many milliseconds (max 3,600,000).
+
 ## Docker
 
 Release images are published for Linux amd64 and arm64 at
