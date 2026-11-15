@@ -26,7 +26,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: fast-path-${{ inputs.ref }}
+  group: fast-path-${{ inputs.ref }}-${{ github.run_id }}
   cancel-in-progress: false
 env:
   IMAGE: ghcr.io/agentworkforce/relayauth
@@ -47,7 +47,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
       - run: npm ci
       - name: Build all packages
         run: npx turbo build --filter='!@relayauth/landing'
@@ -93,7 +92,6 @@ jobs:
             org.opencontainers.image.description=Self-hosted RelayAuth server
             org.opencontainers.image.revision=${{ needs.test.outputs.sha }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
       - name: Summary
@@ -122,8 +120,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.14.0"
-          cache: npm
-          cache-dependency-path: package-lock.json
       - run: npm ci
       - run: npx turbo build --filter='!@relayauth/landing'
       - name: Pack packages
