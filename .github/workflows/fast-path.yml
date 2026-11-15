@@ -4,7 +4,9 @@
 # Khaliq approves the fast-path environment.
 # The image goes to ghcr.io/agentworkforce/relayauth tagged fast-<sha> and
 # sha-<sha> only; it never moves :latest or a semver tag, and deployments pin
-# the digest printed in the run summary.
+# the digest printed in the run summary. The image carries BuildKit provenance
+# (mode=max), which records the commit actually built; no GitHub attestation is
+# issued, because it would name the dispatch commit instead.
 # npm publishing uses trusted publishing (OIDC bound to publish.yml), so the
 # fast path does not publish to npm: it packs the packages with `npm pack` and
 # uploads the tarballs as a workflow artifact. No dist-tag, git tag or GitHub
@@ -39,6 +41,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
       - id: sha
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
@@ -62,12 +65,11 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.test.outputs.sha }}
+          persist-credentials: false
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -94,12 +96,6 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
-      - name: Attest published image
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
       - name: Summary
         env:
           REF: ${{ inputs.ref }}
@@ -122,6 +118,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.test.outputs.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22.14.0"
