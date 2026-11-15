@@ -1,0 +1,151 @@
+# Fast path: run the CI checks, publish the container image and pack the npm
+# packages on Blacksmith runners, outside the shared GitHub-hosted queue.
+# Anyone with write access (people or agents) may start it; nothing runs until
+# Khaliq approves the fast-path environment.
+# The image goes to ghcr.io/agentworkforce/relayauth tagged fast-<sha> and
+# sha-<sha> only; it never moves :latest or a semver tag, and deployments pin
+# the digest printed in the run summary. The image carries BuildKit provenance
+# (mode=max), which records the commit actually built; no GitHub attestation is
+# issued, because it would name the dispatch commit instead.
+# npm publishing uses trusted publishing (OIDC bound to publish.yml), so the
+# fast path does not publish to npm: it packs the packages with `npm pack` and
+# uploads the tarballs as a workflow artifact. No dist-tag, git tag or GitHub
+# release is created or moved.
+name: fast-path
+run-name: fast-path ${{ inputs.ref }} (${{ inputs.reason }})
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build (a PR branch is fine)
+        required: true
+        default: main
+      reason:
+        description: Why this needs the fast path
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: fast-path-${{ inputs.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+env:
+  IMAGE: ghcr.io/agentworkforce/relayauth
+jobs:
+  test:
+    name: Build & Test
+    environment: fast-path
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - name: Build all packages
+        run: npx turbo build --filter='!@relayauth/landing'
+      - name: Typecheck
+        run: npx turbo typecheck --filter='!@relayauth/landing'
+      - name: Test
+        run: npx turbo test --filter='!@relayauth/landing' --force
+      - name: SDK contract check
+        run: bash scripts/check-contract-surface.sh
+
+  image:
+    name: Publish multi-platform image
+    needs: test
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.test.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:fast-${{ needs.test.outputs.sha }}
+            ${{ env.IMAGE }}:sha-${{ needs.test.outputs.sha }}
+          labels: |
+            org.opencontainers.image.title=RelayAuth
+            org.opencontainers.image.description=Self-hosted RelayAuth server
+            org.opencontainers.image.revision=${{ needs.test.outputs.sha }}
+          cache-from: type=gha
+          provenance: mode=max
+          sbom: true
+      - name: Summary
+        env:
+          REF: ${{ inputs.ref }}
+          SHA: ${{ needs.test.outputs.sha }}
+          REASON: ${{ inputs.reason }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### relayauth fast path: image"
+            echo "- ref: \`$REF\` at \`$SHA\`"
+            echo "- reason: $REASON"
+            echo "- image: \`$IMAGE@$DIGEST\` (tags \`fast-$SHA\`, \`sha-$SHA\`)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  pack:
+    name: Pack npm packages
+    needs: test
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.test.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+      - run: npm ci
+      - run: npx turbo build --filter='!@relayauth/landing'
+      - name: Pack packages
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/fast-path-packs"
+          # Same set as publish.yml's "all" (relayauth is packages/cli).
+          for dir in types core sdk/typescript migrate server cli; do
+            (cd "packages/$dir" && npm pack --ignore-scripts --pack-destination "$GITHUB_WORKSPACE/fast-path-packs")
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-packages-${{ needs.test.outputs.sha }}
+          path: fast-path-packs/*.tgz
+          if-no-files-found: error
+      - name: Summary
+        env:
+          REF: ${{ inputs.ref }}
+          SHA: ${{ needs.test.outputs.sha }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          {
+            echo "### relayauth fast path: npm packages"
+            echo "- ref: \`$REF\` at \`$SHA\`"
+            echo "- reason: $REASON"
+            echo "- artifact: \`npm-packages-$SHA\` (not published to npm; trusted publishing is bound to publish.yml)"
+            echo "- tarballs:"
+            for f in fast-path-packs/*.tgz; do echo "  - \`$(basename "$f")\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"
