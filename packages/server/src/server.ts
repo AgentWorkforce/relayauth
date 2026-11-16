@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import process from "node:process";
 
-import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 
@@ -499,6 +498,9 @@ export function readEnvOrFile(
 }
 
 export async function startServer(options: StartServerOptions = {}) {
+  // Application imports do not need Node HTTP. Resolve it before startup can
+  // initialize storage so a missing adapter still fails before side effects.
+  const { serve } = await import("@hono/node-server");
   const port = Number.isFinite(options.port) ? (options.port as number) : 8787;
   let storage: AuthStorage;
   if (options.storage) {
