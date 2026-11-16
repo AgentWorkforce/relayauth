@@ -9,6 +9,7 @@ import type {
 import type { Hono } from "hono";
 import type { AppEnv } from "../env.js";
 import type { DeferredTaskScheduler } from "../lib/deferred.js";
+import type { CreateAppOptions } from "../server.js";
 import {
   FixedWindowRateLimiter,
   FixedWindowSketchRateLimiter,
@@ -45,6 +46,9 @@ type TestBindings = Pick<
   | "RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS"
   | "RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES"
   | "RELAYAUTH_OBSERVER_ENABLED"
+  | "RELAYAUTH_RELAYCAST_CREDENTIAL_KEYRING"
+  | "RELAYAUTH_RELAYCAST_URL"
+  | "RELAYAUTH_RELAYCAST_INTERNAL_SECRET"
   | "BASE_URL"
 >;
 
@@ -65,6 +69,9 @@ const PASS_THROUGH_TEST_BINDINGS = [
   "RELAYAUTH_SESSION_DIRECTORY_SIGNING_KEY_PEM_PREVIOUS",
   "RELAYAUTH_SESSION_DIRECTORY_SUBJECT_AUDIENCES",
   "RELAYAUTH_OBSERVER_ENABLED",
+  "RELAYAUTH_RELAYCAST_CREDENTIAL_KEYRING",
+  "RELAYAUTH_RELAYCAST_URL",
+  "RELAYAUTH_RELAYCAST_INTERNAL_SECRET",
   "BASE_URL",
 ] as const satisfies readonly (keyof TestBindings)[];
 
@@ -91,6 +98,8 @@ type TestAppOptions = {
    * the helper's deliberately generous per-test limiter.
    */
   useBindingRevocationCheckRateLimiter?: boolean;
+  /** Replace the relaycast key push (an effectful boundary) with a test double. */
+  relaycastKeyPusher?: CreateAppOptions["relaycastKeyPusher"];
 };
 
 type TestApp = Hono<AppEnv> & {
@@ -342,6 +351,7 @@ export function createTestApp(
     ...(identityCreatePreAuthRateLimiter ? { identityCreatePreAuthRateLimiter } : {}),
     ...(identityCreateRateLimiter ? { identityCreateRateLimiter } : {}),
     ...(revocationCheckRateLimiter ? { revocationCheckRateLimiter } : {}),
+    ...(options.relaycastKeyPusher ? { relaycastKeyPusher: options.relaycastKeyPusher } : {}),
   });
 
   const testApp = app as TestApp;

@@ -1,6 +1,7 @@
 import type { RelayAuthTokenClaims } from "@relayauth/types";
 import type { DeferredTaskScheduler } from "./lib/deferred.js";
 import type { RequestRateLimiter } from "./lib/rate-limit.js";
+import type { RelaycastWorkspaceKeyPusher } from "./lib/relaycast.js";
 import type { AuthStorage } from "./storage/index.js";
 import type { SponsorOidcService } from "./lib/sponsor-binding.js";
 
@@ -103,6 +104,17 @@ export type AppConfig = {
    * requires a fresh capacity sample; without one it stays off.
    */
   RELAYAUTH_STORAGE_CAPACITY_SHED_RATIO?: string;
+  /**
+   * The `ar_` credential tag keyring RelayAuth signs relaycast tags with, as
+   * JSON `{"current":"<version>","keys":{"<version>":"<secret>"}}`. Together
+   * with RELAYAUTH_RELAYCAST_URL and RELAYAUTH_RELAYCAST_INTERNAL_SECRET it
+   * enables the /v1/relaycast issuance routes; a partial set fails closed.
+   */
+  RELAYAUTH_RELAYCAST_CREDENTIAL_KEYRING?: string;
+  /** Base URL of the relaycast engine that receives pushed `ar_ws_` keys. */
+  RELAYAUTH_RELAYCAST_URL?: string;
+  /** Bearer for relaycast's `/internal` admin API (its RELAYCAST_INTERNAL_SECRET). */
+  RELAYAUTH_RELAYCAST_INTERNAL_SECRET?: string;
 };
 
 export type AppEnv = {
@@ -123,5 +135,8 @@ export type AppEnv = {
     apiKeyClaims?: RelayAuthTokenClaims;
     apiKeyVia?: "api_key";
     identityCreateRateLimitChecked?: boolean;
+    // Injected test double for the relaycast key push (see CreateAppOptions);
+    // absent, the routes build the fetch-based pusher from the bindings.
+    relaycastKeyPusher?: RelaycastWorkspaceKeyPusher;
   };
 };

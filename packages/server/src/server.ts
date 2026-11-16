@@ -26,6 +26,12 @@ import {
   SESSION_DIRECTORY_BOOTSTRAP_API_KEY_NAME,
 } from "./lib/bootstrap-api-key.js";
 import {
+  assertRelaycastConfig,
+  RELAYCAST_ADMIN_SCOPE,
+  RELAYCAST_SERVICE_API_KEY_NAME,
+  type RelaycastWorkspaceKeyPusher,
+} from "./lib/relaycast.js";
+import {
   assertSessionDirectoryIssuerConfig,
   SESSION_DIRECTORY_SEARCH_MINT_SCOPE,
 } from "./lib/session-directory-issuer.js";
@@ -44,6 +50,7 @@ import identityActivity from "./routes/identity-activity.js";
 import identities from "./routes/identities.js";
 import observerApp from "./routes/observer.js";
 import policies from "./routes/policies.js";
+import relaycast from "./routes/relaycast.js";
 import roleAssignments from "./routes/role-assignments.js";
 import roles from "./routes/roles.js";
 import tokens from "./routes/tokens.js";
@@ -240,6 +247,7 @@ export type CreateAppOptions = {
   identityCreateRateLimiter?: RequestRateLimiter;
   revocationCheckRateLimiter?: RequestRateLimiter;
   sponsorOidcService?: SponsorOidcService;
+  relaycastKeyPusher?: RelaycastWorkspaceKeyPusher;
 };
 
 export type StartServerOptions = {
@@ -339,6 +347,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
     c.set("identityCreatePreAuthRateLimiter", identityCreatePreAuthRateLimiter);
     c.set("identityCreateRateLimiter", identityCreateRateLimiter);
     c.set("sponsorOidcService", sponsorOidcService);
+    if (options.relaycastKeyPusher) {
+      c.set("relaycastKeyPusher", options.relaycastKeyPusher);
+    }
     await next();
   });
 
@@ -383,6 +394,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.use("/v1/tokens/*", apiKeyAuth());
   app.use("/v1/api-keys", apiKeyAuth());
   app.use("/v1/api-keys/*", apiKeyAuth());
+  app.use("/v1/relaycast", apiKeyAuth());
+  app.use("/v1/relaycast/*", apiKeyAuth());
   // Finalization deliberately authenticates only with its one-time bearer
   // capability. API-key middleware belongs on grant creation alone so a
   // capability is never interpreted as an API key.
@@ -463,6 +476,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<AppEnv> {
   app.route("/v1/identities", roleAssignments);
   app.route("/v1/observer", observerApp);
   app.route("/v1/policies", policies);
+  app.route("/v1/relaycast", relaycast);
   app.route("/v1/roles", roles);
   app.route("/v1/stats", dashboardStats);
   app.route("/v1/sponsors", sponsors);
@@ -568,6 +582,14 @@ export async function startServer(options: StartServerOptions = {}) {
     RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS:
       options.config?.RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS
       ?? process.env.RELAYAUTH_REVOCATION_CHECK_RATE_WINDOW_MS,
+    RELAYAUTH_RELAYCAST_CREDENTIAL_KEYRING:
+      options.config?.RELAYAUTH_RELAYCAST_CREDENTIAL_KEYRING
+      ?? readEnvOrFile("RELAYAUTH_RELAYCAST_CREDENTIAL_KEYRING"),
+    RELAYAUTH_RELAYCAST_URL:
+      options.config?.RELAYAUTH_RELAYCAST_URL ?? process.env.RELAYAUTH_RELAYCAST_URL,
+    RELAYAUTH_RELAYCAST_INTERNAL_SECRET:
+      options.config?.RELAYAUTH_RELAYCAST_INTERNAL_SECRET
+      ?? readEnvOrFile("RELAYAUTH_RELAYCAST_INTERNAL_SECRET"),
   };
 
   // Refuse to start on a bad signing-key configuration (unsupported PEM type,
@@ -575,6 +597,7 @@ export async function startServer(options: StartServerOptions = {}) {
   // than signing with one key while advertising another.
   await assertSigningKeyConfig(config);
   await assertSessionDirectoryIssuerConfig(config);
+  assertRelaycastConfig(config);
 
   const requestedBootstrapOrg = (options.bootstrapApiKeyOrgId ?? process.env.RELAYAUTH_BOOTSTRAP_API_KEY_ORG)?.trim()
     || DEFAULT_BOOTSTRAP_API_KEY_ORG;
@@ -590,6 +613,14 @@ export async function startServer(options: StartServerOptions = {}) {
       value: readEnvOrFile("RELAYAUTH_SESSION_DIRECTORY_BOOTSTRAP_API_KEY"),
       scope: SESSION_DIRECTORY_SEARCH_MINT_SCOPE,
       name: SESSION_DIRECTORY_BOOTSTRAP_API_KEY_NAME,
+      exactScope: true,
+    },
+    {
+      label: "relaycast service api key",
+      setting: "RELAYAUTH_RELAYCAST_SERVICE_API_KEY",
+      value: readEnvOrFile("RELAYAUTH_RELAYCAST_SERVICE_API_KEY"),
+      scope: RELAYCAST_ADMIN_SCOPE,
+      name: RELAYCAST_SERVICE_API_KEY_NAME,
       exactScope: true,
     },
   ];
